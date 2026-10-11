@@ -192,6 +192,26 @@ test("normal play renders, takes keyboard input and survives settings and re-ent
   }
 });
 
+// A failed core load is an honest failed state with retry, not a stuck loading screen (#88).
+test("a failed game core load reports the failure and recovers on retry", async ({
+  page,
+  appUrl,
+}) => {
+  await page.route("**/arpg_web_wasm_bg.wasm*", (route) => route.abort());
+  await page.goto(appUrl);
+  const enter = page.getByRole("button", { name: "Enter World", exact: true });
+  const footer = page.locator(".character-select-footer");
+  await expect(footer).toContainText("Game failed to load");
+  await expect(enter).toBeDisabled();
+
+  await page.unroute("**/arpg_web_wasm_bg.wasm*");
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(footer).toContainText("Ready");
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+  await enter.click();
+  await expect(page.getByRole("button", { name: "Hold shield", exact: true })).toBeEnabled();
+});
+
 test("the training arena exports its session as a replayable reproduction", async ({
   page,
   appUrl,

@@ -73,7 +73,8 @@ import {
   SCENARIOS,
 } from "./training-arena.js";
 import { createGameClientRuntime } from "./game-client-runtime.ts";
-import { createActiveCueTracker } from "./frame-cues.js";
+import { createFramePresenter } from "./frame-presenter.ts";
+import { createInputAttachment } from "./input-attachment.ts";
 import { WorkbenchControls } from "./workbench-controls.jsx";
 import "./styles.css";
 
@@ -559,8 +560,52 @@ function buildFrame(snapshot, focusPlayerId, width, height, focusPlayerAccent = 
   };
 }
 
-function App() {
+// The game world canvas. One frame presenter owns its renderer, projection and resize
+// observer for as long as the canvas is mounted; view changes reconfigure it in place.
+function GameCanvas({ snapshots, playerId, accent, graphics, onPointerMove }) {
   const canvasRef = useRef(null);
+  const presenterRef = useRef(null);
+  const { shadows, pixelRatioLimit } = graphics;
+  // The view the presenter is (or will be) created with; later changes apply in place.
+  const viewRef = useRef({ playerId, accent, graphics: { shadows, pixelRatioLimit } });
+  useEffect(() => {
+    const presenter = createFramePresenter({
+      canvas: canvasRef.current,
+      snapshots,
+      createRenderer: createThreeSceneRenderer,
+      buildFrame,
+      observeResize: (canvas, onResize) => {
+        const observer = new ResizeObserver(() => onResize());
+        observer.observe(canvas);
+        return () => observer.disconnect();
+      },
+      requestFrame: (callback) => requestAnimationFrame(callback),
+      cancelFrame: (handle) => cancelAnimationFrame(handle),
+      view: viewRef.current,
+    });
+    presenterRef.current = presenter;
+    return () => {
+      presenterRef.current = null;
+      presenter.dispose();
+    };
+  }, [snapshots]);
+
+  useEffect(() => {
+    viewRef.current = { playerId, accent, graphics: { shadows, pixelRatioLimit } };
+    presenterRef.current?.configure(viewRef.current);
+  }, [playerId, accent, shadows, pixelRatioLimit]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="game-canvas"
+      aria-label="ARPG game world"
+      onPointerMove={onPointerMove}
+    />
+  );
+}
+
+function App() {
   const settingsTriggerRef = useRef(null);
   const touchStickRef = useRef(null);
   const touchKnobRef = useRef(null);
@@ -578,12 +623,13 @@ function App() {
   });
   const initialTrainingRef = useRef(initialRequest.training);
   const initialRunSeedRef = useRef(initialRequest.seed);
-  const [ready, setReady] = useState(false);
   const [snapshotStore] = useState(createSnapshotStore);
-  const [status, setStatus] = useState("Loading game…");
+  // Shown once the core is ready; while it loads the shell shows the load state instead.
+  const [status, setStatus] = useState("Select a character");
   const [runtime] = useState(() =>
     createGameClientRuntime({
       snapshots: snapshotStore,
+      loadCore: () => initWasm(),
       // Training sessions (including the default dungeon scenario) are scenario games,
       // which record their session for reproduction export; ordinary play does not.
       createGame: (seed, scenario) =>
@@ -599,6 +645,11 @@ function App() {
   );
   const client = useSyncExternalStore(runtime.subscribe, runtime.getState);
   const { mode, playerId, lobbyCode } = client;
+  const ready = client.core === "ready";
+  const coreFailed = client.core === "failed";
+  // An honest load state: no progress is known, only loading, failed (with the runtime's
+  // failure message in `status`) or ready.
+  const shownStatus = ready || coreFailed ? status : "Loading game…";
   const scenario = client.training ? "training" : "adventure";
   const trainingPaused = client.training?.paused ?? false;
   const trainingSpeed = client.training?.speed ?? 1;
@@ -725,6 +776,87 @@ function App() {
     });
   }, [focusedPlayer, runtime]);
 
+  // Keyboard input is owned outside React: one attachment per mounted runtime, attached while
+  // in the world, with profile and gameplay/menu context changes applied in place (below).
+  const inputRef = useRef(null);
+  const profileRef = useRef(profile);
+  useEffect(() => {
+    const input = createInputAttachment({
+      profile: profileRef.current,
+      createController: (controllerOptions) => {
+        const controller = new InputRuntimeController({
+          registry: inputRegistry,
+          consumePolicy: "matched",
+          ...controllerOptions,
+        });
+        return Object.assign(controller, {
+          updateProfile: (next) => controller.updateConfiguration(inputRegistry, next),
+        });
+      },
+      attachKeyboard: (controller) =>
+        attachKeyboardRuntime(controller, {
+          mode: "physical",
+          ignoreTextEntry: true,
+          stopPropagation: true,
+        }),
+      // The settings toggle also closes the menu, so it stays live in menu context.
+      alwaysActions: ["game.settings"],
+      onDispatch: (dispatch) => {
+        if (dispatch.action === "game.settings") {
+          if (dispatch.phase === "press") setSettingsOpen((open) => !open);
+          return;
+        }
+        // Always forward a release so a draw held across a weapon switch cannot stick.
+        if (dispatch.action === "game.primaryAttack" && dispatch.phase === "release") {
+          runtime.setBowDraw("keyboard", false);
+          return;
+        }
+        if (dispatch.action === "game.primaryAttack" && focusedPlayer()?.weapon === "bow") {
+          if (dispatch.phase === "press") runtime.setBowDraw("keyboard", true);
+          return;
+        }
+        if (dispatch.action === "game.switchWeapon") {
+          if (dispatch.phase === "press") switchWeapon();
+          return;
+        }
+        if (
+          [
+            "game.primaryAttack",
+            "game.secondaryAttack",
+            "game.interact",
+            "game.cycleTarget",
+            "game.clearTarget",
+          ].includes(dispatch.action)
+        ) {
+          if (dispatch.phase === "press") triggerCombatAction(dispatch.action);
+          return;
+        }
+        if (dispatch.action === "game.guard") {
+          runtime.setGuard("keyboard", dispatch.phase !== "release");
+          return;
+        }
+        const key = {
+          "game.moveForward": "forward",
+          "game.moveBackward": "backward",
+          "game.moveLeft": "left",
+          "game.moveRight": "right",
+        }[dispatch.action];
+        if (!key) return;
+        runtime.setHeldMovement(key, dispatch.phase !== "release");
+      },
+      // Held keys and touches do not survive focus loss, menus or leaving the world.
+      onRelease: releaseInput,
+      focusTarget: window,
+      visibilityTarget: document,
+    });
+    inputRef.current = input;
+    return () => {
+      inputRef.current = null;
+      input.detach();
+    };
+    // Every dependency is stable for the runtime's lifetime, so this runs once per mount.
+  }, [runtime, focusedPlayer, switchWeapon, triggerCombatAction, releaseInput]);
+
   const leaveTrainingUrl = () => {
     history.replaceState(null, "", withTrainingRequest(location.href, false, 0));
   };
@@ -815,177 +947,61 @@ function App() {
   };
 
   useEffect(() => {
-    let cancelled = false;
-    initWasm()
-      .then(() => {
-        if (cancelled) return;
-        setReady(true);
-        if (initialTrainingRef.current.requested) {
-          const seed = initialRunSeedRef.current ?? DEFAULT_TRAINING_SEED;
-          const { fixture, unknownFixture } = initialTrainingRef.current;
-          runtime.startLocal({ seed, training: true, scenario: fixture });
-          initialRunSeedRef.current = null;
-          setTrainingSeedDraft(String(seed));
-          setInWorld(true);
-          history.replaceState(null, "", withTrainingRequest(location.href, true, seed, fixture));
-          setStatus(
-            unknownFixture
-              ? `Unknown scenario "${unknownFixture}"; using the generated dungeon`
-              : "Training arena",
-          );
-        } else {
-          setStatus("Select a character");
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) setStatus(`Wasm failed: ${error}`);
-      });
+    // The runtime owns the core load; a start requested before it is ready waits for it and
+    // is superseded by the cleanup's stop, so a slow load never activates after unmount.
+    void runtime.load();
+    const initialTraining = initialTrainingRef.current;
+    if (initialTraining.requested) {
+      // Read from the immutable initial request: a StrictMode remount starts the same seed.
+      const seed = initialRequest.seed ?? DEFAULT_TRAINING_SEED;
+      const { fixture, unknownFixture } = initialTraining;
+      runtime.startLocal({ seed, training: true, scenario: fixture });
+      initialRunSeedRef.current = null;
+      setTrainingSeedDraft(String(seed));
+      setInWorld(true);
+      history.replaceState(null, "", withTrainingRequest(location.href, true, seed, fixture));
+      setStatus(
+        unknownFixture
+          ? `Unknown scenario "${unknownFixture}"; using the generated dungeon`
+          : "Training arena",
+      );
+    }
     return () => {
-      cancelled = true;
       // Releases the authority, transports and tick loop. The runtime stays reusable so a
       // StrictMode remount can start again.
       runtime.stop();
     };
-  }, [runtime]);
+  }, [runtime, initialRequest]);
+
+  // Retries a failed core load. In the world (the training route) that restarts the
+  // requested arena, which waits for the new attempt.
+  const retryCoreLoad = () => {
+    if (inWorld) {
+      const seed = parseRunSeed(trainingSeedDraft) ?? DEFAULT_TRAINING_SEED;
+      startTraining(seed);
+      setStatus("Training arena");
+      return;
+    }
+    setStatus("Select a character");
+    void runtime.load();
+  };
 
   useEffect(() => {
-    if (!inWorld || !canvasRef.current) return undefined;
-    const renderer = createThreeSceneRenderer(canvasRef.current, {
-      background: "#11100f",
-      shadows: graphics.shadows,
-      pixelRatioLimit: graphics.pixelRatioLimit,
-    });
-    const cues = createActiveCueTracker();
-    const render = () => {
-      const canvas = canvasRef.current;
-      const snapshot = cues.take(snapshotStore.getSnapshot());
-      if (!canvas || !snapshot) return;
-      const rect = canvas.getBoundingClientRect();
-      renderer.render(
-        buildFrame(snapshot, playerId, rect.width, rect.height, selectedCharacter.accent),
-      );
-    };
-    // Snapshots can arrive faster than the display (local catch-up, bursts of dedicated
-    // datagrams). Draw at most once per animation frame, always from the latest snapshot.
-    let frameRequest = null;
-    const scheduleRender = () => {
-      cues.observe(snapshotStore.getSnapshot());
-      if (frameRequest !== null) return;
-      frameRequest = requestAnimationFrame(() => {
-        frameRequest = null;
-        render();
-      });
-    };
-    const resize = () => {
-      const rect = canvasRef.current.getBoundingClientRect();
-      renderer.setSize(rect.width, rect.height, devicePixelRatio);
-      render();
-    };
-    const unsubscribe = snapshotStore.subscribe(scheduleRender);
-    const observer = new ResizeObserver(resize);
-    observer.observe(canvasRef.current);
-    resize();
-    return () => {
-      unsubscribe();
-      if (frameRequest !== null) cancelAnimationFrame(frameRequest);
-      observer.disconnect();
-      renderer.dispose();
-    };
-  }, [
-    graphics.shadows,
-    graphics.pixelRatioLimit,
-    inWorld,
-    selectedCharacter.accent,
-    playerId,
-    snapshotStore,
-  ]);
+    profileRef.current = profile;
+    inputRef.current?.setProfile(profile);
+  }, [profile]);
 
   useEffect(() => {
-    if (settingsOpen) releaseInput();
-  }, [settingsOpen, releaseInput]);
+    const input = inputRef.current;
+    if (!input || !ready || !inWorld) return undefined;
+    input.attach();
+    return () => input.detach();
+  }, [ready, inWorld]);
 
   useEffect(() => {
-    // Held keys and touches do not survive focus loss: the release event may never arrive.
-    const onBlur = () => releaseInput();
-    const onVisibility = () => {
-      if (document.visibilityState === "hidden") releaseInput();
-    };
-    window.addEventListener("blur", onBlur);
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.removeEventListener("blur", onBlur);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [releaseInput]);
-
-  useEffect(() => {
-    if (!ready || !inWorld) return undefined;
-    const controller = new InputRuntimeController({
-      registry: inputRegistry,
-      profile,
-      getActiveContexts: () => new Set(settingsOpen ? [] : ["gameplay"]),
-      consumePolicy: "matched",
-      onDispatch: (dispatch) => {
-        if (dispatch.action === "game.settings" && dispatch.phase === "press") {
-          setSettingsOpen((open) => !open);
-          return;
-        }
-        if (settingsOpen) return;
-        // Always forward a release so a draw held across a weapon switch cannot stick.
-        if (dispatch.action === "game.primaryAttack" && dispatch.phase === "release") {
-          runtime.setBowDraw("keyboard", false);
-          return;
-        }
-        if (dispatch.action === "game.primaryAttack" && focusedPlayer()?.weapon === "bow") {
-          if (dispatch.phase === "press") runtime.setBowDraw("keyboard", true);
-          return;
-        }
-        if (dispatch.action === "game.switchWeapon") {
-          if (dispatch.phase === "press") switchWeapon();
-          return;
-        }
-        if (
-          [
-            "game.primaryAttack",
-            "game.secondaryAttack",
-            "game.interact",
-            "game.cycleTarget",
-            "game.clearTarget",
-          ].includes(dispatch.action)
-        ) {
-          if (dispatch.phase === "press") triggerCombatAction(dispatch.action);
-          return;
-        }
-        if (dispatch.action === "game.guard") {
-          runtime.setGuard("keyboard", dispatch.phase !== "release");
-          return;
-        }
-        const key = {
-          "game.moveForward": "forward",
-          "game.moveBackward": "backward",
-          "game.moveLeft": "left",
-          "game.moveRight": "right",
-        }[dispatch.action];
-        if (!key) return;
-        runtime.setHeldMovement(key, dispatch.phase !== "release");
-      },
-    });
-    const detach = attachKeyboardRuntime(controller, {
-      mode: "physical",
-      ignoreTextEntry: true,
-      stopPropagation: true,
-    });
-    return detach;
-  }, [
-    ready,
-    inWorld,
-    profile,
-    settingsOpen,
-    runtime,
-    focusedPlayer,
-    switchWeapon,
-    triggerCombatAction,
-  ]);
+    // Menus suppress gameplay bindings and release held input.
+    inputRef.current?.setContext(settingsOpen ? "menu" : "gameplay");
+  }, [settingsOpen]);
 
   const updateProfile = (next) => {
     if (!persistStoredValue(PROFILE_KEY, JSON.stringify(next)))
@@ -1256,9 +1272,14 @@ function App() {
         </div>
 
         <footer className="character-select-footer">
-          <span className="character-select-status">
-            {ready && status === "Select a character" ? "Ready" : status}
+          <span className="character-select-status" role="status">
+            {ready && status === "Select a character" ? "Ready" : shownStatus}
           </span>
+          {coreFailed && (
+            <button type="button" className="core-retry-button" onClick={retryCoreLoad}>
+              Retry
+            </button>
+          )}
           <div className="character-select-save-actions">
             <button type="button" onClick={loadSavedGame} disabled={!ready || !savedGameAvailable}>
               Load Saved Game
@@ -1298,10 +1319,11 @@ function App() {
 
   return (
     <main className="game-shell">
-      <canvas
-        ref={canvasRef}
-        className="game-canvas"
-        aria-label="ARPG game world"
+      <GameCanvas
+        snapshots={snapshotStore}
+        playerId={playerId}
+        accent={selectedCharacter.accent}
+        graphics={graphics}
         onPointerMove={aimWithPointer}
       />
       <header className="game-header">
@@ -1310,6 +1332,11 @@ function App() {
           <span>{modeLabel}</span>
         </div>
         <div className="game-header-actions">
+          {coreFailed && (
+            <button type="button" className="core-retry-button" onClick={retryCoreLoad}>
+              Retry
+            </button>
+          )}
           <button type="button" onClick={returnToCharacters}>
             Characters
           </button>
@@ -1419,7 +1446,7 @@ function App() {
       <PlayerHud
         store={snapshotStore}
         playerId={playerId}
-        status={status}
+        status={shownStatus}
         interactKey={interactKey}
       />
 

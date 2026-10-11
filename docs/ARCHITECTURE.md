@@ -33,6 +33,14 @@ documented in [ADR 0001](adr/0001-browser-snapshot-projection.md). Tick-dependen
 views and rendering consume one session-owned snapshot store; menus and shell
 configuration do not subscribe to simulation ticks.
 
+React composes but does not own browser runtime lifetimes. `web/src/game-client-runtime.ts`
+owns the active gameplay source and the Rust/Wasm core load (unloaded, loading, ready or
+failed with retry; a start before the core is ready activates only if it is still the
+latest request). `web/src/frame-presenter.ts` owns the renderer, frame projection and
+resize observer of one canvas, and `web/src/input-attachment.ts` owns the keyboard
+attachment and its gameplay/menu context. Components create each owner once, forward
+prop changes in place and dispose it on unmount.
+
 ## Mechanical game-loop foundation
 
 The moment-to-moment ARPG loop is a game-specific foundation, not a late presentation/polish layer.
