@@ -90,7 +90,11 @@ export interface DedicatedSessionLike {
     onStateChange?: (state: string) => void;
     onError?: (error: unknown) => void;
   }): Promise<unknown>;
+  // Held state: a best-effort datagram, repaired by the held refresh.
   sendCommand(sequence: number, payload: Uint8Array): Promise<unknown>;
+  // One-shot: the reliable command lane. Settles once the authority acknowledged it; rejects
+  // for a rejected command or a session that ended first.
+  sendReliableCommand(sequence: number, payload: Uint8Array): Promise<unknown>;
   close(): void;
 }
 
@@ -164,12 +168,15 @@ function idleMovement() {
 type HeldInput = "guard" | "movement" | "aim" | "bow";
 const HELD_INPUTS: readonly HeldInput[] = ["guard", "movement", "aim", "bow"];
 // Dedicated held-input re-assertion cadence: 5 per second per input, for as long as the
-// session runs. Every datagram carries one input under a global sequence watermark, so a
-// reordered newer datagram can discard an older one; only a refresh that never stops
-// guarantees that each input's current value eventually lands as the newest command.
+// session runs. Every held datagram carries one input under the datagram lane's sequence
+// watermark, so a reordered newer datagram can discard an older one; only a refresh that
+// never stops guarantees that each input's current value eventually lands as the newest
+// command.
 const HELD_REFRESH_INTERVAL_MS = 200;
-// Commands the refresh re-sends; every other command is a one-shot the refresh must not
-// overtake.
+// Held commands travel as dedicated datagrams and the refresh re-sends them. Every other
+// command is a one-shot (attack, interact, weapon or target change) and travels on the
+// reliable command lane, which has its own watermark, so no datagram can overtake and drop
+// it (#143).
 const HELD_COMMAND_TYPES = new Set([
   "setGuard",
   "setMovement",
@@ -209,15 +216,12 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
   // Whether a raised guard ever reached the current source's authority, which may then
   // still hold it after a press or release was lost.
   let guardRaiseSent = false;
-  // Dedicated commands travel as unreliable datagrams, so held input is re-asserted on a
+  // Dedicated held commands travel as unreliable datagrams, so held input is re-asserted on a
   // bounded cadence: indefinitely while it differs from rest, and for a few periods after
   // it returns to rest so a lost release still converges (#139).
   let heldRefreshTimer: unknown = null;
   let bowTerminal: "releaseBow" | "cancelBow" | null = null;
   let heldRefreshRotation = 0;
-  // Whether a one-shot command (attack, interact, weapon or target change) went out during
-  // the current refresh period.
-  let oneShotSinceRefresh = false;
 
   const update = (patch: Partial<ClientState>) => {
     let changed = false;
@@ -314,7 +318,6 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
     guardRaiseSent = false;
     bowTerminal = null;
     heldRefreshRotation = 0;
-    oneShotSinceRefresh = false;
   };
 
   // Replaces the current source. The returned token identifies the new generation.
@@ -365,11 +368,20 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
       } else if (state.mode === "dedicated") {
         const session = dedicated;
         if (!session || !playerId) return false;
-        void session.sendCommand(++sequence, textEncoder.encode(encoded)).catch((error) => {
-          // A refresh only repeats held state, so its failure is not news to the player.
-          if (dedicated === session && !quiet) status(`Dedicated command failed: ${error}`);
-        });
-        noteDedicatedSent(command.type);
+        // Both lanes share one counter; each lane only needs its own sequences to increase.
+        const payload = textEncoder.encode(encoded);
+        if (HELD_COMMAND_TYPES.has(command.type as string)) {
+          void session.sendCommand(++sequence, payload).catch((error) => {
+            // A refresh only repeats held state, so its failure is not news to the player.
+            if (dedicated === session && !quiet) status(`Dedicated command failed: ${error}`);
+          });
+          noteBowTerminal(command.type);
+        } else {
+          // Settles on the authority's ack; a rejection or an ended session is reported.
+          void session.sendReliableCommand(++sequence, payload).catch((error) => {
+            if (dedicated === session) status(`Dedicated command failed: ${error}`);
+          });
+        }
       } else {
         if (!game || !playerId) return false;
         game.applyCommand(playerId, ++sequence, encoded);
@@ -381,17 +393,16 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
     }
   };
 
-  // Remembers the last bow release or cancel, which the refresh repeats once nothing is drawn,
-  // and whether a one-shot command went out this period.
-  function noteDedicatedSent(type: unknown) {
+  // Remembers the last bow release or cancel, which the refresh repeats once nothing is drawn.
+  function noteBowTerminal(type: unknown) {
     if (type === "releaseBow" || type === "cancelBow") bowTerminal = type;
-    if (!HELD_COMMAND_TYPES.has(type as string)) oneShotSinceRefresh = true;
   }
 
   // Re-sends the whole current held set with fresh sequences on every period, rotating the
   // order so each input is regularly the newest datagram, so neither a lost datagram nor
-  // reordering against another input (the authority drops sequences below its watermark)
-  // can leave the dedicated authority holding a stale value for longer than a few periods.
+  // reordering against another input (the authority drops datagram sequences below the
+  // datagram watermark) can leave the dedicated authority holding a stale value for longer
+  // than a few periods. One-shots are on the reliable lane, so a refresh cannot drop them.
   // Every repeated value is idempotent at the authority: a repeated raise or draw is a
   // continued hold, a repeated lower, release or cancel without a draw does nothing.
   const refreshHeldInput = () => {
@@ -400,13 +411,6 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
       return;
     }
     if (state.lifecycle !== "running" || !state.playerId) return;
-    // A one-shot is never re-sent, so a higher-sequence refresh that overtook it would make
-    // the authority drop it below the watermark. Skipping the period after one keeps every
-    // refresh at least a full period behind any one-shot.
-    if (oneShotSinceRefresh) {
-      oneShotSinceRefresh = false;
-      return;
-    }
     const send = (command: Record<string, unknown>) => dispatch(command, { quiet: true });
     const refreshers: Record<HeldInput, () => void> = {
       guard: () => {
