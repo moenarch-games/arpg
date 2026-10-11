@@ -4,7 +4,12 @@
 // and to the snapshot store for per-tick views; it never reaches into sources directly.
 //
 // Lifecycle: idle → starting → running ⇄ disconnected; any active state → failed; stop()
-// returns to idle and dispose() is terminal. Every source replacement advances a generation;
+// returns to idle and dispose() is terminal.
+
+// Core loading: the Rust/Wasm gameplay core (`loadCore`) is runtime state, unloaded → loading
+// → ready, or failed with a retry through `load()`. A local start or host before the core is
+// ready reports "starting" and activates once the load succeeds, but only while it is still
+// the latest request: leaving, a newer start or dispose supersedes it. Every source replacement advances a generation;
 // late async completions from an older generation are ignored and cannot mutate the
 // replacement.
 //
@@ -33,8 +38,14 @@ export interface TrainingState {
   scenario: string;
 }
 
+export type CoreLoadState = "unloaded" | "loading" | "ready" | "failed";
+
 export interface ClientState {
   lifecycle: ClientLifecycle;
+  // Whether the gameplay core `createGame` needs is loaded.
+  core: CoreLoadState;
+  // The last load failure, set exactly while `core` is "failed".
+  coreError: string | null;
   mode: ClientMode;
   playerId: number | null;
   lobbyCode: string;
@@ -100,6 +111,8 @@ export interface SnapshotSink {
 
 export interface GameClientRuntimeOptions {
   snapshots: SnapshotSink;
+  // Loads everything `createGame` needs (the Rust/Wasm core). Omitted: ready immediately.
+  loadCore?: () => Promise<unknown>;
   // `scenario` is set exactly for training sessions, which record a reproduction.
   createGame(seed: number, scenario?: string): WasmGameLike;
   createPeerSession(apiBase: string): PeerSessionLike;
@@ -185,6 +198,8 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
   const listeners = new Set<() => void>();
   let state: ClientState = {
     lifecycle: "idle",
+    core: options.loadCore ? "unloaded" : "ready",
+    coreError: null,
     mode: "local",
     playerId: 1,
     lobbyCode: "",
@@ -218,6 +233,10 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
   // Whether a one-shot command (attack, interact, weapon or target change) went out during
   // the current refresh period.
   let oneShotSinceRefresh = false;
+  // The core load in flight, and the latest start waiting for it. A request only activates
+  // while its source generation is still current.
+  let coreLoad: Promise<void> | null = null;
+  let pendingStart: { generation: number; activate: (() => void) | null } | null = null;
 
   const update = (patch: Partial<ClientState>) => {
     let changed = false;
@@ -330,6 +349,53 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
     return generation;
   };
   const isCurrent = (generation: number) => !disposed() && state.sourceGeneration === generation;
+
+  // Starts a core load attempt or joins the one in flight. Never rejects.
+  const loadCore = (): Promise<void> => {
+    if (disposed() || state.core === "ready") return Promise.resolve();
+    if (coreLoad) return coreLoad;
+    update({ core: "loading", coreError: null });
+    let loading: Promise<unknown>;
+    try {
+      loading = Promise.resolve(options.loadCore!());
+    } catch (error) {
+      loading = Promise.reject(error);
+    }
+    const attempt = loading.then(
+      () => {
+        if (coreLoad === attempt) coreLoad = null;
+        if (disposed()) return;
+        update({ core: "ready", coreError: null });
+        const request = pendingStart;
+        pendingStart = null;
+        if (request && isCurrent(request.generation)) request.activate?.();
+      },
+      (error) => {
+        if (coreLoad === attempt) coreLoad = null;
+        if (disposed()) return;
+        const message = error instanceof Error ? error.message : String(error);
+        update({ core: "failed", coreError: message });
+        const request = pendingStart;
+        pendingStart = null;
+        if (request && isCurrent(request.generation)) {
+          stopLoop();
+          update({ lifecycle: "failed" });
+        }
+        status(`Game failed to load: ${message}`);
+      },
+    );
+    coreLoad = attempt;
+    return attempt;
+  };
+
+  // Replaces the current source with one that waits for the core; `activate` runs once the
+  // load succeeds while this request is still the latest.
+  const deferUntilCoreReady = (patch: Partial<ClientState>, activate: (() => void) | null) => {
+    const generation = replaceSource({ lifecycle: "starting", ...patch });
+    pendingStart = { generation, activate };
+    void loadCore();
+    return generation;
+  };
 
   const installLocalAuthority = (next: WasmGameLike, patch: Partial<ClientState>) => {
     const generation = replaceSource({
@@ -469,6 +535,9 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
     hasTickLoop: () => timer !== null,
     hasAuthority: () => game !== null,
 
+    // Loads the gameplay core, or retries after a failure. Resolves once the attempt settled.
+    load: loadCore,
+
     startLocal({
       seed,
       training = false,
@@ -476,11 +545,16 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
     }: { seed?: number; training?: boolean; scenario?: string } = {}) {
       if (disposed()) return;
       const named = scenario ?? DEFAULT_SCENARIO;
-      const next = newAuthority(seed ?? options.freshRunSeed(), training ? named : undefined);
-      installLocalAuthority(next, {
-        playerId: 1,
-        training: training ? { paused: false, speed: 1, scenario: named } : null,
-      });
+      const runSeed = seed ?? options.freshRunSeed();
+      const activate = () => {
+        const next = newAuthority(runSeed, training ? named : undefined);
+        installLocalAuthority(next, {
+          playerId: 1,
+          training: training ? { paused: false, speed: 1, scenario: named } : null,
+        });
+      };
+      if (state.core === "ready") activate();
+      else deferUntilCoreReady({ mode: "local", playerId: 1 }, activate);
     },
 
     // Restores a validated save. The caller loads the game first, so a rejected save leaves
@@ -511,6 +585,11 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
 
     async hostPeer(apiBase: string) {
       if (disposed()) return;
+      if (state.core !== "ready") {
+        const waiting = deferUntilCoreReady({ mode: "local", playerId: 1 }, null);
+        await loadCore();
+        if (!isCurrent(waiting) || state.core !== "ready") return;
+      }
       const generation = installLocalAuthority(newAuthority(options.freshRunSeed()), {
         playerId: 1,
         lifecycle: "starting",
