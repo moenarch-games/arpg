@@ -426,7 +426,10 @@ fn remote_primary_attack<A: Authority>(
     } else {
         assert_eq!(held, None, "the opportunity outlived its expiry");
     }
-    assert_eq!(session.send(ArpgCommand::PrimaryAttack), Delivery::Applied);
+    assert_eq!(
+        session.send(ArpgCommand::PrimaryAttack { aim: None }),
+        Delivery::Applied
+    );
     let kind = session
         .action()
         .expect("the primary attack started an action");
@@ -581,7 +584,7 @@ fn a_counter_command_delivered_after_a_newer_one_is_ignored_as_stale() {
         );
         session.advance();
         assert_eq!(
-            session.deliver(counter_sequence, ArpgCommand::PrimaryAttack),
+            session.deliver(counter_sequence, ArpgCommand::PrimaryAttack { aim: None }),
             Delivery::Stale,
             "{topology:?}"
         );
@@ -590,7 +593,10 @@ fn a_counter_command_delivered_after_a_newer_one_is_ignored_as_stale() {
         // Expiry still applies on the original schedule.
         session.advance_to(opportunity.expires_at_tick);
         assert_eq!(session.counter(), None, "{topology:?}");
-        assert_eq!(session.send(ArpgCommand::PrimaryAttack), Delivery::Applied);
+        assert_eq!(
+            session.send(ArpgCommand::PrimaryAttack { aim: None }),
+            Delivery::Applied
+        );
         assert_eq!(session.action(), Some(ActionKind::PrimaryAttack));
         assert_eq!(session.counter_strikes, 0);
     }
@@ -608,12 +614,12 @@ fn a_duplicated_counter_command_spends_one_counter_only() {
         let sequence = session.next_sequence;
         session.next_sequence += 1;
         assert_eq!(
-            session.deliver(sequence, ArpgCommand::PrimaryAttack),
+            session.deliver(sequence, ArpgCommand::PrimaryAttack { aim: None }),
             Delivery::Applied
         );
         assert_eq!(session.action(), Some(ActionKind::Counter), "{topology:?}");
         assert_eq!(
-            session.deliver(sequence, ArpgCommand::PrimaryAttack),
+            session.deliver(sequence, ArpgCommand::PrimaryAttack { aim: None }),
             Delivery::Stale,
             "{topology:?}"
         );
@@ -623,13 +629,16 @@ fn a_duplicated_counter_command_spends_one_counter_only() {
             "the duplicate must arrive inside the original window"
         );
         assert_eq!(
-            session.deliver(sequence, ArpgCommand::PrimaryAttack),
+            session.deliver(sequence, ArpgCommand::PrimaryAttack { aim: None }),
             Delivery::Stale,
             "{topology:?}"
         );
         assert_eq!(session.action(), None);
         // A fresh attack inside the original window is ordinary: the opportunity is spent.
-        assert_eq!(session.send(ArpgCommand::PrimaryAttack), Delivery::Applied);
+        assert_eq!(
+            session.send(ArpgCommand::PrimaryAttack { aim: None }),
+            Delivery::Applied
+        );
         assert_eq!(
             session.action(),
             Some(ActionKind::PrimaryAttack),
@@ -673,12 +682,15 @@ fn a_reconnect_does_not_extend_the_counter_window() {
             session.authority.submit(
                 previous.connection_epoch,
                 session.next_sequence,
-                ArpgCommand::PrimaryAttack
+                ArpgCommand::PrimaryAttack { aim: None }
             ),
             Err(RuntimeError::StaleConnection)
         );
         session.advance_to(base + apply);
-        assert_eq!(session.send(ArpgCommand::PrimaryAttack), Delivery::Applied);
+        assert_eq!(
+            session.send(ArpgCommand::PrimaryAttack { aim: None }),
+            Delivery::Applied
+        );
         assert_eq!(
             session.action(),
             expected,
@@ -694,7 +706,10 @@ fn a_reconnect_does_not_extend_the_counter_window() {
 fn a_reconnect_does_not_restore_a_spent_counter() {
     let (mut session, opportunity) = Session::blocked(Dedicated::new());
     let counter_sequence = session.next_sequence;
-    assert_eq!(session.send(ArpgCommand::PrimaryAttack), Delivery::Applied);
+    assert_eq!(
+        session.send(ArpgCommand::PrimaryAttack { aim: None }),
+        Delivery::Applied
+    );
     assert_eq!(session.action(), Some(ActionKind::Counter));
     session.advance();
     session.authority.disconnect();
@@ -708,20 +723,23 @@ fn a_reconnect_does_not_restore_a_spent_counter() {
     // The runtime's watermark survives the reconnect: replaying the counter is stale, from
     // either connection.
     assert_eq!(
-        session.deliver(counter_sequence, ArpgCommand::PrimaryAttack),
+        session.deliver(counter_sequence, ArpgCommand::PrimaryAttack { aim: None }),
         Delivery::Stale
     );
     assert_eq!(
         session.authority.submit(
             previous.connection_epoch,
             counter_sequence,
-            ArpgCommand::PrimaryAttack
+            ArpgCommand::PrimaryAttack { aim: None }
         ),
         Err(RuntimeError::StaleConnection)
     );
     session.finish_action();
     assert!(session.authority.tick() < opportunity.expires_at_tick);
-    assert_eq!(session.send(ArpgCommand::PrimaryAttack), Delivery::Applied);
+    assert_eq!(
+        session.send(ArpgCommand::PrimaryAttack { aim: None }),
+        Delivery::Applied
+    );
     assert_eq!(
         session.action(),
         Some(ActionKind::PrimaryAttack),

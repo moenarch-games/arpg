@@ -73,8 +73,12 @@ fn run_journey() -> (arpg_core::ArpgSnapshot, u64, OperationWork) {
             for player_id in 1..=4 {
                 let index = usize::try_from(player_id - 1).expect("bounded player index");
                 game.apply_command(
-                    PlayerCommand::new(player_id, sequences[index], ArpgCommand::PrimaryAttack)
-                        .expect("attack command sequence is valid"),
+                    PlayerCommand::new(
+                        player_id,
+                        sequences[index],
+                        ArpgCommand::PrimaryAttack { aim: None },
+                    )
+                    .expect("attack command sequence is valid"),
                 )
                 .expect("attack command must remain valid");
                 sequences[index] += 1;

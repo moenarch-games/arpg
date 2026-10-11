@@ -448,7 +448,7 @@ fn a_frontal_sword_swing_meets_the_raised_shield_and_spends_its_guard() {
     arena.arrange(values.light_reach - 1, None);
     let before = arena.defender();
     assert_eq!(before.guard, RAISED);
-    arena.command(1, ArpgCommand::PrimaryAttack);
+    arena.command(1, ArpgCommand::PrimaryAttack { aim: None });
     let mut results = Vec::new();
     for _ in 0..20 {
         results.extend(arena.tick(1));

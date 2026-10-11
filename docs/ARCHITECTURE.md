@@ -97,6 +97,8 @@ Dedicated commands use two `game-server` command lanes ([game-server ADR 0008](h
 
 Ordering holds only within a lane. A one-shot and a held datagram may reach the authority in either order. Replay and recovery record the order that actually happened.
 
+The one-shots that commit a direction therefore carry it (#156, protocol v20). `primaryAttack`, `secondaryAttack` and `releaseBow` take an optional `aim: [x, z]`, which the browser fills from its current aim in every mode. `arpg-core` validates it exactly like `setAim` (non-zero, components within ±`AIM_COMPONENT_LIMIT`; an invalid aim rejects the whole command) and applies it as the held aim before the action, in the same command. A lost or late `setAim` datagram then cannot steer a shot or strike. An absent or `null` aim keeps the held aim in charge, and a target lock still takes precedence over aim intent. A lost datagram that *clears* the aim is still repaired only by the held-input refresh.
+
 Failures:
 
 - A **rejected** ack means the simulation refused that command with a `game-server` `command_rejected`. It is final for that attempt, it is reported as a status message, and the session continues. ARPG does not reject one-shots today: a command that cannot take effect, such as a weapon change during an action, is accepted and does nothing.

@@ -1121,7 +1121,7 @@ mod tests {
         for _ in 0..10 {
             game.advance_tick().unwrap();
         }
-        send(&mut game, ArpgCommand::ReleaseBow);
+        send(&mut game, ArpgCommand::ReleaseBow { aim: None });
         assert_eq!(
             game.players[&1].action.map(|action| action.kind),
             Some(crate::ActionKind::Shoot)
@@ -1188,7 +1188,7 @@ mod tests {
                     steps.push(Err(spawn("monster.skirmisher", 150, 0)));
                     steps.push(Ok(ArpgCommand::CycleTarget));
                 }
-                20 => steps.push(Ok(ArpgCommand::PrimaryAttack)),
+                20 => steps.push(Ok(ArpgCommand::PrimaryAttack { aim: None })),
                 50 => {
                     steps.push(Err(WorkbenchOperation::ResetArrangement));
                     steps.push(Ok(ArpgCommand::SetMovement { x: 1, z: 0 }));

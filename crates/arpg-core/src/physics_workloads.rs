@@ -175,8 +175,10 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
         }
         Case::Corner if tick == 0 => Some(ArpgCommand::SetMovement { x: -1, z: -1 }),
         Case::Door if tick == 0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
-        Case::Combat if tick < 64 && tick.is_multiple_of(16) => Some(ArpgCommand::PrimaryAttack),
-        Case::Combat if tick == 64 => Some(ArpgCommand::SecondaryAttack),
+        Case::Combat if tick < 64 && tick.is_multiple_of(16) => {
+            Some(ArpgCommand::PrimaryAttack { aim: None })
+        }
+        Case::Combat if tick == 64 => Some(ArpgCommand::SecondaryAttack { aim: None }),
         Case::Combat if tick == 96 => Some(ArpgCommand::Interact),
         // The target walks a square with pauses, crossing navigation cells as it goes.
         Case::Chase if tick.is_multiple_of(15) => {
@@ -193,7 +195,7 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
             Some(ArpgCommand::SetMovement { x, z })
         }
         Case::Crowd if tick.is_multiple_of(24) => Some(if tick < 96 {
-            ArpgCommand::PrimaryAttack
+            ArpgCommand::PrimaryAttack { aim: None }
         } else {
             ArpgCommand::Interact
         }),

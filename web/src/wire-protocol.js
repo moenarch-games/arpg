@@ -1,6 +1,6 @@
-// Browser projection of the arpg-protocol v19 envelope. This adapter validates
+// Browser projection of the arpg-protocol v20 envelope. This adapter validates
 // only data consumed by presentation; gameplay rules remain in arpg-core.
-export const PROTOCOL_VERSION = 19;
+export const PROTOCOL_VERSION = 20;
 const MAX_SNAPSHOT_CHARACTERS = 65_535;
 const integer = (value) => Number.isSafeInteger(value);
 const nonNegative = (value) => integer(value) && value >= 0;

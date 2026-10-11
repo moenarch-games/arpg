@@ -277,9 +277,9 @@ fn scripted(tick: u32) -> Option<ArpgCommand> {
     match tick {
         0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
         14 => Some(ArpgCommand::SetMovement { x: 0, z: 1 }),
-        22 => Some(ArpgCommand::PrimaryAttack),
+        22 => Some(ArpgCommand::PrimaryAttack { aim: None }),
         30 => Some(ArpgCommand::SetMovement { x: -1, z: 1 }),
-        41 => Some(ArpgCommand::SecondaryAttack),
+        41 => Some(ArpgCommand::SecondaryAttack { aim: None }),
         50 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
         55 => Some(ArpgCommand::Interact),
         _ => None,
