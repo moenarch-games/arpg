@@ -202,7 +202,13 @@ or replayed command extend a window or earn a second counter without a new block
 The bundle is compiled into `arpg-core` (`include_str!`), so the Wasm build and the dedicated
 server always ship the bundle they were built with. A game created or restored with another
 bundle (`new_with_content`, `from_save_state_with_content`) runs that bundle instead; the
-process resolves each distinct bundle once and keeps it, so repeated games share it. Its **content revision** is an FNV-1a
+bundle is put in canonical order first, so source order never changes its revision or
+identity. The process resolves each distinct bundle once and keeps it for its lifetime, so
+repeated games share it; at most `MAX_LOADED_CONTENT_BUNDLES` (16) bundles besides the
+built-in one are kept, and a further distinct bundle is refused with an error. A bundle
+whose revision already stands for a different bundle (the built-in one included) is refused,
+and `from_save_state_with_content` refuses a save from another revision before it resolves
+anything. Its **content revision** is an FNV-1a
 hash of the canonical bundle:
 
 - snapshots publish it as `contentRevision`, and saves record it; a save from another

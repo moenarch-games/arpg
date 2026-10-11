@@ -14,8 +14,8 @@ use content::{
     MonsterDefinition, StrikeDefinition, content,
 };
 pub use content::{
-    CONTENT_FORMAT_VERSION, ContentBundle, ContentError, MAX_ENCOUNTER_SPAWNS, base_bundle,
-    content_revision,
+    CONTENT_FORMAT_VERSION, ContentBundle, ContentError, MAX_ENCOUNTER_SPAWNS,
+    MAX_LOADED_CONTENT_BUNDLES, base_bundle, content_revision,
 };
 use navigation::{Cell, FieldRoute, FieldWork, NAV_CELL_SIZE, Rect, RoomGrid, TargetField, isqrt};
 pub use workbench::{
@@ -1913,15 +1913,18 @@ impl ArpgGame {
     }
 
     fn load_content(bundle: ContentBundle) -> Result<&'static Content, GameError> {
-        content::load(bundle).map_err(|errors| {
-            GameError::new(format!(
+        content::load(bundle).map_err(|error| match error {
+            content::LoadError::Invalid(errors) => GameError::new(format!(
                 "content bundle is invalid: {}",
                 errors
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join("; ")
-            ))
+            )),
+            content::LoadError::Refused(reason) => {
+                GameError::new(format!("content bundle refused: {reason}"))
+            }
         })
     }
 
@@ -2199,6 +2202,14 @@ impl ArpgGame {
         save: ArpgSaveState,
         bundle: ContentBundle,
     ) -> Result<Self, GameError> {
+        // Refuse a save from another bundle before anything is resolved and retained.
+        let revision = bundle.revision();
+        if save.content_revision != revision {
+            return Err(GameError::new(format!(
+                "save was made with content revision {}; this bundle is {revision}",
+                save.content_revision
+            )));
+        }
         Self::restore(save, Self::load_content(bundle)?)
     }
 
@@ -10129,6 +10140,21 @@ mod tests {
         assert!(ArpgGame::from_save_state(game.save_state().unwrap()).is_ok());
         game.monsters[0].stagger_ticks_remaining = content().max_stagger_ticks() + 1;
         assert!(ArpgGame::from_save_state(game.save_state().unwrap()).is_err());
+    }
+
+    #[test]
+    fn a_save_from_another_bundle_is_refused_before_that_bundle_is_retained() {
+        let mut game = ArpgGame::new_with_seed(7).unwrap();
+        game.add_player(1).unwrap();
+        let save = game.save_state().unwrap();
+        let mut other = base_bundle().clone();
+        other.rewards[0].gold = 31_337;
+        let revision = other.revision();
+        let Err(error) = ArpgGame::from_save_state_with_content(save, other) else {
+            panic!("a built-in save does not restore with another bundle");
+        };
+        assert!(error.message().contains("content revision"), "{error}");
+        assert!(!content::is_loaded(&revision), "nothing was retained");
     }
 
     #[test]

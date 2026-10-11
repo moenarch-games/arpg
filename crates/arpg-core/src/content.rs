@@ -504,8 +504,22 @@ impl ContentBundle {
         });
     }
 
-    /// FNV-1a over the canonical JSON: a stable identity for saves and sessions.
+    /// FNV-1a over the canonical JSON: a stable identity for saves and sessions. Source
+    /// order of the id-ordered collections never changes it, even for a bundle built or
+    /// edited in Rust rather than parsed with [`ContentBundle::from_json`].
     pub fn revision(&self) -> String {
+        let mut canonical = self.clone();
+        canonical.canonicalize();
+        canonical.hash()
+    }
+
+    /// This bundle with every id-ordered collection in canonical order.
+    pub(crate) fn into_canonical(mut self) -> Self {
+        self.canonicalize();
+        self
+    }
+
+    fn hash(&self) -> String {
         let canonical = serde_json::to_vec(self).expect("bundle serialises");
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in canonical {
@@ -1045,11 +1059,66 @@ pub(crate) fn validate_tuning(
 
 static BASE: OnceLock<&'static Content> = OnceLock::new();
 
-/// Every other bundle an authority has run in this process, by revision. Validated content
-/// is immutable and published ids are borrowed for the process lifetime (strike events
-/// carry `&'static str`), so each distinct bundle is resolved once and then shared by every
-/// game that runs it; loading the same bundle again allocates nothing.
-static LOADED: Mutex<BTreeMap<String, &'static Content>> = Mutex::new(BTreeMap::new());
+/// Most distinct bundles besides the built-in one a process resolves. Validated content is
+/// immutable and published ids are borrowed for the process lifetime (strike events carry
+/// `&'static str`), so a resolved bundle is never freed; this bound keeps that retention
+/// finite. Loading a bundle that is already resolved does not count again.
+pub const MAX_LOADED_CONTENT_BUNDLES: usize = 16;
+
+/// Every other bundle an authority has run in this process, by revision: each distinct
+/// bundle is resolved once and then shared by every game that runs it.
+static LOADED: Mutex<Registry> = Mutex::new(Registry {
+    entries: BTreeMap::new(),
+});
+
+/// Why a bundle was not loaded.
+#[derive(Debug)]
+pub(crate) enum LoadError {
+    /// The bundle violates its invariants.
+    Invalid(Vec<ContentError>),
+    /// A valid bundle the process will not resolve (revision collision or capacity).
+    Refused(String),
+}
+
+struct Registry {
+    entries: BTreeMap<String, &'static Content>,
+}
+
+impl Registry {
+    /// Resolves the canonical `bundle` with `revision`, reusing an identical earlier
+    /// resolution. A revision already standing for a different bundle (the built-in one
+    /// included) is refused, as is a new bundle beyond the capacity. Nothing is retained
+    /// unless the bundle is valid and admitted.
+    fn admit(
+        &mut self,
+        base: &'static Content,
+        bundle: ContentBundle,
+        revision: String,
+    ) -> Result<&'static Content, LoadError> {
+        let known = if revision == base.revision {
+            Some(base)
+        } else {
+            self.entries.get(&revision).copied()
+        };
+        if let Some(content) = known {
+            if *content.bundle == bundle {
+                return Ok(content);
+            }
+            return Err(LoadError::Refused(format!(
+                "content revision {revision} already identifies a different bundle in this process"
+            )));
+        }
+        bundle.check().map_err(LoadError::Invalid)?;
+        if self.entries.len() >= MAX_LOADED_CONTENT_BUNDLES {
+            return Err(LoadError::Refused(format!(
+                "this process already runs {MAX_LOADED_CONTENT_BUNDLES} content bundles besides the built-in one; no further bundle is loaded"
+            )));
+        }
+        let content = resolve_forever(bundle).map_err(LoadError::Invalid)?;
+        self.entries.insert(revision, content);
+        Ok(content)
+    }
+}
 
 /// Validates `bundle` and resolves it for the rest of the process.
 fn resolve_forever(bundle: ContentBundle) -> Result<&'static Content, Vec<ContentError>> {
@@ -1070,31 +1139,25 @@ fn base() -> &'static Content {
     })
 }
 
-/// The validated content for `bundle`: the built-in content when it is the built-in
-/// bundle, otherwise the shared resolution of that bundle. An invalid bundle reports every
-/// violation.
-pub(crate) fn load(bundle: ContentBundle) -> Result<&'static Content, Vec<ContentError>> {
-    if bundle == *base_bundle() {
-        return Ok(base());
-    }
-    let revision = bundle.revision();
-    let mut loaded = LOADED
+/// The validated content for `bundle` in canonical order: the built-in content when it is
+/// the built-in bundle, otherwise the shared resolution of that bundle.
+pub(crate) fn load(bundle: ContentBundle) -> Result<&'static Content, LoadError> {
+    let bundle = bundle.into_canonical();
+    let revision = bundle.hash();
+    LOADED
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(&content) = loaded.get(&revision) {
-        if *content.bundle == bundle {
-            return Ok(content);
-        }
-        return Err(vec![ContentError {
-            path: "$".into(),
-            message: format!(
-                "content revision {revision} already identifies a different bundle in this process"
-            ),
-        }]);
-    }
-    let content = resolve_forever(bundle)?;
-    loaded.insert(revision, content);
-    Ok(content)
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .admit(base(), bundle, revision)
+}
+
+/// Whether a bundle with `revision` is resolved (besides the built-in one).
+#[cfg(test)]
+pub(crate) fn is_loaded(revision: &str) -> bool {
+    LOADED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entries
+        .contains_key(revision)
 }
 
 /// The validated built-in content every authority runs unless it was given another bundle.
@@ -1125,6 +1188,95 @@ mod tests {
             .into_iter()
             .map(|error| error.to_string())
             .collect()
+    }
+
+    /// The built-in bundle with its one reward paying `gold`: a distinct, valid bundle.
+    fn paying(gold: u32) -> ContentBundle {
+        let mut bundle = base_bundle().clone();
+        bundle.rewards[0].gold = gold;
+        bundle
+    }
+
+    fn admitted(
+        registry: &mut Registry,
+        bundle: ContentBundle,
+    ) -> Result<&'static Content, LoadError> {
+        let revision = bundle.revision();
+        registry.admit(base(), bundle.into_canonical(), revision)
+    }
+
+    #[test]
+    fn a_bundle_claiming_the_built_in_revision_is_refused_unless_it_is_the_built_in_bundle() {
+        let mut registry = Registry {
+            entries: BTreeMap::new(),
+        };
+        // A colliding revision (forced here) must not silently run the built-in content.
+        let collision = registry.admit(base(), paying(26), content_revision().to_owned());
+        assert!(
+            matches!(&collision, Err(LoadError::Refused(reason)) if reason.contains("different bundle")),
+            "{collision:?}"
+        );
+        assert!(registry.entries.is_empty());
+        // The built-in bundle itself reuses the built-in content.
+        let same = registry
+            .admit(base(), base_bundle().clone(), content_revision().to_owned())
+            .unwrap();
+        assert!(std::ptr::eq(same, base()));
+        assert!(std::ptr::eq(load(base_bundle().clone()).unwrap(), base()));
+        assert!(registry.entries.is_empty());
+    }
+
+    #[test]
+    fn source_order_never_changes_a_loaded_bundle_or_its_revision() {
+        let canonical = paying(27);
+        let mut shuffled = canonical.clone();
+        shuffled.encounters.reverse();
+        shuffled.rewards.push(RewardData {
+            id: "reward.aaa".into(),
+            kind: RewardKind::Chest,
+            gold: 1,
+        });
+        shuffled.rewards.reverse();
+        shuffled.encounters[0].reward = "reward.aaa".into();
+        let mut reordered = shuffled.clone();
+        reordered.encounters.reverse();
+        reordered.rewards.reverse();
+        reordered.strikes.reverse();
+        reordered.monsters.reverse();
+        assert_ne!(reordered, shuffled, "source order differs");
+        assert_eq!(reordered.revision(), shuffled.revision());
+        let first = load(shuffled.clone()).unwrap();
+        let second = load(reordered).unwrap();
+        assert!(std::ptr::eq(first, second), "one registry entry");
+        assert_eq!(first.revision, shuffled.revision());
+        assert_eq!(*first.bundle, shuffled.into_canonical());
+    }
+
+    #[test]
+    fn the_registry_is_bounded_and_reuses_loaded_bundles() {
+        let mut registry = Registry {
+            entries: BTreeMap::new(),
+        };
+        let mut loaded = Vec::new();
+        for gold in 1..=u32::try_from(MAX_LOADED_CONTENT_BUNDLES).unwrap() {
+            loaded.push(admitted(&mut registry, paying(1_000 + gold)).unwrap());
+        }
+        // An invalid bundle is reported as invalid and never retained.
+        let invalid = admitted(&mut registry, paying(0));
+        assert!(matches!(invalid, Err(LoadError::Invalid(_))), "{invalid:?}");
+        // A new distinct bundle beyond the capacity is refused …
+        let over = admitted(&mut registry, paying(2_000));
+        assert!(
+            matches!(&over, Err(LoadError::Refused(reason)) if reason.contains("16 content bundles")),
+            "{over:?}"
+        );
+        assert_eq!(registry.entries.len(), MAX_LOADED_CONTENT_BUNDLES);
+        // … while an identical bundle and the built-in one are still served.
+        let again = admitted(&mut registry, paying(1_001)).unwrap();
+        assert!(std::ptr::eq(again, loaded[0]));
+        let built_in = admitted(&mut registry, base_bundle().clone()).unwrap();
+        assert!(std::ptr::eq(built_in, base()));
+        assert_eq!(registry.entries.len(), MAX_LOADED_CONTENT_BUNDLES);
     }
 
     #[test]
