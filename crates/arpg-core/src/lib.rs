@@ -25,11 +25,15 @@ use workbench::{Tuning, Workbench};
 
 mod content;
 mod navigation;
+mod operation_work;
 #[cfg(test)]
 mod physics_work;
 #[cfg(test)]
 mod physics_workloads;
 mod workbench;
+use operation_work::{Counter, count};
+#[cfg(feature = "operation-work")]
+pub use operation_work::{OperationWork, WorkFixture, contract::check_work_contract};
 
 pub type DoorId = u64;
 pub type GroundLootId = u64;
@@ -4574,9 +4578,13 @@ impl ArpgGame {
     ) -> Result<Engagement, GameError> {
         let definition = monster.definition();
         let aggro_sq = definition.aggro_range * definition.aggro_range;
+        count(Counter::MonsterDecision, 1);
         let in_aggro_range = targets
             .iter()
-            .filter(|&&(_, room_id, _)| room_id == monster.room_id)
+            .filter(|&&(_, room_id, _)| {
+                count(Counter::MonsterTargetEvaluation, 1);
+                room_id == monster.room_id
+            })
             .map(|&(player_id, _, position)| {
                 (
                     player_id,
@@ -4951,9 +4959,11 @@ impl AuthoritativeGame for ArpgGame {
         lane: CommandLane,
         command: PlayerCommand<Self::Command>,
     ) -> Result<(), GameError> {
+        count(Counter::CommandBookkeeping, 1);
         if !self.players.contains_key(&command.player_id) {
             return Err(GameError::new("command references an unknown player"));
         }
+        count(Counter::CommandBookkeeping, 1);
         let last_sequence = self
             .lane_sequences(lane)
             .get(&command.player_id)
@@ -5095,6 +5105,7 @@ impl AuthoritativeGame for ArpgGame {
                     .draw_ticks = None;
             }
         }
+        count(Counter::CommandBookkeeping, 1);
         self.lane_sequences_mut(lane)
             .insert(command.player_id, command.sequence);
         Ok(())
@@ -5180,6 +5191,7 @@ impl AuthoritativeGame for ArpgGame {
     }
 
     fn snapshot(&self) -> Result<Self::Snapshot, GameError> {
+        operation_work::snapshot_requested(self);
         let players = self
             .players
             .iter()

@@ -22,9 +22,12 @@
         "--release",
         "-p",
         "arpg-core",
+        "--features",
+        "operation-work",
         "--example",
         "performance_smoke"
-      ]
+      ],
+      "performance:work": ["python3", "scripts/collect_work_evidence.py"]
     }
   },
   "merge": {

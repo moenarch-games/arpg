@@ -12,5 +12,19 @@ physics-engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+[features]
+# Deterministic operation work counters and scaled fixtures for the performance contract
+# (`.performance/contract.json` operations). Off in product builds, where the counter hooks
+# compile to nothing.
+operation-work = []
+
+[[example]]
+name = "performance_smoke"
+required-features = ["operation-work"]
+
+[[test]]
+name = "operation_work"
+required-features = ["operation-work"]
+
 [lints]
 workspace = true

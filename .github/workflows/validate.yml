@@ -99,6 +99,24 @@ jobs:
           cp .artifacts/performance-evidence/arpg-product-composition.json \
             .performance-evidence-contract/fixtures/valid/arpg-product-composition.json
           python .performance-evidence-contract/scripts/validate_schema.py
+      - name: Collect operation work evidence
+        run: python scripts/collect_work_evidence.py --output .artifacts/performance-evidence/arpg-operation-work.json > /dev/null
+      - name: Check out coding-tooling work-complexity verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: moritzbrantner/coding-tooling
+          ref: d499b7f4f575e81da060a4d4f0a2eddf1e7c021a
+          path: .coding-tooling-verifier
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install coding-tooling verifier
+        working-directory: .coding-tooling-verifier
+        run: bun install --frozen-lockfile
+      - name: Verify operation work bounds
+        run: |
+          bun .coding-tooling-verifier/src/router.ts performance work --root . \
+            --evidence .artifacts/performance-evidence/arpg-operation-work.json --json
       - name: Upload performance evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -118,4 +136,4 @@ jobs:
         with:
           toolchain: 1.98.1
       - name: Enforce the blocking performance budget
-        run: cargo run --locked --release -p arpg-core --example performance_smoke
+        run: cargo run --locked --release -p arpg-core --features operation-work --example performance_smoke
