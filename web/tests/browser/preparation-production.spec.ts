@@ -133,6 +133,13 @@ test("production pending core prevents entry and cancel cannot publish late play
     await expect(page.getByLabel("ARPG game world", { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: /cancel|back/i }).click();
     release();
+    // The real runtime publishes Ready only after WASM initialization settles.
+    // Its pending activation runs in that same completion callback, before React
+    // can render this returned selection surface. A released HTTP route alone
+    // does not establish cancellation of a late activation.
+    await expect(
+      page.getByRole("main", { name: "Character selection", exact: true }).getByRole("status"),
+    ).toHaveText("Ready");
     await expect(preparation(page)).toBeHidden();
     await expect(page.getByLabel("ARPG game world", { exact: true })).toHaveCount(0);
     await page.reload();

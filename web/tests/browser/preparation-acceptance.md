@@ -27,6 +27,14 @@ starts, disposal and in-flight ownership. Run the full applicable suite because
 no complete affected-test map is available. These checks do not establish asset
 identity or visual quality merely because text, a canvas or shield state passes.
 
+After cancellation, the test waits for the returned Character selection surface's
+actual `Ready` status before checking absence of play or reloading. The existing
+runtime sets readiness and invokes any pending activation in the same WASM-load
+completion callback. Releasing a delayed HTTP request alone does not establish
+that completion. On unchanged baseline `3e19b88`, the focused test still fails
+earlier because preparation is absent; the strengthened post-cancellation
+assertions remain unexecuted rather than claimed verified.
+
 ## Unresolved acceptance prerequisites — fail closed
 
 Baseline renders primitive player/weapon nodes in `src/scene-frame.ts`. It has no
@@ -37,7 +45,9 @@ or bless new box arrangements to make this contract green.
 
 - ARPG #55 owns the approved humanoid/weapon bundle, shared geometry/skin/socket
   integration and same preview/in-world identity. Existing upstream ownership is
-  asset-tooling #104/#105/#20 and 3d-lab #62. #56 owns animation integration.
+  asset-tooling #104/#105/#20 and 3d-lab #87. Closed #62 is private teaching
+  material rather than the required public imported-character consumer. #56
+  owns animation integration.
 - ARPG #72 owns approved environment kit/loading and retained scene integration,
   using asset-tooling #106. Shared renderer capabilities remain owned by 3d-lab.
 - ARPG #60 owns navigation/lifecycle. Core/physics/input owners remain as stated
