@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::content::{BowData, GuardData, content, validate_tuning};
+use crate::content::{BowData, Content, GuardData, validate_tuning};
 use crate::{
     ArpgGame, GameError, MONSTER_BODY_HALF_EXTENTS, MonsterState, PLAYER_HALF_EXTENTS, PLAYER_Y,
     RoomEncounterState, RoomId, RoomSnapshot, Vec3i, WALL_HALF_THICKNESS, vec_to_array,
@@ -144,8 +144,7 @@ pub(crate) struct Tuning {
 }
 
 impl Tuning {
-    pub fn from_content() -> Self {
-        let content = content();
+    pub fn from_content(content: &Content) -> Self {
         Self {
             counter_window_ticks: content.counter_window_ticks,
             guard: content.guard,
@@ -332,10 +331,11 @@ impl ArpgGame {
         definition: &str,
         [offset_x, offset_z]: [i32; 2],
     ) -> Result<(), GameError> {
-        let definition_index = content()
+        let definition = self
+            .content
             .monsters
             .iter()
-            .position(|candidate| candidate.id == definition)
+            .find(|candidate| candidate.id == definition)
             .ok_or_else(|| GameError::new(format!("unknown monster definition {definition:?}")))?;
         let bounds = -MAX_SPAWN_OFFSET..=MAX_SPAWN_OFFSET;
         if !bounds.contains(&offset_x) || !bounds.contains(&offset_z) {
@@ -403,7 +403,7 @@ impl ArpgGame {
         // Ids only grow, so pushing keeps the monster list in id order.
         self.monsters.push(MonsterState::new(
             id,
-            definition_index,
+            definition,
             room_id,
             position,
             self.tuning.guard.max_points,
@@ -609,6 +609,7 @@ fn bodies_overlap(left: Vec3i, left_half: Vec3i, right: Vec3i, right_half: Vec3i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::content;
     use crate::{
         ArpgCommand, AuthoritativeGame, GuardPhase, PlayerCommand, Reproduction,
         ReproductionRecorder, ScenarioId, replay_reproduction,

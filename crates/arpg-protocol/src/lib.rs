@@ -6,7 +6,7 @@ use std::fmt;
 use arpg_core::{ArpgCommand, ArpgSnapshot};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u16 = 18;
+pub const PROTOCOL_VERSION: u16 = 19;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProtocolError {
@@ -100,7 +100,7 @@ mod tests {
         let command = ArpgCommand::SetMovement { x: -1, z: 1 };
         let bytes = protocol.encode_command(&command).unwrap();
         let encoded = String::from_utf8(bytes.clone()).unwrap();
-        assert!(encoded.contains("\"protocolVersion\":18"));
+        assert!(encoded.contains("\"protocolVersion\":19"));
         assert_eq!(protocol.decode_command(&bytes).unwrap(), command);
 
         let guard = ArpgCommand::SetGuard { raised: true };
@@ -150,7 +150,7 @@ mod tests {
         let decoded = protocol.decode_snapshot(&bytes).unwrap();
         assert_eq!(decoded, snapshot);
         assert_eq!(decoded.run_seed, 0xCAFE_BABE);
-        assert_eq!(decoded.schema_version, 20);
+        assert_eq!(decoded.schema_version, 21);
     }
 
     #[test]
@@ -180,6 +180,19 @@ mod tests {
         assert!(dormant["guard"].is_null());
         assert_eq!(dormant["guardPoints"], 0);
         assert_eq!(dormant["maxGuardPoints"], 0);
+        assert_eq!(JsonProtocol.decode_snapshot(&bytes).unwrap(), snapshot);
+    }
+
+    #[test]
+    fn rooms_publish_their_encounter_definition() {
+        let snapshot = ArpgGame::new_with_seed(7).unwrap().snapshot().unwrap();
+        let bytes = JsonProtocol.encode_snapshot(&snapshot).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let rooms = value["payload"]["rooms"].as_array().unwrap();
+        let start = rooms.iter().find(|room| room["kind"] == "start").unwrap();
+        assert!(start["encounter"].is_null());
+        let combat = rooms.iter().find(|room| room["id"] == 2).unwrap();
+        assert_eq!(combat["encounter"], "encounter.brute");
         assert_eq!(JsonProtocol.decode_snapshot(&bytes).unwrap(), snapshot);
     }
 }

@@ -174,7 +174,7 @@ impl Arena {
             if found_defender {
                 "no generated dungeon leaves room to arrange around a defender"
             } else {
-                "base content must place monster.defender in generated dungeons (roomMonsters)"
+                "base content must place monster.defender in generated dungeons (roomEncounters)"
             }
         );
     }

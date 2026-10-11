@@ -5,7 +5,7 @@ Gameplay tuning lives in one typed, versioned bundle:
 validated by [`content.rs`](../crates/arpg-core/src/content.rs). Definitions *select*
 supported behaviour; executable rules stay in Rust. Appearance and audio never live here.
 
-## What the bundle holds (format 7)
+## What the bundle holds (format 8)
 
 | Section | Contents |
 | --- | --- |
@@ -14,15 +14,73 @@ supported behaviour; executable rules stay in Rust. Appearance and audio never l
 | `combos` | Light/heavy transitions between striking actions and their input windows. |
 | `counterWindowTicks` | How long a successful block keeps the counter open. |
 | `monsters` | Enemy definitions: health, strike, phase ticks, damage, experience, pursuit speed, aggro/leash/switch/reacquire/separation, and the role parameters `retreatRange`, `projectile` and `shield` (see below). |
-| `roomMonsters` | The monster definition of each combat room, in generation order (repeats when rooms outnumber entries). |
+| `encounters` | Room encounters: a bounded `spawnGroup`, an `activation` and a `completion` rule, and the `reward` clearing it unlocks (see below). |
+| `rewards` | Rewards encounters refer to: `kind` (`chest`) and the `gold` it pays. |
+| `roomEncounters` | The encounter of each combat room, in generation order (repeats when rooms outnumber entries). |
 | `guard` | Raise ticks, guard points and regeneration, block reaction, guard-break ticks. |
 | `bow` | Draw thresholds, arrow speed/damage range, lifetime, stagger and live-arrow cap. |
 | `progression` | Experience per level and the base/per-level health and attack damage. |
-| `loot` | Gold dropped by a defeated monster and held by a reward chest. |
+| `loot` | `monsterGold`: gold dropped by a defeated monster. |
 | `targeting` | Target-lock acquisition range and the larger break range that keeps a held lock (stickiness). |
 
 Ids are 1–64 ASCII characters, unique per collection and published to clients (strike
-events, `MonsterSnapshot.definition`), so presentation can key appearance and audio by them.
+events, `MonsterSnapshot.definition`, `RoomSnapshot.encounter`), so presentation can key
+appearance and audio by them.
+
+## Room encounters
+
+Every combat room runs one encounter definition; the start room runs none. An encounter
+keeps the room lifecycle **dormant → active → cleared**: its `activation` turns a dormant
+room active (and locks the room's doors), its `completion` clears an active room (and
+unlocks them), and its reward becomes available once the room is cleared.
+
+```json
+"encounters": [
+  { "id": "encounter.pack",
+    "spawnGroup": [ { "monster": "monster.skirmisher", "count": 2 },
+                    { "monster": "monster.archer", "count": 1 } ],
+    "activation": "playerEntersRoom",
+    "completion": "spawnGroupDefeated",
+    "reward": "reward.hoard" }
+],
+"rewards": [ { "id": "reward.hoard", "kind": "chest", "gold": 70 } ],
+"roomEncounters": ["encounter.pack", "encounter.brute"]
+```
+
+| Field | Meaning |
+| --- | --- |
+| `spawnGroup` | Entries in authored order, each spawning `count` monsters of `monster` when the dungeon is generated. At most `MAX_ENCOUNTER_SPAWNS` (8) members in total, and each monster listed once (raise its `count` instead). |
+| `activation` | `playerEntersRoom`: a dormant room becomes active when a player's body is inside it. |
+| `completion` | `spawnGroupDefeated`: an active room is cleared once none of its monsters lives. A room entered after its group was already defeated clears at once. |
+| `reward` | A `rewards` id. `kind: "chest"` is the room's chest: locked until the room is cleared, opened once, paying `gold`. Opened chests are saved. |
+
+The vocabularies are closed: each value selects a rule implemented in Rust, and an
+unknown value fails to parse. A new kind of activation, completion or reward is a Rust
+change first.
+
+Spawning is deterministic. Monster ids are assigned 1, 2, … over the combat rooms in
+generation order and over each group's members in order. Each member draws its position
+from the dungeon RNG exactly as a lone room monster always has (so a one-member group
+generates the same dungeon as before encounters existed); a draw that would overlap an
+earlier member or a fixed collider is redrawn a bounded number of times and then falls back
+to the first free spot of a fixed grid over the room's spawn area.
+
+### Authoring an encounter
+
+1. Define its reward in `rewards` (or reuse one such as `reward.roomChest`).
+2. Define the encounter in `encounters`: the monsters of its `spawnGroup`, the
+   `playerEntersRoom` activation, the `spawnGroupDefeated` completion and the reward id.
+3. Put its id into `roomEncounters` where it should run. Changing the order assigns
+   different rooms, so it is a different bundle (revision).
+4. Run the validation below. Every encounter and reward must be referenced: an unused
+   definition is reported rather than silently shipped.
+
+Headless tests and tools can run a bundle without replacing the built-in one:
+`ContentBundle::from_json(json)?.check()` reports every violation, and
+`ArpgGame::new_with_content(bundle, seed)` / `ArpgGame::from_save_state_with_content(save,
+bundle)` run the ordinary generated dungeon with it (an invalid bundle is refused). See
+[`encounter_definitions.rs`](../crates/arpg-core/tests/encounter_definitions.rs) for an
+independently authored fixture bundle exercised that way.
 
 ## Enemy roles
 
@@ -47,10 +105,11 @@ Example: a new enemy.
 
 1. Add its strike to `strikes` (monster strikes must reach at least 105 units so pursuit can
    close to striking distance) and its entry to `monsters`.
-2. Put its id into `roomMonsters` where it should spawn. Nothing else changes: transport,
-   renderer and physics consume it through the generic monster path.
-3. Keep source order irrelevant: `strikes`, `actions`, `combos` and `monsters` are sorted by
-   id on load; only `roomMonsters` is authored order.
+2. Put it into an encounter's `spawnGroup` (see above) where it should spawn. Nothing else
+   changes: transport, renderer and physics consume it through the generic monster path.
+3. Keep source order irrelevant: `strikes`, `actions`, `combos`, `monsters`, `encounters`
+   and `rewards` are sorted by id on load; only `roomEncounters` and each `spawnGroup` are
+   authored order.
 
 A new *kind* of behaviour (a new `ActionKind`, a new attack delivery) is a Rust change
 first; content can then select it.
@@ -59,7 +118,8 @@ first; content can then select it.
 
 Loading validates every reference and numeric bound and reports **all** violations with the
 definition path, for example `monsters[1] monster.skirmisher: leashRange must exceed
-aggroRange`. The built-in bundle is validated on first use, and the tests fail on any
+aggroRange` or `encounters[0] encounter.pack: spawnGroup[1] references an unknown monster
+monster.missing`. The built-in bundle is validated on first use, and the tests fail on any
 violation:
 
 ```sh
@@ -140,7 +200,18 @@ or replayed command extend a window or earn a second counter without a new block
 ## Packaging and compatibility
 
 The bundle is compiled into `arpg-core` (`include_str!`), so the Wasm build and the dedicated
-server always ship the bundle they were built with. Its **content revision** is an FNV-1a
+server always ship the bundle they were built with. A game created or restored with another
+bundle (`new_with_content`, `from_save_state_with_content`) runs that bundle instead; the
+bundle is put in canonical order first, so source order never changes its revision or
+identity. The process resolves each distinct bundle once and keeps it for its lifetime, so
+repeated games share it; at most `MAX_LOADED_CONTENT_BUNDLES` (16) bundles besides the
+built-in one are kept, and a further distinct bundle is refused with an error. A bundle
+takes one of those slots only once a game was built from it; a construction or restore
+that fails (an invalid save, for example) leaves it pending, where a retry with the same
+bundle reuses it, and at most as many bundles as slots are ever pending. A bundle
+whose revision already stands for a different bundle (the built-in one included) is refused,
+and `from_save_state_with_content` refuses a save from another revision before it resolves
+anything. Its **content revision** is an FNV-1a
 hash of the canonical bundle:
 
 - snapshots publish it as `contentRevision`, and saves record it; a save from another
