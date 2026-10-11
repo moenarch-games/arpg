@@ -1069,6 +1069,7 @@ pub const MAX_LOADED_CONTENT_BUNDLES: usize = 16;
 /// bundle is resolved once and then shared by every game that runs it.
 static LOADED: Mutex<Registry> = Mutex::new(Registry {
     entries: BTreeMap::new(),
+    candidates: BTreeMap::new(),
 });
 
 /// Why a bundle was not loaded.
@@ -1080,16 +1081,23 @@ pub(crate) enum LoadError {
     Refused(String),
 }
 
+/// Resolved bundles of this process. A bundle is first resolved as a *candidate*; it takes
+/// one of the [`MAX_LOADED_CONTENT_BUNDLES`] slots only once a game built from it succeeded
+/// ([`Registry::admit`]). A game that fails to build (an invalid save, for example) leaves
+/// its candidate pending, where a retry with the same bundle reuses it: failures never use
+/// up a slot, and at most as many candidates as slots are ever pending.
 struct Registry {
     entries: BTreeMap<String, &'static Content>,
+    candidates: BTreeMap<String, &'static Content>,
 }
 
 impl Registry {
-    /// Resolves the canonical `bundle` with `revision`, reusing an identical earlier
-    /// resolution. A revision already standing for a different bundle (the built-in one
-    /// included) is refused, as is a new bundle beyond the capacity. Nothing is retained
-    /// unless the bundle is valid and admitted.
-    fn admit(
+    /// The resolution of the canonical `bundle` with `revision` to build a game from:
+    /// an admitted or pending identical one, or a new pending candidate. A revision
+    /// already standing for a different bundle (the built-in one included) is refused, as
+    /// is a new bundle when no slot is left or too many candidates are pending. Nothing is
+    /// retained unless the bundle is valid.
+    fn candidate(
         &mut self,
         base: &'static Content,
         bundle: ContentBundle,
@@ -1098,7 +1106,10 @@ impl Registry {
         let known = if revision == base.revision {
             Some(base)
         } else {
-            self.entries.get(&revision).copied()
+            self.entries
+                .get(&revision)
+                .or_else(|| self.candidates.get(&revision))
+                .copied()
         };
         if let Some(content) = known {
             if *content.bundle == bundle {
@@ -1110,12 +1121,52 @@ impl Registry {
         }
         bundle.check().map_err(LoadError::Invalid)?;
         if self.entries.len() >= MAX_LOADED_CONTENT_BUNDLES {
+            return Err(Self::full());
+        }
+        if self.candidates.len() >= MAX_LOADED_CONTENT_BUNDLES {
             return Err(LoadError::Refused(format!(
-                "this process already runs {MAX_LOADED_CONTENT_BUNDLES} content bundles besides the built-in one; no further bundle is loaded"
+                "{MAX_LOADED_CONTENT_BUNDLES} content bundles already wait for a game to succeed with them; no further bundle is loaded"
             )));
         }
         let content = resolve_forever(bundle).map_err(LoadError::Invalid)?;
-        self.entries.insert(revision, content);
+        self.candidates.insert(revision, content);
+        Ok(content)
+    }
+
+    /// Gives a candidate a slot once a game built from it succeeded. Admitted and built-in
+    /// content need nothing.
+    fn admit(
+        &mut self,
+        base: &'static Content,
+        content: &'static Content,
+    ) -> Result<(), LoadError> {
+        if std::ptr::eq(content, base) || self.entries.contains_key(&content.revision) {
+            return Ok(());
+        }
+        if self.entries.len() >= MAX_LOADED_CONTENT_BUNDLES {
+            return Err(Self::full());
+        }
+        self.candidates.remove(&content.revision);
+        self.entries.insert(content.revision.clone(), content);
+        Ok(())
+    }
+
+    fn full() -> LoadError {
+        LoadError::Refused(format!(
+            "this process already runs {MAX_LOADED_CONTENT_BUNDLES} content bundles besides the built-in one; no further bundle is loaded"
+        ))
+    }
+
+    /// A candidate admitted at once: for callers with nothing that can fail in between.
+    #[cfg(test)]
+    fn load(
+        &mut self,
+        base: &'static Content,
+        bundle: ContentBundle,
+        revision: String,
+    ) -> Result<&'static Content, LoadError> {
+        let content = self.candidate(base, bundle, revision)?;
+        self.admit(base, content)?;
         Ok(content)
     }
 }
@@ -1139,25 +1190,38 @@ fn base() -> &'static Content {
     })
 }
 
-/// The validated content for `bundle` in canonical order: the built-in content when it is
-/// the built-in bundle, otherwise the shared resolution of that bundle.
-pub(crate) fn load(bundle: ContentBundle) -> Result<&'static Content, LoadError> {
-    let bundle = bundle.into_canonical();
-    let revision = bundle.hash();
+fn registry() -> std::sync::MutexGuard<'static, Registry> {
     LOADED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .admit(base(), bundle, revision)
+}
+
+/// The validated content for `bundle` in canonical order to build a game from: the
+/// built-in content when it is the built-in bundle, otherwise the shared resolution of
+/// that bundle. Call [`admit`] once the game was built.
+pub(crate) fn candidate(bundle: ContentBundle) -> Result<&'static Content, LoadError> {
+    let bundle = bundle.into_canonical();
+    let revision = bundle.hash();
+    registry().candidate(base(), bundle, revision)
+}
+
+/// Records that a game built from `content` (from [`candidate`]) succeeded.
+pub(crate) fn admit(content: &'static Content) -> Result<(), LoadError> {
+    registry().admit(base(), content)
+}
+
+/// [`candidate`] admitted at once.
+#[cfg(test)]
+pub(crate) fn load(bundle: ContentBundle) -> Result<&'static Content, LoadError> {
+    let content = candidate(bundle)?;
+    admit(content)?;
+    Ok(content)
 }
 
 /// Whether a bundle with `revision` is resolved (besides the built-in one).
 #[cfg(test)]
 pub(crate) fn is_loaded(revision: &str) -> bool {
-    LOADED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .entries
-        .contains_key(revision)
+    registry().entries.contains_key(revision)
 }
 
 /// The validated built-in content every authority runs unless it was given another bundle.
@@ -1202,16 +1266,17 @@ mod tests {
         bundle: ContentBundle,
     ) -> Result<&'static Content, LoadError> {
         let revision = bundle.revision();
-        registry.admit(base(), bundle.into_canonical(), revision)
+        registry.load(base(), bundle.into_canonical(), revision)
     }
 
     #[test]
     fn a_bundle_claiming_the_built_in_revision_is_refused_unless_it_is_the_built_in_bundle() {
         let mut registry = Registry {
             entries: BTreeMap::new(),
+            candidates: BTreeMap::new(),
         };
         // A colliding revision (forced here) must not silently run the built-in content.
-        let collision = registry.admit(base(), paying(26), content_revision().to_owned());
+        let collision = registry.load(base(), paying(26), content_revision().to_owned());
         assert!(
             matches!(&collision, Err(LoadError::Refused(reason)) if reason.contains("different bundle")),
             "{collision:?}"
@@ -1219,7 +1284,7 @@ mod tests {
         assert!(registry.entries.is_empty());
         // The built-in bundle itself reuses the built-in content.
         let same = registry
-            .admit(base(), base_bundle().clone(), content_revision().to_owned())
+            .load(base(), base_bundle().clone(), content_revision().to_owned())
             .unwrap();
         assert!(std::ptr::eq(same, base()));
         assert!(std::ptr::eq(load(base_bundle().clone()).unwrap(), base()));
@@ -1256,6 +1321,7 @@ mod tests {
     fn the_registry_is_bounded_and_reuses_loaded_bundles() {
         let mut registry = Registry {
             entries: BTreeMap::new(),
+            candidates: BTreeMap::new(),
         };
         let mut loaded = Vec::new();
         for gold in 1..=u32::try_from(MAX_LOADED_CONTENT_BUNDLES).unwrap() {

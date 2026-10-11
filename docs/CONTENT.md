@@ -206,6 +206,9 @@ bundle is put in canonical order first, so source order never changes its revisi
 identity. The process resolves each distinct bundle once and keeps it for its lifetime, so
 repeated games share it; at most `MAX_LOADED_CONTENT_BUNDLES` (16) bundles besides the
 built-in one are kept, and a further distinct bundle is refused with an error. A bundle
+takes one of those slots only once a game was built from it; a construction or restore
+that fails (an invalid save, for example) leaves it pending, where a retry with the same
+bundle reuses it, and at most as many bundles as slots are ever pending. A bundle
 whose revision already stands for a different bundle (the built-in one included) is refused,
 and `from_save_state_with_content` refuses a save from another revision before it resolves
 anything. Its **content revision** is an FNV-1a

@@ -1909,11 +1909,21 @@ impl ArpgGame {
     /// built-in content. The bundle is validated first and refused with every violation;
     /// snapshots and saves carry its revision.
     pub fn new_with_content(bundle: ContentBundle, run_seed: RunSeed) -> Result<Self, GameError> {
-        Self::generated(Self::load_content(bundle)?, run_seed)
+        let content = Self::content_candidate(bundle)?;
+        let game = Self::generated(content, run_seed)?;
+        content::admit(content).map_err(Self::load_error)?;
+        Ok(game)
     }
 
-    fn load_content(bundle: ContentBundle) -> Result<&'static Content, GameError> {
-        content::load(bundle).map_err(|error| match error {
+    /// The resolution of `bundle` to build a game from. It takes a registry slot only once
+    /// the game was built ([`content::admit`]), so a failed construction or restore never
+    /// uses one up.
+    fn content_candidate(bundle: ContentBundle) -> Result<&'static Content, GameError> {
+        content::candidate(bundle).map_err(Self::load_error)
+    }
+
+    fn load_error(error: content::LoadError) -> GameError {
+        match error {
             content::LoadError::Invalid(errors) => GameError::new(format!(
                 "content bundle is invalid: {}",
                 errors
@@ -1925,7 +1935,7 @@ impl ArpgGame {
             content::LoadError::Refused(reason) => {
                 GameError::new(format!("content bundle refused: {reason}"))
             }
-        })
+        }
     }
 
     fn generated(content: &'static Content, run_seed: RunSeed) -> Result<Self, GameError> {
@@ -2202,7 +2212,8 @@ impl ArpgGame {
         save: ArpgSaveState,
         bundle: ContentBundle,
     ) -> Result<Self, GameError> {
-        // Refuse a save from another bundle before anything is resolved and retained.
+        // Refuse a save from another bundle or format before anything is resolved.
+        Self::check_save_versions(&save)?;
         let revision = bundle.revision();
         if save.content_revision != revision {
             return Err(GameError::new(format!(
@@ -2210,10 +2221,13 @@ impl ArpgGame {
                 save.content_revision
             )));
         }
-        Self::restore(save, Self::load_content(bundle)?)
+        let content = Self::content_candidate(bundle)?;
+        let game = Self::restore(save, content)?;
+        content::admit(content).map_err(Self::load_error)?;
+        Ok(game)
     }
 
-    fn restore(save: ArpgSaveState, content: &'static Content) -> Result<Self, GameError> {
+    fn check_save_versions(save: &ArpgSaveState) -> Result<(), GameError> {
         if save.schema_version != SAVE_STATE_SCHEMA_VERSION {
             return Err(GameError::new(format!(
                 "unsupported ARPG save schema version {}; expected {}",
@@ -2226,6 +2240,11 @@ impl ArpgGame {
                 save.rules_version, SAVE_STATE_RULES_VERSION
             )));
         }
+        Ok(())
+    }
+
+    fn restore(save: ArpgSaveState, content: &'static Content) -> Result<Self, GameError> {
+        Self::check_save_versions(&save)?;
         if save.content_revision != content.revision {
             return Err(GameError::new(format!(
                 "save was made with content revision {}; this authority runs {}",
@@ -10140,6 +10159,42 @@ mod tests {
         assert!(ArpgGame::from_save_state(game.save_state().unwrap()).is_ok());
         game.monsters[0].stagger_ticks_remaining = content().max_stagger_ticks() + 1;
         assert!(ArpgGame::from_save_state(game.save_state().unwrap()).is_err());
+    }
+
+    #[test]
+    fn failed_restores_never_use_up_a_content_slot() {
+        // A valid bundle that never ran a game, and a save that matches its revision but
+        // whose room set is broken, so only the restore itself fails.
+        let mut bundle = base_bundle().clone();
+        bundle.rewards[0].gold = 40_000;
+        let mut save = ArpgGame::new_with_seed(9).unwrap().save_state().unwrap();
+        save.content_revision = bundle.revision();
+        save.rooms.pop();
+        for _ in 0..=MAX_LOADED_CONTENT_BUNDLES {
+            assert!(ArpgGame::from_save_state_with_content(save.clone(), bundle.clone()).is_err());
+        }
+        assert!(!content::is_loaded(&bundle.revision()), "never admitted");
+
+        // Every slot is still there for legitimate bundles: new ones load and restore.
+        for gold in 41_000..41_000 + u32::try_from(MAX_LOADED_CONTENT_BUNDLES).unwrap() - 2 {
+            let mut legitimate = base_bundle().clone();
+            legitimate.rewards[0].gold = gold;
+            let game = ArpgGame::new_with_content(legitimate.clone(), 9)
+                .expect("a legitimate new bundle still loads");
+            let restored =
+                ArpgGame::from_save_state_with_content(game.save_state().unwrap(), legitimate)
+                    .expect("and its save restores");
+            assert_eq!(
+                restored.snapshot().unwrap().content_revision,
+                game.snapshot().unwrap().content_revision
+            );
+        }
+        // The failed bundle itself is admitted once a valid save of it restores.
+        let valid = ArpgGame::new_with_content(bundle.clone(), 9).unwrap();
+        assert!(content::is_loaded(&bundle.revision()));
+        assert!(
+            ArpgGame::from_save_state_with_content(valid.save_state().unwrap(), bundle).is_ok()
+        );
     }
 
     #[test]
