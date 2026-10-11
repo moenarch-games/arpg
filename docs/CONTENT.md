@@ -203,15 +203,15 @@ The bundle is compiled into `arpg-core` (`include_str!`), so the Wasm build and 
 server always ship the bundle they were built with. A game created or restored with another
 bundle (`new_with_content`, `from_save_state_with_content`) runs that bundle instead; the
 bundle is put in canonical order first, so source order never changes its revision or
-identity. The process resolves each distinct bundle once and keeps it for its lifetime, so
-repeated games share it; at most `MAX_LOADED_CONTENT_BUNDLES` (16) bundles besides the
-built-in one are kept, and a further distinct bundle is refused with an error. A bundle
-takes one of those slots only once a game was built from it; a construction or restore
-that fails (an invalid save, for example) leaves it pending, where a retry with the same
-bundle reuses it, and at most as many bundles as slots are ever pending. A bundle
-whose revision already stands for a different bundle (the built-in one included) is refused,
-and `from_save_state_with_content` refuses a save from another revision before it resolves
-anything. Its **content revision** is an FNV-1a
+identity. Each game owns the content it runs: games running the same bundle at the same
+time share one resolution, and a custom bundle is freed with the last game that runs it (the
+built-in content stays resolved for the whole process). Published definition ids, such as a
+strike outcome's `definition`, are owned values that outlive their game, so nothing keeps
+content alive for the process and the number of distinct bundles a process runs is not
+bounded. A construction or restore that fails (an invalid save, for example) keeps nothing.
+A bundle whose revision already stands for a different bundle that is running (the built-in
+one included) is refused, and `from_save_state_with_content` refuses a save from another
+revision before it resolves anything. Its **content revision** is an FNV-1a
 hash of the canonical bundle:
 
 - snapshots publish it as `contentRevision`, and saves record it; a save from another
