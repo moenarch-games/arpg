@@ -2,13 +2,13 @@ import {
   StrictMode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
 import { createRoot } from "react-dom/client";
-import * as THREE from "three";
 import { createThreeSceneRenderer } from "@moritzbrantner/three-d-renderer";
 import { applyProfile, validateRegistry } from "@moritzbrantner/input-bindings";
 import { keyLabelForAction } from "./binding-labels.js";
@@ -26,11 +26,15 @@ import {
   PROFILE_KEY,
   SETUP_URL_KEY,
   DEDICATED_URL_KEY,
-  GRAPHICS_KEY,
   MOUSE_AIM_KEY,
+  DEFAULT_PRESENTATION,
+  MOTION_PREFERENCES,
+  TEXT_SCALES,
   loadProfile,
-  loadGraphics,
+  loadPresentation,
   loadMouseAim,
+  normalizePresentation,
+  persistPresentation,
   readStoredValue,
   persistStoredValue,
 } from "./preferences.js";
@@ -47,7 +51,7 @@ import { attachPeerGameSession } from "./peer-session.js";
 import { DedicatedGameSession } from "./dedicated-session.js";
 import { DemoLobbySession } from "./vendor/multiplayer-setup-service/demo-session.ts";
 import { sampleVirtualStick } from "./virtual-stick.js";
-import { CAMERA_FOV_DEGREES, CAMERA_OFFSET, aimFromPointer } from "./aim-input.js";
+import { aimFromPointer } from "./aim-input.js";
 import {
   CHARACTER_PRESETS,
   loadSelectedCharacterId,
@@ -74,29 +78,26 @@ import {
 } from "./training-arena.js";
 import { createGameClientRuntime } from "./game-client-runtime.ts";
 import { createFramePresenter } from "./frame-presenter.ts";
+import { buildFrame } from "./scene-frame.ts";
+import { applyDocumentPresentation, resolvePresentationEffects } from "./presentation-effects.js";
 import { createInputAttachment } from "./input-attachment.ts";
 import { WorkbenchControls } from "./workbench-controls.jsx";
 import "./styles.css";
 
-// Monster body colours and head cues by published behaviour (#109); attack phases and
-// stagger keep their own colours.
-const MONSTER_BEHAVIOR_COLORS: Record<string, string> = {
-  pursuing: "#a3483b",
-  retreating: "#8a5a7a",
-  holding: "#8f4037",
-  searching: "#8a6a3c",
-  returning: "#5f5866",
-  idle: "#73433d",
-};
-const MONSTER_BEHAVIOR_CUES: Record<string, string> = {
-  pursuing: "#ff7a59",
-  retreating: "#d58bd0",
-  holding: "#ff7a59",
-  searching: "#f2c14e",
-  returning: "#9a9aa8",
-};
-
 const gameplayContext = { op: "context", id: "gameplay" };
+
+const MOTION_LABELS = { system: "Follow system", reduced: "Reduced", full: "Full" };
+
+// The live `prefers-reduced-motion` media query; "Follow system" motion tracks its changes.
+let reducedMotionQuery = null;
+const reducedMotionMedia = () =>
+  (reducedMotionQuery ??= globalThis.matchMedia?.("(prefers-reduced-motion: reduce)") ?? null);
+function subscribeReducedMotion(listener) {
+  const query = reducedMotionMedia();
+  query?.addEventListener("change", listener);
+  return () => query?.removeEventListener("change", listener);
+}
+const prefersReducedMotion = () => reducedMotionMedia()?.matches ?? false;
 
 const physical = (id, action, code, when = gameplayContext) => ({
   id,
@@ -168,406 +169,14 @@ function requestedRunSeed() {
   return parseRunSeed(new URLSearchParams(location.search).get("seed"));
 }
 
-function segmentIntersectsRect(startX, startZ, endX, endZ, minX, maxX, minZ, maxZ) {
-  let minimumT = 0;
-  let maximumT = 1;
-  for (const [start, end, minimum, maximum] of [
-    [startX, endX, minX, maxX],
-    [startZ, endZ, minZ, maxZ],
-  ]) {
-    const delta = end - start;
-    if (Math.abs(delta) < 1e-9) {
-      if (start < minimum || start > maximum) return false;
-      continue;
-    }
-    const first = (minimum - start) / delta;
-    const second = (maximum - start) / delta;
-    const enter = Math.min(first, second);
-    const exit = Math.max(first, second);
-    minimumT = Math.max(minimumT, enter);
-    maximumT = Math.min(maximumT, exit);
-    if (minimumT > maximumT) return false;
-  }
-  return maximumT >= 0.03 && minimumT <= 0.97;
-}
-
-function barrierOccludesFocus(collider, target, scale) {
-  if (!target || (collider.kind !== "wall" && collider.kind !== "door")) return false;
-  const centerX = collider.position[0] / scale;
-  const centerZ = collider.position[2] / scale;
-  const halfX = collider.halfExtents[0] / scale + 0.35;
-  const halfZ = collider.halfExtents[2] / scale + 0.35;
-  const cameraX = target[0] + 10;
-  const cameraZ = target[2] + 10;
-  return segmentIntersectsRect(
-    cameraX,
-    cameraZ,
-    target[0],
-    target[2],
-    centerX - halfX,
-    centerX + halfX,
-    centerZ - halfZ,
-    centerZ + halfZ,
-  );
-}
-
-function dungeonFloor(snapshot, scale) {
-  if (!snapshot.rooms?.length) {
-    return { center: [0, -0.08, 0], size: [18, 0.12, 13] };
-  }
-  const minX = Math.min(...snapshot.rooms.map((room) => room.minX)) / scale;
-  const maxX = Math.max(...snapshot.rooms.map((room) => room.maxX)) / scale;
-  const minZ = Math.min(...snapshot.rooms.map((room) => room.minZ)) / scale;
-  const maxZ = Math.max(...snapshot.rooms.map((room) => room.maxZ)) / scale;
-  return {
-    center: [(minX + maxX) / 2, -0.08, (minZ + maxZ) / 2],
-    size: [maxX - minX, 0.12, maxZ - minZ],
-  };
-}
-
-// The primitive shield board of a raised or rising guard, `offset` in front of `position`
-// along the unit direction it faces. Players and shield monsters share it.
-function shieldBoard(id, position, [directionX, directionZ], offset, look) {
-  const yaw = Math.atan2(directionX, directionZ);
-  return {
-    id,
-    geometry: { kind: "box", size: [0.5, 0.6, 0.08] },
-    color: look === "blocked" ? "#e8f4ff" : look === "raised" ? "#8fb3d9" : "#55687d",
-    transform: {
-      translation: [
-        position[0] + directionX * offset,
-        Math.max(position[1], 0.5),
-        position[2] + directionZ * offset,
-      ],
-      rotationQuaternion: [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)],
-    },
-  };
-}
-
-function buildFrame(snapshot, focusPlayerId, width, height, focusPlayerAccent = "#d6b45f") {
-  const scale = snapshot.worldUnitsPerMeter;
-  const focus =
-    snapshot.players.find((player) => player.id === focusPlayerId) ?? snapshot.players[0];
-  const target = focus ? [focus.position[0] / scale, 0, focus.position[2] / scale] : [0, 0, 0];
-  const aspect = Math.max(1, width) / Math.max(1, height);
-  const near = 0.1;
-  const far = 100;
-  const fovYRadians = (CAMERA_FOV_DEGREES * Math.PI) / 180;
-  const top = near * Math.tan(fovYRadians * 0.5);
-  const projectionHeight = 2 * top;
-  const projectionWidth = aspect * projectionHeight;
-  const left = -0.5 * projectionWidth;
-  const projectionMatrix = new THREE.Matrix4().makePerspective(
-    left,
-    left + projectionWidth,
-    top,
-    top - projectionHeight,
-    near,
-    far,
-    THREE.WebGPUCoordinateSystem,
-    false,
-  );
-  const camera = new THREE.PerspectiveCamera(CAMERA_FOV_DEGREES, aspect, near, far);
-  camera.position.set(target[0] + CAMERA_OFFSET[0], CAMERA_OFFSET[1], target[2] + CAMERA_OFFSET[2]);
-  camera.lookAt(target[0], 0, target[2]);
-  camera.updateMatrixWorld(true);
-  const floor = dungeonFloor(snapshot, scale);
-
-  const nodes = [
-    {
-      id: "floor",
-      geometry: { kind: "box", size: floor.size },
-      color: "#292722",
-      transform: { translation: floor.center },
-    },
-    ...snapshot.staticColliders.map((collider) => {
-      const fullSize = collider.halfExtents.map((value) => (value * 2) / scale);
-      const isBarrier = collider.kind === "wall" || collider.kind === "door";
-      const lowered = isBarrier && barrierOccludesFocus(collider, target, scale);
-      const visualHeight = lowered ? Math.min(fullSize[1], 0.55) : fullSize[1];
-      const translation = collider.position.map((value) => value / scale);
-      if (isBarrier) translation[1] = visualHeight / 2;
-      return {
-        id: `static-${collider.id}`,
-        geometry: {
-          kind: "box",
-          size: [fullSize[0], visualHeight, fullSize[2]],
-        },
-        color: lowered ? "#62594e" : collider.kind === "pillar" ? "#5d5142" : "#403a33",
-        transform: { translation },
-      };
-    }),
-    ...snapshot.players.flatMap((player) => {
-      const position = player.position.map((value) => value / scale);
-      // The exact committed or intended direction when aim or a lock owns it.
-      // A target lock takes precedence over aim, as in the core: show the authoritative facing.
-      const facing = player.action
-        ? (player.action.aim ?? player.action.facing)
-        : player.lockedMonsterId != null
-          ? (player.facing ?? [1, 0])
-          : (player.aim ?? player.facing ?? [1, 0]);
-      const facingLength = Math.hypot(facing[0], facing[1]) || 1;
-      const facingX = facing[0] / facingLength;
-      const facingZ = facing[1] / facingLength;
-      const actionColor =
-        player.action?.phase === "windup"
-          ? "#e3a45d"
-          : player.action?.phase === "active"
-            ? "#fff0a3"
-            : player.action?.phase === "recovery"
-              ? "#9d8060"
-              : null;
-      const color = !player.alive
-        ? "#45413d"
-        : player.reaction?.kind === "hurt"
-          ? "#e05a4f"
-          : player.reaction?.kind === "guardBroken"
-            ? "#9b6bd6"
-            : (actionColor ?? (player.id === focusPlayerId ? focusPlayerAccent : "#6f91b6"));
-      // The thin shield board faces along the authoritative 8-way facing, which the core's
-      // guard cone uses, not the exact aim shown by the weapon and marker.
-      const guardFacing = player.facing ?? [1, 0];
-      const guardLength = Math.hypot(guardFacing[0], guardFacing[1]) || 1;
-      const guardX = guardFacing[0] / guardLength;
-      const guardZ = guardFacing[1] / guardLength;
-      const shield = player.guard
-        ? [
-            shieldBoard(
-              `player-shield-${player.id}`,
-              position,
-              [guardX, guardZ],
-              0.42,
-              player.reaction?.kind === "blocked" ? "blocked" : player.guard.phase,
-            ),
-          ]
-        : [];
-      const bow =
-        player.weapon === "bow"
-          ? [
-              {
-                id: `player-bow-${player.id}`,
-                geometry: { kind: "box", size: [0.06, 0.7, 0.06] },
-                color: player.drawTicks != null ? "#f5df9b" : "#9d8060",
-                transform: {
-                  translation: [
-                    position[0] + facingX * (player.drawTicks != null ? 0.5 : 0.36),
-                    Math.max(position[1], 0.5),
-                    position[2] + facingZ * (player.drawTicks != null ? 0.5 : 0.36),
-                  ],
-                },
-              },
-            ]
-          : [];
-      return [
-        ...shield,
-        ...bow,
-        {
-          id: `player-${player.id}`,
-          geometry: { kind: "cylinder", radius: 0.3, height: 1 },
-          color,
-          transform: { translation: position },
-        },
-        {
-          id: `player-facing-${player.id}`,
-          geometry: { kind: "sphere", radius: 0.09 },
-          color: "#f5df9b",
-          transform: {
-            translation: [
-              position[0] + facingX * 0.48,
-              Math.max(position[1], 0.12),
-              position[2] + facingZ * 0.48,
-            ],
-          },
-        },
-      ];
-    }),
-    ...(snapshot.chests ?? []).map((chest) => ({
-      id: `chest-${chest.id}`,
-      geometry: { kind: "box", size: [0.6, 0.4, 0.4] },
-      color: chest.opened ? "#3a3530" : chest.available ? "#d6b45f" : "#6b5236",
-      transform: {
-        translation: chest.position.map((value, axis) => (axis === 1 ? 0.2 : value / scale)),
-      },
-    })),
-    ...(snapshot.arrows ?? []).map((arrow) => {
-      const translation = arrow.position.map((value) => value / scale);
-      const yaw = Math.atan2(arrow.velocity[0], arrow.velocity[2]);
-      return {
-        id: `arrow-${arrow.id}`,
-        geometry: { kind: "box", size: [0.04, 0.04, 0.5] },
-        // Player arrows and monster shots fly the same authoritative path (#108).
-        color: arrow.source.kind === "monster" ? "#ff8a5c" : "#e8dcc0",
-        transform: {
-          translation: [translation[0], Math.max(translation[1], 0.55), translation[2]],
-          rotationQuaternion: [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)],
-        },
-      };
-    }),
-    ...snapshot.monsters
-      .filter((monster) => monster.alive)
-      .flatMap((monster) => {
-        const translation = monster.position.map((value) => value / scale);
-        if (monster.reaction?.kind === "stagger") translation[1] += 0.08;
-        const phase = monster.action?.phase;
-        const monsterColor =
-          monster.reaction?.kind === "stagger"
-            ? "#e8a25d"
-            : phase === "active"
-              ? "#ff6a4f"
-              : phase === "windup"
-                ? "#c85b46"
-                : phase === "recovery"
-                  ? "#6e3934"
-                  : (MONSTER_BEHAVIOR_COLORS[monster.behavior] ?? "#8f4037");
-        const nodes = [
-          {
-            id: `monster-${monster.id}`,
-            geometry: { kind: "sphere", radius: 0.42 },
-            color: monsterColor,
-            transform: { translation },
-          },
-        ];
-        // A shield monster's authoritative guard faces its engaged target (#92).
-        const guardTarget = snapshot.players.find(
-          (candidate) => candidate.id === monster.targetPlayerId,
-        );
-        if (monster.guard && guardTarget) {
-          const towardX = guardTarget.position[0] - monster.position[0];
-          const towardZ = guardTarget.position[2] - monster.position[2];
-          const length = Math.hypot(towardX, towardZ) || 1;
-          nodes.push(
-            shieldBoard(
-              `monster-shield-${monster.id}`,
-              translation,
-              [towardX / length, towardZ / length],
-              0.55,
-              monster.guard.phase,
-            ),
-          );
-        }
-        // The focused player's authoritative target lock rings its monster.
-        if (focus?.lockedMonsterId === monster.id) {
-          for (let index = 0; index < 8; index += 1) {
-            const angle = (index / 8) * Math.PI * 2;
-            nodes.push({
-              id: `monster-${monster.id}-lock-${index}`,
-              geometry: { kind: "sphere", radius: 0.06 },
-              color: "#7fd1ff",
-              transform: {
-                translation: [
-                  translation[0] + Math.cos(angle) * 0.62,
-                  0.06,
-                  translation[2] + Math.sin(angle) * 0.62,
-                ],
-              },
-            });
-          }
-        }
-        // The authoritative behaviour, not motion, picks the cue above the head.
-        const cue = MONSTER_BEHAVIOR_CUES[monster.behavior];
-        if (cue)
-          nodes.push({
-            id: `monster-${monster.id}-behavior`,
-            geometry: { kind: "sphere", radius: 0.09 },
-            color: cue,
-            transform: {
-              translation: [translation[0], translation[1] + 0.62, translation[2]],
-            },
-          });
-        const targetPlayer = snapshot.players.find(
-          (candidate) => candidate.id === monster.action?.targetPlayerId,
-        );
-        if (phase === "windup" && monster.action?.delivery === "projectile") {
-          // A shot telegraphs its line of fire toward the target, not a ring.
-          if (targetPlayer?.alive)
-            for (let index = 1; index < 8; index += 1) {
-              const along = index / 8;
-              nodes.push({
-                id: `monster-${monster.id}-aim-${index}`,
-                geometry: { kind: "sphere", radius: 0.06 },
-                color: "#c86a4a",
-                transform: {
-                  translation: [
-                    (monster.position[0] +
-                      (targetPlayer.position[0] - monster.position[0]) * along) /
-                      scale,
-                    0.075,
-                    (monster.position[2] +
-                      (targetPlayer.position[2] - monster.position[2]) * along) /
-                      scale,
-                  ],
-                },
-              });
-            }
-        } else if (
-          (phase === "windup" || phase === "active") &&
-          monster.action?.delivery === "strike" &&
-          monster.action.range
-        ) {
-          const radius = monster.action.range / scale;
-          const telegraphColor = phase === "active" ? "#f06a4e" : "#824239";
-          for (let index = 0; index < 12; index += 1) {
-            const angle = (index / 12) * Math.PI * 2;
-            nodes.push({
-              id: `monster-${monster.id}-telegraph-${index}`,
-              geometry: {
-                kind: "sphere",
-                radius: phase === "active" ? 0.1 : 0.075,
-              },
-              color: telegraphColor,
-              transform: {
-                translation: [
-                  monster.position[0] / scale + Math.cos(angle) * radius,
-                  0.075,
-                  monster.position[2] / scale + Math.sin(angle) * radius,
-                ],
-              },
-            });
-          }
-          if (targetPlayer?.alive) {
-            nodes.push({
-              id: `monster-${monster.id}-target`,
-              geometry: { kind: "sphere", radius: 0.12 },
-              color: telegraphColor,
-              transform: {
-                translation: [
-                  targetPlayer.position[0] / scale,
-                  0.14,
-                  targetPlayer.position[2] / scale,
-                ],
-              },
-            });
-          }
-        }
-        return nodes;
-      }),
-    ...(snapshot.groundLoot ?? []).map((loot) => ({
-      id: `loot-${loot.id}`,
-      geometry: { kind: "sphere", radius: 0.16 },
-      color: loot.kind === "gold" ? "#d9b44a" : "#c8c1b7",
-      transform: {
-        translation: [loot.position[0] / scale, 0.16, loot.position[2] / scale],
-      },
-    })),
-  ];
-
-  return {
-    camera: {
-      viewMatrix: camera.matrixWorldInverse.toArray(),
-      projectionMatrix: projectionMatrix.toArray(),
-    },
-    nodes,
-  };
-}
-
 // The game world canvas. One frame presenter owns its renderer, projection and resize
 // observer for as long as the canvas is mounted; view changes reconfigure it in place.
-function GameCanvas({ snapshots, playerId, accent, graphics, onPointerMove }) {
+function GameCanvas({ snapshots, playerId, accent, graphics, effects, onPointerMove }) {
   const canvasRef = useRef(null);
   const presenterRef = useRef(null);
   const { shadows, pixelRatioLimit } = graphics;
   // The view the presenter is (or will be) created with; later changes apply in place.
-  const viewRef = useRef({ playerId, accent, graphics: { shadows, pixelRatioLimit } });
+  const viewRef = useRef({ playerId, accent, graphics: { shadows, pixelRatioLimit }, effects });
   useEffect(() => {
     const presenter = createFramePresenter({
       canvas: canvasRef.current,
@@ -591,9 +200,9 @@ function GameCanvas({ snapshots, playerId, accent, graphics, onPointerMove }) {
   }, [snapshots]);
 
   useEffect(() => {
-    viewRef.current = { playerId, accent, graphics: { shadows, pixelRatioLimit } };
+    viewRef.current = { playerId, accent, graphics: { shadows, pixelRatioLimit }, effects };
     presenterRef.current?.configure(viewRef.current);
-  }, [playerId, accent, shadows, pixelRatioLimit]);
+  }, [playerId, accent, shadows, pixelRatioLimit, effects]);
 
   return (
     <canvas
@@ -664,7 +273,21 @@ function App() {
   const [profile, setProfile] = useState(() =>
     loadProfile((profile) => validateRegistry(inputRegistry, profile).valid),
   );
-  const [graphics, setGraphics] = useState(loadGraphics);
+  // Local display preferences (#61): never part of a save or the authority.
+  const [presentation, setPresentation] = useState(() => loadPresentation());
+  const { graphics, accessibility } = presentation;
+  const systemReducedMotion = useSyncExternalStore(
+    subscribeReducedMotion,
+    prefersReducedMotion,
+    () => false,
+  );
+  const presentationEffects = useMemo(
+    () => resolvePresentationEffects(presentation, { prefersReducedMotion: systemReducedMotion }),
+    [presentation, systemReducedMotion],
+  );
+  useLayoutEffect(() => {
+    applyDocumentPresentation(document.documentElement, presentationEffects);
+  }, [presentationEffects]);
   const [mouseAim, setMouseAim] = useState(() => loadMouseAim());
   const [setupUrl, setSetupUrl] = useState(() =>
     readStoredValue(SETUP_URL_KEY, "http://127.0.0.1:8787"),
@@ -1036,11 +659,16 @@ function App() {
     runtime.setAim(aim);
   };
 
-  const updateGraphics = (next) => {
-    if (!persistStoredValue(GRAPHICS_KEY, JSON.stringify(next)))
-      setStatus("Graphics updated for this session; browser storage is unavailable");
-    setGraphics(next);
+  const updatePresentation = (next) => {
+    const normalized = normalizePresentation(next);
+    if (!persistPresentation(normalized))
+      setStatus("Display settings updated for this session; browser storage is unavailable");
+    setPresentation(normalized);
   };
+  const updateGraphics = (patch) =>
+    updatePresentation({ ...presentation, graphics: { ...graphics, ...patch } });
+  const updateAccessibility = (patch) =>
+    updatePresentation({ ...presentation, accessibility: { ...accessibility, ...patch } });
 
   const updateSetupUrl = (value) => {
     setSetupUrl(value);
@@ -1324,6 +952,7 @@ function App() {
         playerId={playerId}
         accent={selectedCharacter.accent}
         graphics={graphics}
+        effects={presentationEffects}
         onPointerMove={aimWithPointer}
       />
       <header className="game-header">
@@ -1599,7 +1228,7 @@ function App() {
               <input
                 type="checkbox"
                 checked={graphics.shadows}
-                onChange={(event) => updateGraphics({ ...graphics, shadows: event.target.checked })}
+                onChange={(event) => updateGraphics({ shadows: event.target.checked })}
               />
               Enable shadows
             </label>
@@ -1608,10 +1237,7 @@ function App() {
               <select
                 value={graphics.pixelRatioLimit}
                 onChange={(event) =>
-                  updateGraphics({
-                    ...graphics,
-                    pixelRatioLimit: Number(event.target.value),
-                  })
+                  updateGraphics({ pixelRatioLimit: Number(event.target.value) })
                 }
               >
                 <option value="1">1×</option>
@@ -1619,6 +1245,54 @@ function App() {
                 <option value="2">2×</option>
               </select>
             </label>
+          </section>
+
+          <section aria-labelledby="accessibility-heading">
+            <h2 id="accessibility-heading">Accessibility</h2>
+            <div className="settings-field">
+              <label htmlFor="motion-effects">Motion effects</label>
+              <select
+                id="motion-effects"
+                value={accessibility.motion}
+                onChange={(event) => updateAccessibility({ motion: event.target.value })}
+              >
+                {MOTION_PREFERENCES.map((motion) => (
+                  <option key={motion} value={motion}>
+                    {MOTION_LABELS[motion]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={accessibility.reducedFlashes}
+                onChange={(event) => updateAccessibility({ reducedFlashes: event.target.checked })}
+              />
+              Reduce bright flashes
+            </label>
+            <div className="settings-field">
+              <label htmlFor="text-size">Text size</label>
+              <select
+                id="text-size"
+                value={accessibility.textScale}
+                onChange={(event) => updateAccessibility({ textScale: Number(event.target.value) })}
+              >
+                {TEXT_SCALES.map((scale) => (
+                  <option key={scale} value={scale}>
+                    {`${scale * 100}%`}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="settings-note">
+              Display settings stay in this browser. They never change saves or game rules.
+            </p>
+            <div className="settings-actions">
+              <button type="button" onClick={() => updatePresentation(DEFAULT_PRESENTATION)}>
+                Reset display settings
+              </button>
+            </div>
           </section>
 
           <section className="keybindings-section">
