@@ -136,7 +136,9 @@ class FakePeerSession {
 
 class FakeDedicatedSession {
   closed = false;
+  // Datagram commands (`sendCommand`) and reliable one-shots (`sendReliableCommand`, #143).
   commands = [];
+  reliable = [];
   ready = deferred();
   callbacks = null;
   constructor(endpoint) {
@@ -152,6 +154,13 @@ class FakeDedicatedSession {
       sequence,
       payload: new TextDecoder().decode(payload),
     });
+  }
+  async sendReliableCommand(sequence, payload) {
+    this.reliable.push({
+      sequence,
+      payload: new TextDecoder().decode(payload),
+    });
+    return "applied";
   }
   close() {
     this.closed = true;
@@ -350,9 +359,11 @@ test("local → host → guest → dedicated changes close every previous source
   await connecting;
   runtime.dispatch({ type: "primaryAttack" });
   await Promise.resolve();
-  expect(dedicatedSessions[0].commands).toEqual([
+  // A one-shot travels on the reliable command lane, never as a datagram (#143).
+  expect(dedicatedSessions[0].reliable).toEqual([
     { sequence: 1, payload: expect.stringContaining("primaryAttack") },
   ]);
+  expect(dedicatedSessions[0].commands).toEqual([]);
   expect(runtime.getState()).toMatchObject({
     mode: "dedicated",
     lifecycle: "running",
@@ -462,6 +473,7 @@ test("dedicated reconnect callbacks move between disconnected and running", asyn
     playerId: 2,
   });
   expect(session.commands).toEqual([]);
+  expect(session.reliable).toEqual([]);
 });
 
 test("startup failures and rejected payloads become failed states, not black screens", async () => {

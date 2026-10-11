@@ -46,7 +46,7 @@ The near-term execution order is the content-readiness roadmap [#50](https://git
 | Versioned savestates | Implemented | [`arpg-core`](crates/arpg-core/src/lib.rs), [`save-state.js`](web/src/save-state.js) | `save_state_*` tests, `save-state.test.js`, `savestate.spec.js` |
 | Local Rust/Wasm authority | Implemented | [`arpg-web-wasm`](crates/arpg-web-wasm/src/lib.rs) | `bun run test:physics-wasm`; all browser specs |
 | Peer-hosted co-op | Implemented | [`peer-session.js`](web/src/peer-session.js) | `peer-session.test.js`, `turn.spec.ts` |
-| Dedicated online | Implemented | [`arpg-game-server`](crates/arpg-game-server/src/lib.rs), [`dedicated-session.js`](web/src/dedicated-session.js) | `real_arpg_snapshot_matches_the_game_server_runtime_path`, `rejects_malformed_game_payloads_before_the_core_sees_them`, `dedicated-session.test.js`, `dedicated.spec.js` |
+| Dedicated online | Implemented | [`arpg-game-server`](crates/arpg-game-server/src/lib.rs), [`dedicated-session.js`](web/src/dedicated-session.js) | `real_arpg_snapshot_matches_the_game_server_runtime_path`, `rejects_malformed_game_payloads_before_the_core_sees_them`, `reliable_one_shots.rs`, `dedicated-session.test.js`, `reliable-command-lane.test.js`, `reliable-one-shots.test.ts`, `dedicated.spec.js` |
 | Persistent physics solver migration | In flight: compatible engine update landed ([evidence](docs/physics-workloads.md)); solver/controller transition pending | [#48](https://github.com/moritzbrantner/arpg/issues/48) is the sole migration owner | `physics_workloads` traces |
 | Typed client runtime, scenario workbench | Planned (F0) | [#52](https://github.com/moritzbrantner/arpg/issues/52), [#53](https://github.com/moritzbrantner/arpg/issues/53) | — |
 | Humanoid, camera, jumping, unified input, menus | Planned (F1) | [#55](https://github.com/moritzbrantner/arpg/issues/55)–[#61](https://github.com/moritzbrantner/arpg/issues/61) | — |
@@ -74,7 +74,7 @@ Savestate semantics also live in `arpg-core`: the browser only persists or trans
 
 - **Local** — the browser runs `arpg-core` through `arpg-web-wasm`.
 - **Peer-hosted co-op** — one browser runs that same Rust/Wasm authority; guests submit sequenced commands and consume host snapshots. `multiplayer-setup-service` remains payload-opaque setup infrastructure.
-- **Dedicated online** — the browser connects directly to the runnable `arpg-game-server` WebTransport endpoint. `game-server` owns admission, ticks, reconnect identity, recovery, and transport framing; the browser submits versioned `arpg-protocol` command payloads and renders verified authoritative snapshots.
+- **Dedicated online** — the browser connects directly to the runnable `arpg-game-server` WebTransport endpoint. `game-server` owns admission, ticks, reconnect identity, recovery, and transport framing; the browser submits versioned `arpg-protocol` command payloads (held input as datagrams, one-shots such as attacks and the bow draw, release and cancel on the acknowledged reliable command lane; see [dedicated command delivery](docs/ARCHITECTURE.md#dedicated-command-delivery)) and renders verified authoritative snapshots.
 
 Peer-hosted co-op is a convenience/trust mode, not an anti-cheat boundary. The host can cheat. Dedicated play is the trusted authority model.
 
@@ -140,6 +140,6 @@ The dedicated host defaults to UDP port `4433` and session path `/arpg`. Optiona
 - `3d-lab`: `f484db8a3d2a7a555fa463eddf9c28790b240ce0`
 - `input-bindings`: `b3b7204faa47d3b0af56eebc55cdfd4ced127ddc`
 - `multiplayer-setup-service`: `cc5c20fabdac0fc9da4329a5be04d0f4e8eae383`
-- `game-server`: `a3851dab9c1fb25dd31b465fb554ca475769caab`
+- `game-server`: `ebd6aaee156c8e12a1444d1dd55a305eae13df86`
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the authority and trust boundaries.

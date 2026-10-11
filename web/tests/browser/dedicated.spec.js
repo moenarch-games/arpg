@@ -255,3 +255,109 @@ test("a dedicated resume keeps a held guard and lowers one released during the o
     rmSync(certificate.directory, { recursive: true, force: true });
   }
 });
+
+// Loses outgoing datagrams at the transport boundary while `__arpgDatagramLoss.dropOutgoing`
+// is set: writes still resolve, as a queued datagram write does, but nothing is sent.
+// Snapshots (incoming datagrams) and streams are untouched.
+async function installDatagramLoss(page) {
+  await page.addInitScript(() => {
+    const BaseWebTransport = globalThis.WebTransport;
+    if (!BaseWebTransport) return;
+    const loss = { dropOutgoing: false, dropped: 0 };
+    globalThis.__arpgDatagramLoss = loss;
+    function LossyWebTransport(url, options) {
+      const transport = new BaseWebTransport(url, options);
+      const native = transport.datagrams;
+      const writer = native.writable.getWriter();
+      const writable = new WritableStream({
+        async write(chunk) {
+          if (loss.dropOutgoing) {
+            loss.dropped += 1;
+            return;
+          }
+          await writer.write(chunk);
+        },
+      });
+      Object.defineProperty(transport, "datagrams", {
+        configurable: true,
+        value: {
+          readable: native.readable,
+          writable,
+          get maxDatagramSize() {
+            return native.maxDatagramSize;
+          },
+        },
+      });
+      return transport;
+    }
+    LossyWebTransport.prototype = BaseWebTransport.prototype;
+    Object.setPrototypeOf(LossyWebTransport, BaseWebTransport);
+    Object.defineProperty(globalThis, "WebTransport", {
+      configurable: true,
+      writable: true,
+      value: LossyWebTransport,
+    });
+  });
+}
+
+// Reliable one-shots (#143): with every outgoing datagram lost, an attack still starts and
+// a weapon change still lands, because one-shots travel on the reliable command lane.
+test("dedicated one-shots land while every outgoing datagram is lost", async ({ page, appUrl }) => {
+  expect(
+    existsSync(serverBinary),
+    `build the dedicated server first: cargo build --locked -p arpg-game-server --bin server (looked for ${serverBinary})`,
+  ).toBe(true);
+  const certificate = createCertificate();
+  const port = await freeUdpPort();
+  await installCertificatePin(page, certificate.hashBytes);
+  await installDatagramLoss(page);
+  const server = await startDedicatedServer(certificate, port);
+  try {
+    await page.goto(appUrl);
+    await page.getByRole("button", { name: "Enter World", exact: true }).click();
+    const status = page.getByRole("region", { name: "Player status" }).locator("p").first();
+
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+    await settings.getByLabel("WebTransport endpoint").fill(`https://localhost:${port}/arpg`);
+    await settings.getByRole("button", { name: "Connect dedicated server", exact: true }).click();
+    await expect(status).toContainText("Dedicated authority · player 1 · 60 Hz", {
+      timeout: 30_000,
+    });
+    await settings.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(settings).not.toBeVisible();
+    await page.evaluate(() => document.activeElement?.blur());
+
+    const attack = page.getByRole("button", { name: "Primary attack", exact: true });
+    await expect(attack).toBeEnabled();
+    // An attack lasts well under a second; record every phase the authority publishes.
+    await attack.evaluate((button) => {
+      globalThis.__arpgAttackPhases = [];
+      new MutationObserver(() => {
+        const phase = button.getAttribute("data-phase");
+        if (phase) globalThis.__arpgAttackPhases.push(phase);
+      }).observe(button, { attributes: true, attributeFilter: ["data-phase"] });
+    });
+
+    await page.evaluate(() => {
+      globalThis.__arpgDatagramLoss.dropOutgoing = true;
+    });
+    await page.keyboard.press("Space");
+    await expect
+      .poll(() => page.evaluate(() => globalThis.__arpgAttackPhases), { timeout: 10_000 })
+      .toContain("windup");
+
+    await expect(attack).not.toHaveAttribute("data-phase", /.+/, { timeout: 10_000 });
+    await page.keyboard.press("x");
+    await expect(
+      page.getByRole("button", { name: "Switch to sword and shield", exact: true }),
+    ).toBeVisible({ timeout: 10_000 });
+
+    // The held refresh kept sending datagrams, and every one of them was lost.
+    expect(await page.evaluate(() => globalThis.__arpgDatagramLoss.dropped)).toBeGreaterThan(0);
+    await expect(status).toContainText("Dedicated authority · player 1 · 60 Hz");
+  } finally {
+    await stopDedicatedServer(server);
+    rmSync(certificate.directory, { recursive: true, force: true });
+  }
+});
