@@ -168,7 +168,7 @@ fn ordinary_tick(dimensions: &Dimensions) -> Result<(Metrics, Value), String> {
     let mut mismatched_ticks = 0;
     for tick in 0..WINDOW_TICKS {
         if tick % COMMAND_INTERVAL_TICKS == 0 {
-            let x = if (tick / COMMAND_INTERVAL_TICKS) % 2 == 0 {
+            let x = if (tick / COMMAND_INTERVAL_TICKS).is_multiple_of(2) {
                 1
             } else {
                 -1
@@ -332,7 +332,8 @@ fn growth_violations(
     dimension: &str,
     bound: &str,
 ) -> Vec<String> {
-    let mut groups: BTreeMap<Vec<(&String, &u64)>, Vec<(i128, i128)>> = BTreeMap::new();
+    // Points (bounded dimension, value) keyed by the values of every other dimension.
+    let mut groups = BTreeMap::<Vec<(&String, &u64)>, Vec<(i128, i128)>>::new();
     for sample in samples {
         let key = sample
             .dimensions
