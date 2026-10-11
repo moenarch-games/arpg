@@ -118,4 +118,4 @@ jobs:
         with:
           toolchain: 1.98.1
       - name: Enforce the blocking performance budget
-        run: cargo run --locked --release -p arpg-core --example performance_smoke
+        run: cargo run --locked --release -p arpg-core --features operation-work --example performance_smoke

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "suite": "arpg/product-composition-v1",
   "description": "Transport-neutral ARPG core composition over physics-engine. The product contract protects command/tick/snapshot orchestration without duplicating physics-engine microbenchmarks or game-server transport benchmarks.",
   "scenarios": [
@@ -44,7 +44,7 @@
           "direction": "lower",
           "signal": "operation-count",
           "blocking": false,
-          "notes": "Expose an internal counter before making snapshot/materialization cost blocking; the journey intentionally samples every 60 ticks rather than every tick."
+          "notes": "Counted by the operation-work feature; the journey requests one snapshot every 60 ticks. The blocking per-tick bound is the ordinary-tick and requested-snapshot operations."
         },
         {
           "name": "monster_target_evaluations",
@@ -52,7 +52,7 @@
           "direction": "lower",
           "signal": "operation-count",
           "blocking": false,
-          "notes": "Planned deterministic counter for attack/AI scaling as the monster population grows."
+          "notes": "Counted by the operation-work feature. The blocking candidate/search bound is the monster-targeting operation."
         }
       ]
     },
@@ -74,6 +74,221 @@
           "signal": "size",
           "blocking": false,
           "notes": "Add when the game-server adapter exposes a stable benchmark fixture; do not move transport logic into arpg-core to obtain this metric."
+        }
+      ]
+    }
+  ],
+  "operations": [
+    {
+      "id": "ordinary-tick",
+      "description": "Advance 60 authoritative ticks without a snapshot request while every player re-sends movement every 15 ticks. Four monsters fight the players in the active encounter; the rest wait in dormant rooms.",
+      "dimensions": {
+        "players": {
+          "description": "connected players, all in the active encounter room"
+        },
+        "monsters": {
+          "description": "monsters in the world: four in the active encounter, the rest in dormant rooms"
+        }
+      },
+      "scalePoints": [
+        { "players": 1, "monsters": 64 },
+        { "players": 2, "monsters": 64 },
+        { "players": 4, "monsters": 64 },
+        { "players": 4, "monsters": 16 },
+        { "players": 4, "monsters": 256 }
+      ],
+      "metrics": [
+        {
+          "name": "physics_steps_per_tick",
+          "unit": "steps",
+          "signal": "operation-count",
+          "budget": { "max": 1 },
+          "growth": [
+            { "dimension": "players", "bound": "constant" },
+            { "dimension": "monsters", "bound": "constant" }
+          ],
+          "notes": "Largest number of physics-engine steps in one tick of the window. Physics cost itself belongs to physics-engine."
+        },
+        {
+          "name": "ticks_without_one_physics_step",
+          "unit": "ticks",
+          "signal": "operation-count",
+          "budget": { "max": 0 },
+          "notes": "Ticks of the window that did not step physics exactly once."
+        },
+        {
+          "name": "snapshot_materializations",
+          "unit": "snapshots",
+          "signal": "operation-count",
+          "budget": { "max": 0 },
+          "growth": [
+            { "dimension": "players", "bound": "constant" },
+            { "dimension": "monsters", "bound": "constant" }
+          ],
+          "notes": "Authoritative snapshots built during the window; encoding needs one, so zero also rules out serialization."
+        },
+        {
+          "name": "snapshot_entities_materialized",
+          "unit": "entities",
+          "signal": "operation-count",
+          "budget": { "max": 0 },
+          "growth": [
+            { "dimension": "players", "bound": "constant" },
+            { "dimension": "monsters", "bound": "constant" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "requested-snapshot",
+      "description": "Materialize one requested authoritative snapshot of a world with four players and four engaged monsters, the rest dormant. Output work is linear in exported entities.",
+      "dimensions": {
+        "monsters": {
+          "description": "monsters in the world, each exported in the snapshot"
+        }
+      },
+      "scalePoints": [
+        { "monsters": 16 },
+        { "monsters": 64 },
+        { "monsters": 256 }
+      ],
+      "metrics": [
+        {
+          "name": "snapshot_materializations",
+          "unit": "snapshots",
+          "signal": "operation-count",
+          "budget": { "max": 1 },
+          "growth": [
+            { "dimension": "monsters", "bound": "constant" }
+          ]
+        },
+        {
+          "name": "snapshot_entities_materialized",
+          "unit": "entities",
+          "signal": "operation-count",
+          "growth": [
+            { "dimension": "monsters", "bound": "linear" }
+          ],
+          "notes": "Rooms, doors, players, monsters, loot, colliders, arrows, chests and events written into the snapshot."
+        },
+        {
+          "name": "physics_steps",
+          "unit": "steps",
+          "signal": "operation-count",
+          "budget": { "max": 0 },
+          "growth": [
+            { "dimension": "monsters", "bound": "constant" }
+          ]
+        },
+        {
+          "name": "monster_target_evaluations",
+          "unit": "evaluations",
+          "signal": "operation-count",
+          "budget": { "max": 0 },
+          "growth": [
+            { "dimension": "monsters", "bound": "constant" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "monster-targeting",
+      "description": "Advance 60 ticks of engagement decisions with idle players inside aggro range of the engaged monsters. Only free monsters of an active encounter decide, and each scores the living players (at most four); dormant monsters elsewhere are unrelated population.",
+      "dimensions": {
+        "players": {
+          "description": "living players, all candidates of every deciding monster"
+        },
+        "engagedMonsters": {
+          "description": "monsters in the players' active encounter room"
+        },
+        "unrelatedMonsters": {
+          "description": "monsters in dormant rooms without players"
+        }
+      },
+      "scalePoints": [
+        { "players": 1, "engagedMonsters": 4, "unrelatedMonsters": 16 },
+        { "players": 2, "engagedMonsters": 4, "unrelatedMonsters": 16 },
+        { "players": 4, "engagedMonsters": 4, "unrelatedMonsters": 16 },
+        { "players": 4, "engagedMonsters": 2, "unrelatedMonsters": 16 },
+        { "players": 4, "engagedMonsters": 8, "unrelatedMonsters": 16 },
+        { "players": 4, "engagedMonsters": 4, "unrelatedMonsters": 128 },
+        { "players": 4, "engagedMonsters": 4, "unrelatedMonsters": 512 }
+      ],
+      "metrics": [
+        {
+          "name": "monster_decisions_per_tick",
+          "unit": "decisions",
+          "signal": "operation-count",
+          "growth": [
+            { "dimension": "players", "bound": "constant" },
+            { "dimension": "engagedMonsters", "bound": "linear" },
+            { "dimension": "unrelatedMonsters", "bound": "constant" }
+          ],
+          "notes": "Largest number of engagement-policy decisions in one tick of the window."
+        },
+        {
+          "name": "monster_target_evaluations_per_tick",
+          "unit": "evaluations",
+          "signal": "operation-count",
+          "growth": [
+            { "dimension": "players", "bound": "linear" },
+            { "dimension": "engagedMonsters", "bound": "linear" },
+            { "dimension": "unrelatedMonsters", "bound": "constant" }
+          ],
+          "notes": "Largest number of target candidates scored in one tick. The intended bound is deciding monsters times living players; a scan of the whole world grows with unrelatedMonsters."
+        }
+      ]
+    },
+    {
+      "id": "player-command",
+      "description": "Apply one movement command for one player to a world with four players and four engaged monsters while the dormant population grows. Domain work a command causes, such as a target-lock search, is outside this bookkeeping bound.",
+      "dimensions": {
+        "unrelatedMonsters": {
+          "description": "monsters in dormant rooms without players"
+        }
+      },
+      "scalePoints": [
+        { "unrelatedMonsters": 16 },
+        { "unrelatedMonsters": 128 },
+        { "unrelatedMonsters": 512 }
+      ],
+      "metrics": [
+        {
+          "name": "command_bookkeeping_steps",
+          "unit": "steps",
+          "signal": "operation-count",
+          "budget": { "max": 3 },
+          "growth": [
+            { "dimension": "unrelatedMonsters", "bound": "constant" }
+          ],
+          "notes": "Player validation, lane sequence check and lane watermark record."
+        },
+        {
+          "name": "physics_steps",
+          "unit": "steps",
+          "signal": "operation-count",
+          "budget": { "max": 0 },
+          "growth": [
+            { "dimension": "unrelatedMonsters", "bound": "constant" }
+          ]
+        },
+        {
+          "name": "snapshot_materializations",
+          "unit": "snapshots",
+          "signal": "operation-count",
+          "budget": { "max": 0 },
+          "growth": [
+            { "dimension": "unrelatedMonsters", "bound": "constant" }
+          ]
+        },
+        {
+          "name": "monster_target_evaluations",
+          "unit": "evaluations",
+          "signal": "operation-count",
+          "budget": { "max": 0 },
+          "growth": [
+            { "dimension": "unrelatedMonsters", "bound": "constant" }
+          ]
         }
       ]
     }

@@ -22,6 +22,8 @@
         "--release",
         "-p",
         "arpg-core",
+        "--features",
+        "operation-work",
         "--example",
         "performance_smoke"
       ]
