@@ -190,7 +190,7 @@ fn a_reliable_attack_overtaken_by_a_newer_held_datagram_is_applied() {
         Ok(CommandOutcome::Applied)
     );
     assert_eq!(
-        server.submit(RELIABLE, 1, ArpgCommand::PrimaryAttack),
+        server.submit(RELIABLE, 1, ArpgCommand::PrimaryAttack { aim: None }),
         Ok(CommandOutcome::Applied),
         "a reliable one-shot is judged only against the reliable watermark"
     );
@@ -214,7 +214,7 @@ fn a_reliable_attack_overtaken_by_a_newer_held_datagram_is_applied() {
 fn a_one_shot_re_sent_after_reconnect_is_a_duplicate_and_attacks_once() {
     let mut server = Dedicated::new(dummy());
     assert_eq!(
-        server.submit(RELIABLE, 1, ArpgCommand::PrimaryAttack),
+        server.submit(RELIABLE, 1, ArpgCommand::PrimaryAttack { aim: None }),
         Ok(CommandOutcome::Applied)
     );
     // Past the wind-up, where a second attack input would buffer a combo follow-up.
@@ -230,13 +230,13 @@ fn a_one_shot_re_sent_after_reconnect_is_a_duplicate_and_attacks_once() {
         "fixture: the attack is still running and accepts combo input"
     );
     assert_eq!(
-        server.submit(RELIABLE, 1, ArpgCommand::PrimaryAttack),
+        server.submit(RELIABLE, 1, ArpgCommand::PrimaryAttack { aim: None }),
         Ok(CommandOutcome::IgnoredStale),
         "a resend during the attack is a duplicate"
     );
     server.advance(ACTION_TICKS);
     assert_eq!(
-        server.submit(RELIABLE, 1, ArpgCommand::PrimaryAttack),
+        server.submit(RELIABLE, 1, ArpgCommand::PrimaryAttack { aim: None }),
         Ok(CommandOutcome::IgnoredStale),
         "a resend after the attack is a duplicate"
     );
@@ -245,7 +245,7 @@ fn a_one_shot_re_sent_after_reconnect_is_a_duplicate_and_attacks_once() {
     assert!(!server.ever_buffered(), "a duplicate queued a combo input");
 
     assert_eq!(
-        server.submit(RELIABLE, 2, ArpgCommand::PrimaryAttack),
+        server.submit(RELIABLE, 2, ArpgCommand::PrimaryAttack { aim: None }),
         Ok(CommandOutcome::Applied)
     );
     server.advance(ACTION_TICKS);
@@ -275,11 +275,11 @@ fn an_unacknowledged_one_shot_lands_after_reconnect_behind_newer_held_datagrams(
         );
     }
     assert_eq!(
-        server.submit(RELIABLE, 2, ArpgCommand::PrimaryAttack),
+        server.submit(RELIABLE, 2, ArpgCommand::PrimaryAttack { aim: None }),
         Ok(CommandOutcome::Applied)
     );
     assert_eq!(
-        server.submit(RELIABLE, 2, ArpgCommand::PrimaryAttack),
+        server.submit(RELIABLE, 2, ArpgCommand::PrimaryAttack { aim: None }),
         Ok(CommandOutcome::IgnoredStale)
     );
     server.advance(ACTION_TICKS);
@@ -330,13 +330,13 @@ fn every_one_shot_kind_is_applied_on_the_reliable_lane_behind_newer_datagrams() 
     );
     assert_eq!(server.player().weapon, Weapon::SwordAndShield);
 
-    send(&mut server, ArpgCommand::PrimaryAttack);
+    send(&mut server, ArpgCommand::PrimaryAttack { aim: None });
     assert_eq!(
         server.player().action.map(|action| action.kind),
         Some(ActionKind::PrimaryAttack)
     );
     server.advance(ACTION_TICKS);
-    send(&mut server, ArpgCommand::SecondaryAttack);
+    send(&mut server, ArpgCommand::SecondaryAttack { aim: None });
     assert_eq!(
         server.player().action.map(|action| action.kind),
         Some(ActionKind::SecondaryAttack)
@@ -415,7 +415,7 @@ fn recovery_replays_mixed_lanes_and_keeps_both_watermarks() {
         Ok(CommandOutcome::Applied)
     );
     assert_eq!(
-        server.submit(RELIABLE, 1, ArpgCommand::PrimaryAttack),
+        server.submit(RELIABLE, 1, ArpgCommand::PrimaryAttack { aim: None }),
         Ok(CommandOutcome::Applied)
     );
     server.advance(5);
@@ -439,7 +439,7 @@ fn recovery_replays_mixed_lanes_and_keeps_both_watermarks() {
         .unwrap();
 
     assert_eq!(
-        recovered.submit(RELIABLE, 1, ArpgCommand::PrimaryAttack),
+        recovered.submit(RELIABLE, 1, ArpgCommand::PrimaryAttack { aim: None }),
         Ok(CommandOutcome::IgnoredStale)
     );
     assert_eq!(

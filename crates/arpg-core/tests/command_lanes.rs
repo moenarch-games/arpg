@@ -94,7 +94,7 @@ fn a_reliable_one_shot_behind_a_newer_datagram_is_applied() {
         &mut game,
         CommandLane::Reliable,
         1,
-        ArpgCommand::PrimaryAttack,
+        ArpgCommand::PrimaryAttack { aim: None },
     )
     .expect("a reliable command is judged only against the reliable watermark");
 
@@ -113,7 +113,7 @@ fn a_duplicate_reliable_sequence_is_stale_and_changes_nothing() {
         &mut game,
         CommandLane::Reliable,
         1,
-        ArpgCommand::PrimaryAttack,
+        ArpgCommand::PrimaryAttack { aim: None },
     )
     .unwrap();
     let before = game.snapshot().unwrap();
@@ -123,7 +123,7 @@ fn a_duplicate_reliable_sequence_is_stale_and_changes_nothing() {
             &mut game,
             CommandLane::Reliable,
             1,
-            ArpgCommand::PrimaryAttack
+            ArpgCommand::PrimaryAttack { aim: None }
         ),
         Err(STALE.to_owned())
     );
@@ -139,7 +139,7 @@ fn a_duplicate_reliable_sequence_is_stale_and_changes_nothing() {
             &mut game,
             CommandLane::Reliable,
             1,
-            ArpgCommand::PrimaryAttack
+            ArpgCommand::PrimaryAttack { aim: None }
         ),
         Err(STALE.to_owned())
     );

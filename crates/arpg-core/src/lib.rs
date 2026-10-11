@@ -351,8 +351,18 @@ pub enum ArpgCommand {
         x: i8,
         z: i8,
     },
-    PrimaryAttack,
-    SecondaryAttack,
+    /// Light attack. `aim`, when present, is the aim intent the attack commits: it is
+    /// validated and applied exactly like `SetAim` before the attack, in the same command,
+    /// so the direction never depends on a separately sent (and possibly lost) aim.
+    PrimaryAttack {
+        #[serde(default)]
+        aim: Option<[i16; 2]>,
+    },
+    /// Heavy attack; `aim` as for `PrimaryAttack`.
+    SecondaryAttack {
+        #[serde(default)]
+        aim: Option<[i16; 2]>,
+    },
     Interact,
     /// Held shield input: `raised: true` while the guard button is held.
     SetGuard {
@@ -364,8 +374,12 @@ pub enum ArpgCommand {
     },
     /// Starts drawing the bow (held input).
     DrawBow,
-    /// Releases the drawn bow: shoots once if drawn at least the minimum.
-    ReleaseBow,
+    /// Releases the drawn bow: shoots once if drawn at least the minimum. `aim` as for
+    /// `PrimaryAttack`; it is applied even when the release shoots nothing.
+    ReleaseBow {
+        #[serde(default)]
+        aim: Option<[i16; 2]>,
+    },
     /// Lowers a drawn bow without shooting (focus loss, menus, explicit cancel).
     CancelBow,
     /// Semantic aim intent (mouse, stick or touch), independent of movement. `Some` points
@@ -380,6 +394,19 @@ pub enum ArpgCommand {
     CycleTarget,
     /// Drops the target lock.
     ClearTarget,
+}
+
+impl ArpgCommand {
+    /// The aim an aimed one-shot (`PrimaryAttack`, `SecondaryAttack`, `ReleaseBow`) carries
+    /// for itself; `None` for every other command and for an unaimed one-shot.
+    pub fn embedded_aim(&self) -> Option<[i16; 2]> {
+        match *self {
+            Self::PrimaryAttack { aim }
+            | Self::SecondaryAttack { aim }
+            | Self::ReleaseBow { aim } => aim,
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -3530,6 +3557,23 @@ impl ArpgGame {
         Ok(locked.or_else(|| self.players.get(&player_id).and_then(|state| state.aim)))
     }
 
+    /// Applies `SetAim`: validates `direction`, makes it the held aim intent and refreshes
+    /// the facing. Nothing changes when the direction is rejected.
+    fn set_aim(
+        &mut self,
+        player_id: PlayerId,
+        direction: Option<[i16; 2]>,
+    ) -> Result<(), GameError> {
+        if let Some(direction) = direction {
+            Self::validate_aim(direction)?;
+        }
+        self.players
+            .get_mut(&player_id)
+            .ok_or_else(|| GameError::new("aim references an unknown player"))?
+            .aim = direction;
+        self.refresh_facing(player_id)
+    }
+
     /// Points the facing at the lock, else the aim intent, else the movement direction
     /// (unchanged while standing still without aim).
     fn refresh_facing(&mut self, player_id: PlayerId) -> Result<(), GameError> {
@@ -4981,6 +5025,12 @@ impl AuthoritativeGame for ArpgGame {
             return Err(GameError::new("command sequence is stale"));
         }
 
+        // An aimed one-shot is `SetAim` followed by the unaimed command; an invalid aim
+        // rejects the whole command before anything changes.
+        if let Some(aim) = command.command.embedded_aim() {
+            self.set_aim(command.player_id, Some(aim))?;
+        }
+
         match command.command {
             ArpgCommand::SetMovement { x, z } => {
                 let state = self
@@ -4992,16 +5042,7 @@ impl AuthoritativeGame for ArpgGame {
                 // Movement turns the facing only while no aim or lock owns it.
                 self.refresh_facing(command.player_id)?;
             }
-            ArpgCommand::SetAim { direction } => {
-                if let Some(direction) = direction {
-                    Self::validate_aim(direction)?;
-                }
-                self.players
-                    .get_mut(&command.player_id)
-                    .expect("player existence checked")
-                    .aim = direction;
-                self.refresh_facing(command.player_id)?;
-            }
+            ArpgCommand::SetAim { direction } => self.set_aim(command.player_id, direction)?,
             ArpgCommand::CycleTarget => {
                 self.cycle_target(command.player_id)?;
                 self.refresh_facing(command.player_id)?;
@@ -5013,12 +5054,12 @@ impl AuthoritativeGame for ArpgGame {
                     .locked_monster_id = None;
                 self.refresh_facing(command.player_id)?;
             }
-            ArpgCommand::PrimaryAttack | ArpgCommand::SecondaryAttack
+            ArpgCommand::PrimaryAttack { .. } | ArpgCommand::SecondaryAttack { .. }
                 if self.players[&command.player_id].weapon == Weapon::Bow =>
             {
                 // Sword strikes need the sword; the bow uses draw/release.
             }
-            ArpgCommand::PrimaryAttack => {
+            ArpgCommand::PrimaryAttack { .. } => {
                 let tick = self.tick;
                 let aim = self.intent_aim(command.player_id)?;
                 let state = self
@@ -5036,7 +5077,7 @@ impl AuthoritativeGame for ArpgGame {
                     self.start_action(command.player_id, ActionKind::PrimaryAttack)?
                 }
             }
-            ArpgCommand::SecondaryAttack => {
+            ArpgCommand::SecondaryAttack { .. } => {
                 let aim = self.intent_aim(command.player_id)?;
                 let state = self
                     .players
@@ -5086,7 +5127,7 @@ impl AuthoritativeGame for ArpgGame {
                     state.draw_ticks = Some(0);
                 }
             }
-            ArpgCommand::ReleaseBow => {
+            ArpgCommand::ReleaseBow { .. } => {
                 // The release commits the direction: a lock lost later never steers the shot.
                 let aim = self.intent_aim(command.player_id)?;
                 let state = self
@@ -6077,8 +6118,10 @@ mod tests {
             Vec3i::new(7, 0, 0)
         );
 
-        game.apply_command(PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         game.advance_tick().unwrap();
 
         assert_eq!(
@@ -6161,9 +6204,14 @@ mod tests {
         monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
 
         for sequence in 1..=3 {
-            run_action(&mut game, 1, sequence, ArpgCommand::PrimaryAttack);
+            run_action(
+                &mut game,
+                1,
+                sequence,
+                ArpgCommand::PrimaryAttack { aim: None },
+            );
         }
-        run_action(&mut game, 2, 1, ArpgCommand::PrimaryAttack);
+        run_action(&mut game, 2, 1, ArpgCommand::PrimaryAttack { aim: None });
 
         let snapshot = game.snapshot().unwrap();
         let first = snapshot
@@ -6180,7 +6228,7 @@ mod tests {
         assert_eq!(second.experience, MONSTER_EXPERIENCE_REWARD);
         assert_eq!(snapshot.ground_loot.len(), 1);
 
-        run_action(&mut game, 2, 2, ArpgCommand::PrimaryAttack);
+        run_action(&mut game, 2, 2, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(
             game.snapshot()
                 .unwrap()
@@ -6215,7 +6263,7 @@ mod tests {
         monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
         monster.health = 30;
 
-        run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack);
+        run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(
             game.monsters
                 .iter()
@@ -6252,7 +6300,7 @@ mod tests {
         monster.position = Vec3i::new(center_x + 180, PLAYER_Y, center_z);
         monster.health = 100;
 
-        run_action(&mut game, 1, 1, ArpgCommand::SecondaryAttack);
+        run_action(&mut game, 1, 1, ArpgCommand::SecondaryAttack { aim: None });
         assert_eq!(
             game.monsters
                 .iter()
@@ -6262,7 +6310,7 @@ mod tests {
             100
         );
 
-        run_action(&mut game, 1, 2, ArpgCommand::PrimaryAttack);
+        run_action(&mut game, 1, 2, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(
             game.monsters
                 .iter()
@@ -6277,7 +6325,7 @@ mod tests {
             .find(|monster| monster.room_id == room_id)
             .unwrap()
             .position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
-        run_action(&mut game, 1, 3, ArpgCommand::SecondaryAttack);
+        run_action(&mut game, 1, 3, ArpgCommand::SecondaryAttack { aim: None });
         assert_eq!(
             game.monsters
                 .iter()
@@ -6423,8 +6471,10 @@ mod tests {
             PlayerCommand::new(1, 1, ArpgCommand::SetMovement { x: -1, z: 0 }).unwrap(),
         )
         .unwrap();
-        game.apply_command(PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         for _ in 0..PRIMARY_WINDUP_TICKS {
             game.advance_tick().unwrap();
         }
@@ -6455,8 +6505,10 @@ mod tests {
             .position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
 
         game.advance_tick().unwrap();
-        game.apply_command(PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         for _ in 0..PRIMARY_WINDUP_TICKS {
             game.advance_tick().unwrap();
         }
@@ -6494,7 +6546,7 @@ mod tests {
         monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
         monster.health = BASE_ATTACK_DAMAGE;
 
-        run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack);
+        run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack { aim: None });
 
         let after_kill = game.snapshot().unwrap();
         assert_eq!(after_kill.players[0].gold, 0);
@@ -6569,8 +6621,10 @@ mod tests {
             PlayerCommand::new(1, 1, ArpgCommand::SetMovement { x: 1, z: 0 }).unwrap(),
         )
         .unwrap();
-        game.apply_command(PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
 
         let start_position = game.snapshot().unwrap().players[0].position;
         let action = game.snapshot().unwrap().players[0].action.unwrap();
@@ -6640,7 +6694,7 @@ mod tests {
         monster.position = Vec3i::new(center_x - 100, PLAYER_Y, center_z);
         monster.health = 100;
 
-        run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack);
+        run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(
             game.monsters
                 .iter()
@@ -6654,7 +6708,7 @@ mod tests {
             PlayerCommand::new(1, 2, ArpgCommand::SetMovement { x: -1, z: 0 }).unwrap(),
         )
         .unwrap();
-        run_action(&mut game, 1, 3, ArpgCommand::PrimaryAttack);
+        run_action(&mut game, 1, 3, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(
             game.monsters
                 .iter()
@@ -6762,7 +6816,7 @@ mod tests {
         place_monster(&mut game, 4, x, z + 100);
         place_monster(&mut game, 5, x, z - 100);
 
-        let outcomes = strike(&mut game, 1, ArpgCommand::PrimaryAttack);
+        let outcomes = strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(
             targets(&outcomes),
             [
@@ -6786,7 +6840,7 @@ mod tests {
         place_monster(&mut game, 7, x + 120, z - 20);
         place_monster(&mut game, 6, x + 140, z);
 
-        let outcomes = strike(&mut game, 1, ArpgCommand::SecondaryAttack);
+        let outcomes = strike(&mut game, 1, ArpgCommand::SecondaryAttack { aim: None });
         let heavy_damage = BASE_ATTACK_DAMAGE * SECONDARY_ATTACK_DAMAGE_NUMERATOR
             / SECONDARY_ATTACK_DAMAGE_DENOMINATOR;
         assert_eq!(
@@ -6815,10 +6869,14 @@ mod tests {
         place_monster(&mut game, 5, x + 100, z + 174);
         place_monster(&mut game, 6, x, z);
 
-        let mut hit = targets(&strike(&mut game, 1, ArpgCommand::PrimaryAttack))
-            .into_iter()
-            .map(|(target, _)| target)
-            .collect::<Vec<_>>();
+        let mut hit = targets(&strike(
+            &mut game,
+            1,
+            ArpgCommand::PrimaryAttack { aim: None },
+        ))
+        .into_iter()
+        .map(|(target, _)| target)
+        .collect::<Vec<_>>();
         hit.sort();
         assert_eq!(
             hit,
@@ -6854,7 +6912,7 @@ mod tests {
                 }
             }
             expected.sort_unstable();
-            let outcomes = strike(&mut game, 1, ArpgCommand::PrimaryAttack);
+            let outcomes = strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None });
             assert!(outcomes.iter().all(|outcome| outcome.result == LIGHT_HIT));
             assert_eq!(
                 outcomes
@@ -6875,11 +6933,13 @@ mod tests {
         let (mut game, x, z) = strike_arena();
         // Behind the player and beyond its own reach, keeping the encounter active.
         place_monster(&mut game, 1, x - 250, z);
-        assert!(strike(&mut game, 1, ArpgCommand::PrimaryAttack).is_empty());
+        assert!(strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None }).is_empty());
 
         game.monsters[0].position.x = x + 100;
-        game.apply_command(PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         game.advance_tick().unwrap();
         game.monsters[0].position.x = x + 300;
         while game.players.get(&1).unwrap().action.is_some() {
@@ -6889,15 +6949,20 @@ mod tests {
         assert_eq!(monster_health(&game, 1), 100);
 
         game.monsters[0].position.x = x + 100;
-        assert_eq!(strike(&mut game, 3, ArpgCommand::PrimaryAttack).len(), 1);
+        assert_eq!(
+            strike(&mut game, 3, ArpgCommand::PrimaryAttack { aim: None }).len(),
+            1
+        );
     }
 
     #[test]
     fn targets_moving_into_the_volume_before_the_active_window_are_hit() {
         let (mut game, x, z) = strike_arena();
         place_monster(&mut game, 1, x + 400, z);
-        game.apply_command(PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         game.advance_tick().unwrap();
         game.monsters[0].position.x = x + 100;
         let mut outcomes = Vec::new();
@@ -6915,7 +6980,7 @@ mod tests {
         game.monsters[0].health = 0;
         place_monster(&mut game, 2, x + 120, z);
         game.monsters[1].room_id = STRIKE_ROOM + 1;
-        assert!(strike(&mut game, 1, ArpgCommand::PrimaryAttack).is_empty());
+        assert!(strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None }).is_empty());
         assert_eq!(monster_health(&game, 2), 100);
     }
 
@@ -6923,8 +6988,8 @@ mod tests {
     fn each_strike_hits_a_target_once_and_repeated_strikes_have_distinct_ids() {
         let (mut game, x, z) = strike_arena();
         place_monster(&mut game, 1, x + 100, z);
-        let first = strike(&mut game, 1, ArpgCommand::PrimaryAttack);
-        let second = strike(&mut game, 2, ArpgCommand::PrimaryAttack);
+        let first = strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None });
+        let second = strike(&mut game, 2, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(first.len(), 1);
         assert_eq!(second.len(), 1);
         assert_ne!(first[0].strike, second[0].strike);
@@ -6944,7 +7009,7 @@ mod tests {
             Vec3i::new(10, WALL_HALF_HEIGHT, 15),
         );
 
-        let outcomes = strike(&mut game, 1, ArpgCommand::SecondaryAttack);
+        let outcomes = strike(&mut game, 1, ArpgCommand::SecondaryAttack { aim: None });
         assert_eq!(outcomes.len(), 2);
         assert_eq!(
             (outcomes[0].target, outcomes[0].result),
@@ -6970,8 +7035,10 @@ mod tests {
         game.reconcile_encounters().unwrap();
         game.monsters.clear();
         place_monster(&mut game, 1, x + 100, z);
-        game.apply_command(PlayerCommand::new(10_000, 1, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(10_000, 1, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         let mut outcomes = Vec::new();
         while game.players.get(&10_000).unwrap().action.is_some() {
             game.advance_tick().unwrap();
@@ -7011,7 +7078,7 @@ mod tests {
         state.facing_z = i8::try_from(-step_z).unwrap();
         place_monster(&mut game, 1, door_x - step_x * 80, door_z - step_z * 80);
 
-        let outcomes = strike(&mut game, 1, ArpgCommand::PrimaryAttack);
+        let outcomes = strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(
             targets(&outcomes),
             [(StrikeTarget::Monster(1), StrikeResult::Obstructed)]
@@ -7295,8 +7362,10 @@ mod tests {
             game.advance_tick().unwrap();
         }
         assert!(game.players.get(&1).unwrap().guard.is_raised());
-        game.apply_command(PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         assert_eq!(game.players.get(&1).unwrap().guard.stance, None);
         while game.players.get(&1).unwrap().action.is_some() {
             game.advance_tick().unwrap();
@@ -7422,7 +7491,7 @@ mod tests {
         assert_eq!(game.players.get(&1).unwrap().counter, None);
         assert_eq!(claw(&mut game, 1), CLAW_HIT);
         assert_eq!(game.players.get(&1).unwrap().counter, None);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(
             action_kind(&game),
             Some(ActionKind::PrimaryAttack),
@@ -7433,7 +7502,7 @@ mod tests {
     #[test]
     fn a_timed_primary_attack_executes_the_counter_and_consumes_it() {
         let (mut game, x, _) = blocked_once(120);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(action_kind(&game), Some(ActionKind::Counter));
         assert_eq!(game.players.get(&1).unwrap().counter, None);
         let mut outcomes = Vec::new();
@@ -7457,7 +7526,7 @@ mod tests {
         );
         let _ = x;
 
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(
             action_kind(&game),
             Some(ActionKind::PrimaryAttack),
@@ -7478,7 +7547,7 @@ mod tests {
             for _ in 0..delay {
                 game.advance_tick().unwrap();
             }
-            command(&mut game, ArpgCommand::PrimaryAttack);
+            command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
             let expected = if expect_counter {
                 ActionKind::Counter
             } else {
@@ -7506,18 +7575,20 @@ mod tests {
             charge: 0,
             aim: None,
         });
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(action_kind(&game), Some(ActionKind::Interact));
         assert!(game.players.get(&1).unwrap().counter.is_some());
 
         game.players.get_mut(&1).unwrap().action = None;
         let sequence = game.last_sequences[&1] + 1;
-        game.apply_command(PlayerCommand::new(1, sequence, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, sequence, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         assert_eq!(action_kind(&game), Some(ActionKind::Counter));
         assert!(
             game.apply_command(
-                PlayerCommand::new(1, sequence, ArpgCommand::PrimaryAttack).unwrap()
+                PlayerCommand::new(1, sequence, ArpgCommand::PrimaryAttack { aim: None }).unwrap()
             )
             .is_err(),
             "a duplicated delivery is stale"
@@ -7527,7 +7598,7 @@ mod tests {
     #[test]
     fn the_counter_can_miss_a_retreating_attacker() {
         let (mut game, x, z) = blocked_once(120);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         game.monsters[0].position = Vec3i::new(x + 400, PLAYER_Y, z);
         while game.players.get(&1).unwrap().action.is_some() {
             game.advance_tick().unwrap();
@@ -7593,7 +7664,7 @@ mod tests {
         raise_guard_fully(&mut game);
         assert_eq!(claw(&mut game, monster_id), CLAW_BLOCKED);
         game.tick += 1;
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(action_kind(&game), Some(ActionKind::Counter));
         while game.monsters[index].stagger_ticks_remaining == 0 {
             game.advance_tick().unwrap();
@@ -7705,44 +7776,44 @@ mod tests {
     #[test]
     fn light_light_light_chains_into_the_finisher() {
         let mut game = combo_arena(true);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         advance_to_recovery(&mut game, ActionKind::PrimaryAttack, 2);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(action_kind(&game), Some(ActionKind::LightFollowUp));
         advance_to_recovery(&mut game, ActionKind::LightFollowUp, 3);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(action_kind(&game), Some(ActionKind::LightFinisher));
         assert_eq!(player_definitions(&mut game), ["sword.lightFinisher"]);
         // The chain ends with the finisher; the next press starts over.
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(action_kind(&game), Some(ActionKind::PrimaryAttack));
     }
 
     #[test]
     fn light_light_heavy_finisher_requires_the_second_strike_to_connect() {
         let mut game = combo_arena(true);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         advance_to_recovery(&mut game, ActionKind::PrimaryAttack, 2);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         advance_to_recovery(&mut game, ActionKind::LightFollowUp, 2);
         assert!(current_action(&game).unwrap().connected);
-        command(&mut game, ArpgCommand::SecondaryAttack);
+        command(&mut game, ArpgCommand::SecondaryAttack { aim: None });
         assert_eq!(action_kind(&game), Some(ActionKind::HeavyFinisher));
         assert_eq!(player_definitions(&mut game), ["sword.heavyFinisher"]);
 
         let mut whiff = combo_arena(false);
-        command(&mut whiff, ArpgCommand::PrimaryAttack);
+        command(&mut whiff, ArpgCommand::PrimaryAttack { aim: None });
         advance_to_recovery(&mut whiff, ActionKind::PrimaryAttack, 2);
-        command(&mut whiff, ArpgCommand::PrimaryAttack);
+        command(&mut whiff, ArpgCommand::PrimaryAttack { aim: None });
         advance_to_recovery(&mut whiff, ActionKind::LightFollowUp, 2);
         assert!(!current_action(&whiff).unwrap().connected);
-        command(&mut whiff, ArpgCommand::SecondaryAttack);
+        command(&mut whiff, ArpgCommand::SecondaryAttack { aim: None });
         assert_eq!(
             action_kind(&whiff),
             Some(ActionKind::LightFollowUp),
             "no hit, no heavy branch"
         );
-        command(&mut whiff, ArpgCommand::PrimaryAttack);
+        command(&mut whiff, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(
             action_kind(&whiff),
             Some(ActionKind::LightFinisher),
@@ -7760,9 +7831,9 @@ mod tests {
             (7, ActionKind::LightFollowUp),
         ] {
             let mut game = combo_arena(false);
-            command(&mut game, ArpgCommand::PrimaryAttack);
+            command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
             advance_to_recovery(&mut game, ActionKind::PrimaryAttack, elapsed);
-            command(&mut game, ArpgCommand::PrimaryAttack);
+            command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
             assert_eq!(
                 action_kind(&game),
                 Some(expected),
@@ -7786,19 +7857,19 @@ mod tests {
 
         // After the interval the opener has ended and a press starts over.
         let mut game = combo_arena(false);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         advance_to_recovery(&mut game, ActionKind::PrimaryAttack, 7);
         game.advance_tick().unwrap();
         assert_eq!(action_kind(&game), None);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(action_kind(&game), Some(ActionKind::PrimaryAttack));
     }
 
     #[test]
     fn wind_up_presses_are_ignored_and_spam_keeps_one_intent() {
         let mut game = combo_arena(false);
-        command(&mut game, ArpgCommand::PrimaryAttack);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(
             current_action(&game).unwrap().buffered,
             None,
@@ -7807,8 +7878,8 @@ mod tests {
 
         advance_to_phase(&mut game, ActionKind::PrimaryAttack, ActionPhase::Active);
         for _ in 0..5 {
-            command(&mut game, ArpgCommand::PrimaryAttack);
-            command(&mut game, ArpgCommand::SecondaryAttack);
+            command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
+            command(&mut game, ArpgCommand::SecondaryAttack { aim: None });
         }
         assert_eq!(
             current_action(&game).unwrap().buffered,
@@ -7826,11 +7897,11 @@ mod tests {
     #[test]
     fn an_unearned_buffered_heavy_branch_is_dropped_at_the_interval() {
         let mut game = combo_arena(false);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         advance_to_recovery(&mut game, ActionKind::PrimaryAttack, 2);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         advance_to_phase(&mut game, ActionKind::LightFollowUp, ActionPhase::Active);
-        command(&mut game, ArpgCommand::SecondaryAttack);
+        command(&mut game, ArpgCommand::SecondaryAttack { aim: None });
         assert_eq!(
             current_action(&game).unwrap().buffered,
             Some(ComboInput::Heavy)
@@ -7847,20 +7918,20 @@ mod tests {
     fn same_tick_inputs_resolve_in_sequence_order() {
         for (first, second, expected) in [
             (
-                ArpgCommand::SecondaryAttack,
-                ArpgCommand::PrimaryAttack,
+                ArpgCommand::SecondaryAttack { aim: None },
+                ArpgCommand::PrimaryAttack { aim: None },
                 ActionKind::HeavyFinisher,
             ),
             (
-                ArpgCommand::PrimaryAttack,
-                ArpgCommand::SecondaryAttack,
+                ArpgCommand::PrimaryAttack { aim: None },
+                ArpgCommand::SecondaryAttack { aim: None },
                 ActionKind::LightFinisher,
             ),
         ] {
             let mut game = combo_arena(true);
-            command(&mut game, ArpgCommand::PrimaryAttack);
+            command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
             advance_to_recovery(&mut game, ActionKind::PrimaryAttack, 2);
-            command(&mut game, ArpgCommand::PrimaryAttack);
+            command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
             advance_to_recovery(&mut game, ActionKind::LightFollowUp, 2);
             command(&mut game, first);
             command(&mut game, second);
@@ -7876,18 +7947,18 @@ mod tests {
     #[test]
     fn heavy_openers_and_interactions_have_no_light_combo() {
         let mut game = combo_arena(false);
-        command(&mut game, ArpgCommand::SecondaryAttack);
+        command(&mut game, ArpgCommand::SecondaryAttack { aim: None });
         advance_to_recovery(&mut game, ActionKind::SecondaryAttack, 3);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(action_kind(&game), Some(ActionKind::SecondaryAttack));
     }
 
     #[test]
     fn interruption_and_death_clear_the_chain() {
         let mut game = combo_arena(false);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         advance_to_phase(&mut game, ActionKind::PrimaryAttack, ActionPhase::Active);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         place_monster(&mut game, 2, 0, 0);
         let (x, z) = {
             let position = game
@@ -7913,10 +7984,10 @@ mod tests {
     #[test]
     fn a_counter_continues_into_the_declared_follow_up() {
         let (mut game, _, _) = blocked_once(120);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(action_kind(&game), Some(ActionKind::Counter));
         advance_to_recovery(&mut game, ActionKind::Counter, 2);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(action_kind(&game), Some(ActionKind::LightFollowUp));
     }
 
@@ -7924,11 +7995,15 @@ mod tests {
     fn saving_mid_chain_with_a_buffered_input_continues_identically() {
         let mut game = ArpgGame::new_with_seed(42).unwrap();
         game.add_player(1).unwrap();
-        game.apply_command(PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         advance_to_phase(&mut game, ActionKind::PrimaryAttack, ActionPhase::Active);
-        game.apply_command(PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         assert!(current_action(&game).unwrap().buffered.is_some());
         let save = game.save_state().unwrap();
         let mut restored = ArpgGame::from_save_state(save.clone()).unwrap();
@@ -7983,7 +8058,7 @@ mod tests {
 
     /// Releases and runs until the shot's arrows are gone, collecting arrow outcomes.
     fn release_and_fly(game: &mut ArpgGame) -> Vec<StrikeOutcome> {
-        command(game, ArpgCommand::ReleaseBow);
+        command(game, ArpgCommand::ReleaseBow { aim: None });
         let mut outcomes = Vec::new();
         for _ in 0..80 {
             game.advance_tick().unwrap();
@@ -8005,8 +8080,8 @@ mod tests {
         let (mut game, x, z) = bow_arena();
         draw_for(&mut game, BOW_FULL_DRAW_TICKS + 5);
         assert_eq!(game.players[&1].draw_ticks, Some(BOW_FULL_DRAW_TICKS));
-        command(&mut game, ArpgCommand::ReleaseBow);
-        command(&mut game, ArpgCommand::ReleaseBow);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
         assert_eq!(action_kind(&game), Some(ActionKind::Shoot));
         while game.arrows.is_empty() {
             game.advance_tick().unwrap();
@@ -8029,17 +8104,17 @@ mod tests {
     fn short_draws_cancels_and_sword_loadouts_never_shoot() {
         let (mut game, _, _) = bow_arena();
         draw_for(&mut game, BOW_MIN_DRAW_TICKS - 1);
-        command(&mut game, ArpgCommand::ReleaseBow);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
         assert_eq!(action_kind(&game), None);
 
         draw_for(&mut game, BOW_FULL_DRAW_TICKS);
         command(&mut game, ArpgCommand::CancelBow);
-        command(&mut game, ArpgCommand::ReleaseBow);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
         assert_eq!(action_kind(&game), None);
 
         draw_for(&mut game, BOW_MIN_DRAW_TICKS);
         let charge_ok = {
-            command(&mut game, ArpgCommand::ReleaseBow);
+            command(&mut game, ArpgCommand::ReleaseBow { aim: None });
             current_action(&game).map(|action| action.charge)
         };
         assert_eq!(
@@ -8051,7 +8126,7 @@ mod tests {
         let (mut sword, _, _) = strike_arena();
         command(&mut sword, ArpgCommand::DrawBow);
         assert_eq!(sword.players[&1].draw_ticks, None);
-        command(&mut sword, ArpgCommand::ReleaseBow);
+        command(&mut sword, ArpgCommand::ReleaseBow { aim: None });
         assert!(sword.arrows.is_empty() && current_action(&sword).is_none());
     }
 
@@ -8083,7 +8158,7 @@ mod tests {
         let (mut game, x, z) = bow_arena();
         place_monster(&mut game, 1, x + 900, z);
         draw_for(&mut game, BOW_FULL_DRAW_TICKS);
-        command(&mut game, ArpgCommand::ReleaseBow);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
         while game.arrows.is_empty() {
             game.advance_tick().unwrap();
         }
@@ -8165,7 +8240,7 @@ mod tests {
         state.facing_x = 1;
         state.facing_z = -1;
         draw_for(&mut game, BOW_FULL_DRAW_TICKS);
-        command(&mut game, ArpgCommand::ReleaseBow);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
         while game.arrows.is_empty() {
             game.advance_tick().unwrap();
         }
@@ -8181,7 +8256,7 @@ mod tests {
         assert_eq!(claw(&mut game, 2), CLAW_HIT);
         game.advance_tick().unwrap();
         assert_eq!(game.players[&1].draw_ticks, None);
-        command(&mut game, ArpgCommand::ReleaseBow);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
         assert_eq!(action_kind(&game), None);
 
         let (mut game, _, _) = bow_arena();
@@ -8192,7 +8267,7 @@ mod tests {
                 weapon: Weapon::SwordAndShield,
             },
         );
-        command(&mut game, ArpgCommand::ReleaseBow);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
         assert_eq!(game.players[&1].draw_ticks, None);
         assert_eq!(action_kind(&game), None);
 
@@ -8252,14 +8327,14 @@ mod tests {
         place_monster(&mut game, 2, x - 100, z);
         // The claw lands after this tick's draw step; the release arrives before the next.
         assert_eq!(claw(&mut game, 2), CLAW_HIT);
-        command(&mut game, ArpgCommand::ReleaseBow);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
         assert_eq!(action_kind(&game), None);
 
         let (mut game, _, _) = bow_arena();
         draw_for(&mut game, BOW_FULL_DRAW_TICKS);
         let state = game.players.get_mut(&1).unwrap();
         state.health = 0;
-        command(&mut game, ArpgCommand::ReleaseBow);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
         assert_eq!(action_kind(&game), None);
         assert!(game.arrows.is_empty());
     }
@@ -8278,8 +8353,8 @@ mod tests {
                 weapon: Weapon::Bow,
             },
         );
-        command(&mut game, ArpgCommand::PrimaryAttack);
-        command(&mut game, ArpgCommand::SecondaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
+        command(&mut game, ArpgCommand::SecondaryAttack { aim: None });
         assert_eq!(action_kind(&game), None);
         command(&mut game, ArpgCommand::SetGuard { raised: true });
         for _ in 0..10 {
@@ -8294,7 +8369,7 @@ mod tests {
         );
         assert_eq!(game.players[&1].guard.broken_ticks_remaining, 10);
 
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         command(
             &mut game,
             ArpgCommand::EquipWeapon {
@@ -8318,7 +8393,7 @@ mod tests {
             .unwrap()
             .health = 10;
         draw_for(&mut game, BOW_FULL_DRAW_TICKS);
-        command(&mut game, ArpgCommand::ReleaseBow);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
         while game.arrows.is_empty() {
             game.advance_tick().unwrap();
         }
@@ -8367,7 +8442,7 @@ mod tests {
             game.advance_tick().unwrap();
         }
         let before_release = game.save_state().unwrap();
-        send(&mut game, ArpgCommand::ReleaseBow);
+        send(&mut game, ArpgCommand::ReleaseBow { aim: None });
         while game.arrows.is_empty() {
             game.advance_tick().unwrap();
         }
@@ -8528,7 +8603,7 @@ mod tests {
         assert_eq!(ArpgGame::facing_for(aim), (1, 0));
         let (mut game, x, z) = strike_arena();
         place_monster(&mut game, 1, x + 40, z - 175);
-        assert!(strike(&mut game, 1, ArpgCommand::PrimaryAttack).is_empty());
+        assert!(strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None }).is_empty());
 
         let (mut game, x, z) = strike_arena();
         place_monster(&mut game, 1, x + 40, z - 175);
@@ -8538,7 +8613,7 @@ mod tests {
                 direction: Some(aim),
             },
         );
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         let action = game.snapshot().unwrap().players[0].action.unwrap();
         assert_eq!(action.aim, Some(aim));
         assert_eq!(action.facing, [1, 0]);
@@ -8563,7 +8638,7 @@ mod tests {
             },
         );
         draw_for(&mut game, BOW_FULL_DRAW_TICKS);
-        command(&mut game, ArpgCommand::ReleaseBow);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
         // Re-aiming after the release changes nothing about the committed shot.
         command(
             &mut game,
@@ -8686,10 +8761,10 @@ mod tests {
     fn a_locked_strike_turns_towards_the_target() {
         let (mut game, x, z) = strike_arena();
         place_monster(&mut game, 1, x, z - 150);
-        assert!(strike(&mut game, 1, ArpgCommand::PrimaryAttack).is_empty());
+        assert!(strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None }).is_empty());
 
         command(&mut game, ArpgCommand::CycleTarget);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         let action = current_action(&game).unwrap();
         assert_eq!(action.aim, Some([0, -150]));
         assert_eq!((action.facing_x, action.facing_z), (0, -1));
@@ -8735,7 +8810,7 @@ mod tests {
         command(&mut game, ArpgCommand::CycleTarget);
         assert_eq!(locked(&game), Some(1));
         game.monsters[0].health = 0;
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         let action = current_action(&game).unwrap();
         assert_eq!(action.kind, ActionKind::PrimaryAttack);
         // The lock had turned the player; the swing keeps that facing without an aim.
@@ -8749,7 +8824,7 @@ mod tests {
         place_monster(&mut game, 1, x, z - 150);
         place_monster(&mut game, 2, x - 600, z);
         command(&mut game, ArpgCommand::CycleTarget);
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         game.advance_tick().unwrap();
         game.monsters[0].health = 0;
         let mut went_active = false;
@@ -8770,7 +8845,7 @@ mod tests {
         command(&mut game, ArpgCommand::CycleTarget);
         assert_eq!(locked(&game), Some(1));
         draw_for(&mut game, BOW_FULL_DRAW_TICKS);
-        command(&mut game, ArpgCommand::ReleaseBow);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
         // Losing the lock between release and launch does not steer the shot.
         command(&mut game, ArpgCommand::ClearTarget);
         while game.arrows.is_empty() {
@@ -8798,7 +8873,7 @@ mod tests {
         );
         command(&mut game, ArpgCommand::CycleTarget);
         let target = locked(&game).expect("the scenario enemy is in lock range");
-        command(&mut game, ArpgCommand::PrimaryAttack);
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         game.advance_tick().unwrap();
         let saved = game.save_state().unwrap();
         assert_eq!(saved.players[0].aim, Some([-3, 7]));
@@ -8809,7 +8884,7 @@ mod tests {
         for tick in 0..60 {
             if tick == 30 {
                 for game in [&mut game, &mut restored] {
-                    command(game, ArpgCommand::SecondaryAttack);
+                    command(game, ArpgCommand::SecondaryAttack { aim: None });
                 }
             }
             game.advance_tick().unwrap();
@@ -8878,7 +8953,7 @@ mod tests {
                     },
                 ),
                 at(3, 3, ArpgCommand::DrawBow),
-                at(40, 4, ArpgCommand::ReleaseBow),
+                at(40, 4, ArpgCommand::ReleaseBow { aim: None }),
                 at(41, 5, ArpgCommand::ClearTarget),
                 at(
                     42,
@@ -8998,7 +9073,7 @@ mod tests {
 
     #[test]
     fn scenarios_demonstrate_melee_reach_obstruction_and_monster_attacks() {
-        let swing = [(0, ArpgCommand::PrimaryAttack)];
+        let swing = [(0, ArpgCommand::PrimaryAttack { aim: None })];
         let hits = scenario_player_events(ScenarioId::Dummy, &swing, 10);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].definition, "sword.lightSwing");
@@ -9012,7 +9087,7 @@ mod tests {
             ScenarioId::Dummy,
             &[
                 (0, ArpgCommand::SetMovement { x: -1, z: 0 }),
-                (1, ArpgCommand::PrimaryAttack),
+                (1, ArpgCommand::PrimaryAttack { aim: None }),
             ],
             10,
         );
@@ -9048,7 +9123,7 @@ mod tests {
                 },
             ),
             (0, ArpgCommand::DrawBow),
-            (31, ArpgCommand::ReleaseBow),
+            (31, ArpgCommand::ReleaseBow { aim: None }),
         ];
         let hit = scenario_player_events(ScenarioId::Archery, &shot, 60);
         assert_eq!(hit.len(), 1);
@@ -9071,7 +9146,7 @@ mod tests {
                     tick: 0,
                     player_id: 1,
                     sequence: 1,
-                    command: ArpgCommand::PrimaryAttack,
+                    command: ArpgCommand::PrimaryAttack { aim: None },
                 }],
                 operations: Vec::new(),
             };
@@ -9148,7 +9223,7 @@ mod tests {
             );
             assert!(game.players[&1].counter.is_some(), "{seed}");
             command(&mut game, ArpgCommand::SetGuard { raised: false });
-            command(&mut game, ArpgCommand::PrimaryAttack);
+            command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
             // The block opened a real counter: it starts and consumes the opportunity.
             assert_eq!(action_kind(&game), Some(ActionKind::Counter), "{seed}");
             assert!(game.players[&1].counter.is_none(), "{seed}");
@@ -9198,7 +9273,7 @@ mod tests {
                     tick: 40,
                     player_id: 2,
                     sequence: 1,
-                    command: ArpgCommand::PrimaryAttack,
+                    command: ArpgCommand::PrimaryAttack { aim: None },
                 },
             ],
             operations: Vec::new(),
@@ -9230,10 +9305,10 @@ mod tests {
         let script = [
             (0, ArpgCommand::SetGuard { raised: true }),
             (25, ArpgCommand::SetGuard { raised: false }),
-            (26, ArpgCommand::PrimaryAttack),
+            (26, ArpgCommand::PrimaryAttack { aim: None }),
             (26, ArpgCommand::SetMovement { x: 1, z: 0 }),
             (40, ArpgCommand::SetMovement { x: 0, z: 0 }),
-            (41, ArpgCommand::SecondaryAttack),
+            (41, ArpgCommand::SecondaryAttack { aim: None }),
         ];
         let mut sequence = 0;
         let mut live = Vec::new();
@@ -9246,7 +9321,8 @@ mod tests {
             }
             // A command the authority rejects (stale sequence) never reaches the recording.
             if tick == 30 {
-                let stale = PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack).unwrap();
+                let stale =
+                    PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack { aim: None }).unwrap();
                 if game.apply_command(stale.clone()).is_ok() {
                     recorder.record_command(&stale);
                 }
@@ -9273,7 +9349,8 @@ mod tests {
         recorder.record_player_added(1);
         let mut live = Vec::new();
         for sequence in 1..=2 {
-            let command = PlayerCommand::new(1, sequence, ArpgCommand::PrimaryAttack).unwrap();
+            let command =
+                PlayerCommand::new(1, sequence, ArpgCommand::PrimaryAttack { aim: None }).unwrap();
             game.apply_command(command.clone()).unwrap();
             recorder.record_command(&command);
             if sequence == 1 {
@@ -9378,10 +9455,14 @@ mod tests {
         let save = game.save_state().unwrap();
         assert_eq!(save.scenario, ScenarioId::Obstructed);
         let mut restored = ArpgGame::from_save_state(save).unwrap();
-        game.apply_command(PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         restored
-            .apply_command(PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack).unwrap())
+            .apply_command(
+                PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+            )
             .unwrap();
         for _ in 0..12 {
             game.advance_tick().unwrap();
@@ -9602,8 +9683,10 @@ mod tests {
             amount: GROUND_LOOT_GOLD_AMOUNT,
         });
         // Player 1 attacks; player 2 interacts so both resolve in the same tick.
-        game.apply_command(PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 1, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         for _ in 0..(PRIMARY_WINDUP_TICKS - INTERACT_WINDUP_TICKS) {
             game.advance_tick().unwrap();
         }
@@ -10049,7 +10132,7 @@ mod tests {
             .unwrap()
             .health = 1;
 
-        run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack);
+        run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack { aim: None });
 
         let snapshot = game.snapshot().unwrap();
         assert!(!snapshot.monsters.iter().find(|m| m.id == id).unwrap().alive);
@@ -10403,7 +10486,12 @@ mod tests {
             .unwrap();
         monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
         for sequence in 1..=4 {
-            run_action(&mut game, 1, sequence, ArpgCommand::PrimaryAttack);
+            run_action(
+                &mut game,
+                1,
+                sequence,
+                ArpgCommand::PrimaryAttack { aim: None },
+            );
         }
 
         assert_eq!(room_state(&game, room_id), RoomEncounterState::Cleared);
@@ -10442,7 +10530,12 @@ mod tests {
         monster.position = Vec3i::new(player_position.x + 100, PLAYER_Y, player_position.z);
 
         for sequence in 1..=4 {
-            run_action(&mut game, 1, sequence, ArpgCommand::PrimaryAttack);
+            run_action(
+                &mut game,
+                1,
+                sequence,
+                ArpgCommand::PrimaryAttack { aim: None },
+            );
         }
         assert_eq!(
             game.monsters
@@ -10563,8 +10656,10 @@ mod tests {
         for _ in 0..17 {
             game.advance_tick().unwrap();
         }
-        game.apply_command(PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
         for _ in 0..3 {
             game.advance_tick().unwrap();
         }
@@ -10690,8 +10785,10 @@ mod tests {
     fn save_state_restores_command_sequence_fence() {
         let mut game = ArpgGame::new_with_seed(17).unwrap();
         game.add_player(1).unwrap();
-        game.apply_command(PlayerCommand::new(1, 9, ArpgCommand::PrimaryAttack).unwrap())
-            .unwrap();
+        game.apply_command(
+            PlayerCommand::new(1, 9, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
+        )
+        .unwrap();
 
         let mut restored = ArpgGame::from_save_state(game.save_state().unwrap()).unwrap();
         let stale = restored
@@ -11165,7 +11262,7 @@ mod tests {
         place_monster(&mut game, 1, x + 200, z);
         game.monsters[0].engagement = Engagement::Searching { ticks_remaining: 5 };
         // Facing +x: the light swing (reach 220) hits the monster at 200.
-        run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack);
+        run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack { aim: None });
         let state = monster_state(&game, 1);
         assert!(state.health < brute().health);
         assert_eq!(state.engaged_target(), Some(1));
@@ -11177,7 +11274,7 @@ mod tests {
         game.monsters[0].engagement = Engagement::Engaged {
             target_player_id: 2,
         };
-        run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack);
+        run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack { aim: None });
         assert_eq!(monster_state(&game, 1).engaged_target(), Some(2));
     }
 
@@ -11198,7 +11295,7 @@ mod tests {
 
         // Player 1 backs off while player 2 interrupts the wind-up.
         command_as(&mut game, 1, ArpgCommand::SetMovement { x: -1, z: 0 });
-        command_as(&mut game, 2, ArpgCommand::PrimaryAttack);
+        command_as(&mut game, 2, ArpgCommand::PrimaryAttack { aim: None });
         let staggered = (1..=10)
             .find(|_| {
                 game.advance_tick().unwrap();
@@ -12369,7 +12466,7 @@ mod tests {
         for _ in 0..10 {
             game.advance_tick().unwrap();
         }
-        command_as(&mut game, 1, ArpgCommand::PrimaryAttack);
+        command_as(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None });
         let mut interrupted = false;
         let mut slams = Vec::new();
         let mut rewound = None;
@@ -12502,7 +12599,10 @@ mod tests {
                 (100, ArpgCommand::SetMovement { x: 0, z: 0 }),
             ],
         );
-        let heavy = reproduction(ScenarioId::Heavy, vec![(20, ArpgCommand::PrimaryAttack)]);
+        let heavy = reproduction(
+            ScenarioId::Heavy,
+            vec![(20, ArpgCommand::PrimaryAttack { aim: None })],
+        );
         for (case, expected) in [
             (
                 &ranged,

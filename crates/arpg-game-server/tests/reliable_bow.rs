@@ -141,11 +141,11 @@ fn a_delayed_release_then_a_new_draw_and_release_fires_two_shots() {
     // Sequence 3 is the release; the held datagram with sequence 4 reaches the authority
     // first.
     server.applied(DATAGRAM, 4, STAND);
-    server.applied(RELIABLE, 3, ArpgCommand::ReleaseBow);
+    server.applied(RELIABLE, 3, ArpgCommand::ReleaseBow { aim: None });
     server.advance(ACTION_TICKS);
     server.applied(RELIABLE, 5, ArpgCommand::DrawBow);
     server.advance(DRAW_TICKS);
-    server.applied(RELIABLE, 6, ArpgCommand::ReleaseBow);
+    server.applied(RELIABLE, 6, ArpgCommand::ReleaseBow { aim: None });
     server.advance(ACTION_TICKS);
     assert_eq!(server.shots(), 2);
 }
@@ -162,9 +162,9 @@ fn a_lost_release_on_the_datagram_lane_merges_two_shots_into_one() {
     server.advance(ACTION_TICKS);
     server.applied(DATAGRAM, 4, ArpgCommand::DrawBow);
     server.advance(DRAW_TICKS);
-    server.applied(DATAGRAM, 5, ArpgCommand::ReleaseBow);
+    server.applied(DATAGRAM, 5, ArpgCommand::ReleaseBow { aim: None });
     assert_eq!(
-        server.submit(DATAGRAM, 3, ArpgCommand::ReleaseBow),
+        server.submit(DATAGRAM, 3, ArpgCommand::ReleaseBow { aim: None }),
         Ok(CommandOutcome::IgnoredStale)
     );
     server.advance(ACTION_TICKS);
@@ -182,7 +182,7 @@ fn a_release_re_sent_after_reconnect_shoots_once() {
     let mut server = Dedicated::archer();
     server.applied(RELIABLE, 2, ArpgCommand::DrawBow);
     server.advance(DRAW_TICKS);
-    server.applied(RELIABLE, 3, ArpgCommand::ReleaseBow);
+    server.applied(RELIABLE, 3, ArpgCommand::ReleaseBow { aim: None });
 
     let previous = server.lease;
     assert!(
@@ -196,14 +196,14 @@ fn a_release_re_sent_after_reconnect_shoots_once() {
         .reconnect(previous.reconnect_token, token(2))
         .unwrap();
     assert_eq!(
-        server.submit(RELIABLE, 3, ArpgCommand::ReleaseBow),
+        server.submit(RELIABLE, 3, ArpgCommand::ReleaseBow { aim: None }),
         Ok(CommandOutcome::IgnoredStale)
     );
     assert_eq!(server.shots(), 1);
 
     server.applied(RELIABLE, 4, ArpgCommand::DrawBow);
     server.advance(DRAW_TICKS);
-    server.applied(RELIABLE, 5, ArpgCommand::ReleaseBow);
+    server.applied(RELIABLE, 5, ArpgCommand::ReleaseBow { aim: None });
     server.advance(ACTION_TICKS);
     assert_eq!(server.shots(), 2);
 }

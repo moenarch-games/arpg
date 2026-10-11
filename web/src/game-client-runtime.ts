@@ -194,6 +194,12 @@ const HELD_REFRESH_INTERVAL_MS = 200;
 // draw would merge two shots into one; on the lane draw, release and cancel stay lossless
 // and in order.
 const HELD_COMMAND_TYPES = new Set(["setGuard", "setMovement", "setAim"]);
+// One-shots that commit a direction carry the current aim (#156). In dedicated play the
+// `setAim` datagram and the reliable one-shot are not ordered against each other, so a lost
+// or late aim datagram must not steer the shot or strike. arpg-core validates the embedded
+// aim and applies it as the held aim before the action. Without a current aim the field is
+// left out, and the authority keeps using its held aim.
+const AIMED_COMMAND_TYPES = new Set(["primaryAttack", "secondaryAttack", "releaseBow"]);
 
 export function createGameClientRuntime(options: GameClientRuntimeOptions) {
   const schedule = options.setInterval ?? ((callback, ms) => globalThis.setInterval(callback, ms));
@@ -417,7 +423,9 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
     if (disposed() || state.lifecycle === "idle" || state.lifecycle === "failed") return false;
     const playerId = state.playerId;
     try {
-      const encoded = encodeCommand(command);
+      const encoded = encodeCommand(
+        aim && AIMED_COMMAND_TYPES.has(command.type as string) ? { ...command, aim } : command,
+      );
       if (state.mode === "guest") {
         if (!peer || !playerId || !peer.hostParticipantId) return false;
         peer.sendReliable(peer.hostParticipantId, {

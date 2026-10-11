@@ -60,8 +60,12 @@ fn run_journey() -> DeterministicWork {
             for player_id in 1..=PLAYERS {
                 let index = usize::try_from(player_id - 1).expect("bounded player index");
                 game.apply_command(
-                    PlayerCommand::new(player_id, sequences[index], ArpgCommand::PrimaryAttack)
-                        .expect("attack sequence must be valid"),
+                    PlayerCommand::new(
+                        player_id,
+                        sequences[index],
+                        ArpgCommand::PrimaryAttack { aim: None },
+                    )
+                    .expect("attack sequence must be valid"),
                 )
                 .expect("attack command must stay valid");
                 sequences[index] += 1;

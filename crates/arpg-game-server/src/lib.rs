@@ -325,8 +325,8 @@ mod tests {
                 70 => vec![(1, ArpgCommand::SetMovement { x: 1, z: 1 })],
                 71 => vec![(1, ArpgCommand::SetMovement { x: 0, z: 0 })],
                 tick if tick >= 90 && tick % 20 == 0 => vec![
-                    (1, ArpgCommand::PrimaryAttack),
-                    (2, ArpgCommand::SecondaryAttack),
+                    (1, ArpgCommand::PrimaryAttack { aim: None }),
+                    (2, ArpgCommand::SecondaryAttack { aim: None }),
                 ],
                 _ => Vec::new(),
             }
@@ -478,8 +478,8 @@ mod tests {
                 3 => vec![(1, ArpgCommand::DrawBow)],
                 30 => vec![(2, ArpgCommand::SetMovement { x: 0, z: 0 })],
                 40 => vec![
-                    (1, ArpgCommand::ReleaseBow),
-                    (2, ArpgCommand::PrimaryAttack),
+                    (1, ArpgCommand::ReleaseBow { aim: None }),
+                    (2, ArpgCommand::PrimaryAttack { aim: None }),
                 ],
                 41 => vec![(1, ArpgCommand::ClearTarget)],
                 90 => vec![(2, ArpgCommand::SetAim { direction: None })],

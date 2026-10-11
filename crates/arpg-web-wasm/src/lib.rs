@@ -199,8 +199,8 @@ mod tests {
         let script = [
             (0, ArpgCommand::SetMovement { x: 1, z: 0 }),
             (6, ArpgCommand::SetMovement { x: 0, z: 0 }),
-            (7, ArpgCommand::PrimaryAttack),
-            (30, ArpgCommand::SecondaryAttack),
+            (7, ArpgCommand::PrimaryAttack { aim: None }),
+            (30, ArpgCommand::SecondaryAttack { aim: None }),
             (31, ArpgCommand::SetGuard { raised: true }),
             (60, ArpgCommand::SetGuard { raised: false }),
         ];
