@@ -140,6 +140,6 @@ The dedicated host defaults to UDP port `4433` and session path `/arpg`. Optiona
 - `3d-lab`: `f484db8a3d2a7a555fa463eddf9c28790b240ce0`
 - `input-bindings`: `b3b7204faa47d3b0af56eebc55cdfd4ced127ddc`
 - `multiplayer-setup-service`: `cc5c20fabdac0fc9da4329a5be04d0f4e8eae383`
-- `game-server`: `a3851dab9c1fb25dd31b465fb554ca475769caab`
+- `game-server`: `ebd6aaee156c8e12a1444d1dd55a305eae13df86`
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the authority and trust boundaries.
