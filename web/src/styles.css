@@ -542,6 +542,13 @@ select {
 }
 
 .game-shell {
+  /* Height kept clear of the combat buttons by the training panel (#61: enlarged text grows
+     both, and the panel must not cover the buttons). */
+  --combat-reserve: calc(
+    clamp(4.8rem, 8vw, 5.8rem) + max(1rem, env(safe-area-inset-bottom)) + 0.75rem
+  );
+  /* Container queries below compare the shell's width with the scaled root text size. */
+  container: game-shell / inline-size;
   position: relative;
   width: 100%;
   height: 100dvh;
@@ -595,7 +602,9 @@ select {
   gap: 0.7rem;
   width: min(31rem, calc(100% - 2rem));
   /* An opened workbench section can outgrow short viewports: scroll within them. */
-  max-height: calc(100dvh - max(4.8rem, calc(env(safe-area-inset-top) + 4rem)) - 1rem);
+  max-height: calc(
+    100dvh - max(4.8rem, calc(env(safe-area-inset-top) + 4rem)) - var(--combat-reserve)
+  );
   overflow-y: auto;
   padding: 0.8rem;
   border: 1px solid #4c463f;
@@ -955,6 +964,15 @@ select {
   margin: 0.7rem 0;
   color: #d7cfc2;
 }
+.settings-field {
+  display: grid;
+  min-width: 0;
+  gap: 0.4rem;
+  margin: 0.7rem 0;
+}
+.settings-panel .settings-field label {
+  margin: 0;
+}
 .settings-actions {
   display: flex;
   gap: 0.6rem;
@@ -1055,6 +1073,12 @@ select {
 }
 
 @media (hover: none) and (pointer: coarse), (max-width: 760px) {
+  .game-shell {
+    /* Two rows of touch-sized combat buttons. */
+    --combat-reserve: calc(
+      2 * clamp(3.25rem, 15vw, 5.5rem) + 0.4rem + max(1rem, env(safe-area-inset-bottom)) + 0.75rem
+    );
+  }
   .mobile-controls {
     display: flex;
   }
@@ -1346,4 +1370,53 @@ select {
 
 .interaction-prompt {
   color: #f5df9b;
+}
+
+/* Reduced motion (#61): the resolved preference on <html>. No UI transitions or animations,
+   and hover no longer moves anything. */
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  transition: none !important;
+  animation: none !important;
+  scroll-behavior: auto !important;
+}
+:root[data-motion="reduced"] .character-card:hover {
+  transform: none;
+}
+
+/* Narrow for its text size (#61): a phone with 125% or 150% text. The width is compared in
+   rem, so the layout tightens as the text grows. The header keeps only its actions, and the
+   touch combat buttons pack two per row beside a smaller joystick. */
+@container game-shell (max-width: 21rem) {
+  .game-header {
+    justify-content: flex-end;
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+  }
+  .game-header > div:not(.game-header-actions) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .game-header-actions button {
+    min-width: auto;
+    padding-inline: 0.45rem;
+  }
+  .mobile-controls {
+    gap: 0.75rem;
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+  }
+  .combat-actions {
+    right: max(0.75rem, env(safe-area-inset-right));
+    gap: 0.3rem;
+    max-width: calc(
+      100% - clamp(6rem, 26vw, 8.75rem) - 2.2rem - env(safe-area-inset-left) -
+        env(safe-area-inset-right)
+    );
+  }
 }

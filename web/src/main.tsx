@@ -2,6 +2,7 @@ import {
   StrictMode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -25,11 +26,15 @@ import {
   PROFILE_KEY,
   SETUP_URL_KEY,
   DEDICATED_URL_KEY,
-  GRAPHICS_KEY,
   MOUSE_AIM_KEY,
+  DEFAULT_PRESENTATION,
+  MOTION_PREFERENCES,
+  TEXT_SCALES,
   loadProfile,
-  loadGraphics,
+  loadPresentation,
   loadMouseAim,
+  normalizePresentation,
+  persistPresentation,
   readStoredValue,
   persistStoredValue,
 } from "./preferences.js";
@@ -74,11 +79,25 @@ import {
 import { createGameClientRuntime } from "./game-client-runtime.ts";
 import { createFramePresenter } from "./frame-presenter.ts";
 import { buildFrame } from "./scene-frame.ts";
+import { applyDocumentPresentation, resolvePresentationEffects } from "./presentation-effects.js";
 import { createInputAttachment } from "./input-attachment.ts";
 import { WorkbenchControls } from "./workbench-controls.jsx";
 import "./styles.css";
 
 const gameplayContext = { op: "context", id: "gameplay" };
+
+const MOTION_LABELS = { system: "Follow system", reduced: "Reduced", full: "Full" };
+
+// The live `prefers-reduced-motion` media query; "Follow system" motion tracks its changes.
+let reducedMotionQuery = null;
+const reducedMotionMedia = () =>
+  (reducedMotionQuery ??= globalThis.matchMedia?.("(prefers-reduced-motion: reduce)") ?? null);
+function subscribeReducedMotion(listener) {
+  const query = reducedMotionMedia();
+  query?.addEventListener("change", listener);
+  return () => query?.removeEventListener("change", listener);
+}
+const prefersReducedMotion = () => reducedMotionMedia()?.matches ?? false;
 
 const physical = (id, action, code, when = gameplayContext) => ({
   id,
@@ -152,12 +171,12 @@ function requestedRunSeed() {
 
 // The game world canvas. One frame presenter owns its renderer, projection and resize
 // observer for as long as the canvas is mounted; view changes reconfigure it in place.
-function GameCanvas({ snapshots, playerId, accent, graphics, onPointerMove }) {
+function GameCanvas({ snapshots, playerId, accent, graphics, effects, onPointerMove }) {
   const canvasRef = useRef(null);
   const presenterRef = useRef(null);
   const { shadows, pixelRatioLimit } = graphics;
   // The view the presenter is (or will be) created with; later changes apply in place.
-  const viewRef = useRef({ playerId, accent, graphics: { shadows, pixelRatioLimit } });
+  const viewRef = useRef({ playerId, accent, graphics: { shadows, pixelRatioLimit }, effects });
   useEffect(() => {
     const presenter = createFramePresenter({
       canvas: canvasRef.current,
@@ -181,9 +200,9 @@ function GameCanvas({ snapshots, playerId, accent, graphics, onPointerMove }) {
   }, [snapshots]);
 
   useEffect(() => {
-    viewRef.current = { playerId, accent, graphics: { shadows, pixelRatioLimit } };
+    viewRef.current = { playerId, accent, graphics: { shadows, pixelRatioLimit }, effects };
     presenterRef.current?.configure(viewRef.current);
-  }, [playerId, accent, shadows, pixelRatioLimit]);
+  }, [playerId, accent, shadows, pixelRatioLimit, effects]);
 
   return (
     <canvas
@@ -254,7 +273,21 @@ function App() {
   const [profile, setProfile] = useState(() =>
     loadProfile((profile) => validateRegistry(inputRegistry, profile).valid),
   );
-  const [graphics, setGraphics] = useState(loadGraphics);
+  // Local display preferences (#61): never part of a save or the authority.
+  const [presentation, setPresentation] = useState(() => loadPresentation());
+  const { graphics, accessibility } = presentation;
+  const systemReducedMotion = useSyncExternalStore(
+    subscribeReducedMotion,
+    prefersReducedMotion,
+    () => false,
+  );
+  const presentationEffects = useMemo(
+    () => resolvePresentationEffects(presentation, { prefersReducedMotion: systemReducedMotion }),
+    [presentation, systemReducedMotion],
+  );
+  useLayoutEffect(() => {
+    applyDocumentPresentation(document.documentElement, presentationEffects);
+  }, [presentationEffects]);
   const [mouseAim, setMouseAim] = useState(() => loadMouseAim());
   const [setupUrl, setSetupUrl] = useState(() =>
     readStoredValue(SETUP_URL_KEY, "http://127.0.0.1:8787"),
@@ -626,11 +659,16 @@ function App() {
     runtime.setAim(aim);
   };
 
-  const updateGraphics = (next) => {
-    if (!persistStoredValue(GRAPHICS_KEY, JSON.stringify(next)))
-      setStatus("Graphics updated for this session; browser storage is unavailable");
-    setGraphics(next);
+  const updatePresentation = (next) => {
+    const normalized = normalizePresentation(next);
+    if (!persistPresentation(normalized))
+      setStatus("Display settings updated for this session; browser storage is unavailable");
+    setPresentation(normalized);
   };
+  const updateGraphics = (patch) =>
+    updatePresentation({ ...presentation, graphics: { ...graphics, ...patch } });
+  const updateAccessibility = (patch) =>
+    updatePresentation({ ...presentation, accessibility: { ...accessibility, ...patch } });
 
   const updateSetupUrl = (value) => {
     setSetupUrl(value);
@@ -914,6 +952,7 @@ function App() {
         playerId={playerId}
         accent={selectedCharacter.accent}
         graphics={graphics}
+        effects={presentationEffects}
         onPointerMove={aimWithPointer}
       />
       <header className="game-header">
@@ -1189,7 +1228,7 @@ function App() {
               <input
                 type="checkbox"
                 checked={graphics.shadows}
-                onChange={(event) => updateGraphics({ ...graphics, shadows: event.target.checked })}
+                onChange={(event) => updateGraphics({ shadows: event.target.checked })}
               />
               Enable shadows
             </label>
@@ -1198,10 +1237,7 @@ function App() {
               <select
                 value={graphics.pixelRatioLimit}
                 onChange={(event) =>
-                  updateGraphics({
-                    ...graphics,
-                    pixelRatioLimit: Number(event.target.value),
-                  })
+                  updateGraphics({ pixelRatioLimit: Number(event.target.value) })
                 }
               >
                 <option value="1">1×</option>
@@ -1209,6 +1245,54 @@ function App() {
                 <option value="2">2×</option>
               </select>
             </label>
+          </section>
+
+          <section aria-labelledby="accessibility-heading">
+            <h2 id="accessibility-heading">Accessibility</h2>
+            <div className="settings-field">
+              <label htmlFor="motion-effects">Motion effects</label>
+              <select
+                id="motion-effects"
+                value={accessibility.motion}
+                onChange={(event) => updateAccessibility({ motion: event.target.value })}
+              >
+                {MOTION_PREFERENCES.map((motion) => (
+                  <option key={motion} value={motion}>
+                    {MOTION_LABELS[motion]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={accessibility.reducedFlashes}
+                onChange={(event) => updateAccessibility({ reducedFlashes: event.target.checked })}
+              />
+              Reduce bright flashes
+            </label>
+            <div className="settings-field">
+              <label htmlFor="text-size">Text size</label>
+              <select
+                id="text-size"
+                value={accessibility.textScale}
+                onChange={(event) => updateAccessibility({ textScale: Number(event.target.value) })}
+              >
+                {TEXT_SCALES.map((scale) => (
+                  <option key={scale} value={scale}>
+                    {`${scale * 100}%`}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="settings-note">
+              Display settings stay in this browser. They never change saves or game rules.
+            </p>
+            <div className="settings-actions">
+              <button type="button" onClick={() => updatePresentation(DEFAULT_PRESENTATION)}>
+                Reset display settings
+              </button>
+            </div>
           </section>
 
           <section className="keybindings-section">
