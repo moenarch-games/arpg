@@ -3,6 +3,7 @@ const COMMAND_KIND = 1;
 const SNAPSHOT_KIND = 2;
 const WELCOME_KIND = 3;
 const SNAPSHOT_FRAGMENT_KIND = 4;
+const RELIABLE_COMMAND_ACK_KIND = 6;
 const SNAPSHOT_FRAGMENT_HEADER_BYTES = 14;
 const MAX_SNAPSHOT_FRAGMENTS = 64;
 const COMMAND_HEADER_BYTES = 8;
@@ -18,6 +19,13 @@ const SNAPSHOT_REASSEMBLY_MAX_BUFFERED_BYTES = 2 * MAX_SNAPSHOT_FRAME_BYTES;
 const SNAPSHOT_REASSEMBLY_MAX_IDLE_DATAGRAMS =
   SNAPSHOT_REASSEMBLY_MAX_PENDING * MAX_SNAPSHOT_FRAGMENTS;
 const MAX_PENDING_COMMANDS = 256;
+// game-server ADR 0008: the reliable command lane is one bidirectional stream per connection
+// that starts with `GSCL`, the lane format version and the game protocol version.
+const COMMAND_LANE_MAGIC = [0x47, 0x53, 0x43, 0x4c];
+const COMMAND_LANE_FORMAT_VERSION = 1;
+const RELIABLE_COMMAND_ACK_BYTES = 7;
+const RELIABLE_COMMAND_OUTCOMES = [null, "applied", "duplicate", "rejected"];
+const MAX_UNACKED_RELIABLE_COMMANDS = 256;
 const DEFAULT_RECONNECT_DELAY_MS = 250;
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const MAX_RECONNECT_DELAY_MS = 1000;
@@ -85,6 +93,32 @@ export function encodeGameServerCommand(sequence, payload) {
   view.setUint16(6, bytes.byteLength, false);
   frame.set(bytes, COMMAND_HEADER_BYTES);
   return frame;
+}
+
+export function encodeCommandLaneHeader() {
+  return new Uint8Array([
+    ...COMMAND_LANE_MAGIC,
+    COMMAND_LANE_FORMAT_VERSION,
+    GAME_SERVER_PROTOCOL_VERSION,
+  ]);
+}
+
+export function decodeReliableCommandAck(frame) {
+  const bytes = asBytes(frame);
+  if (bytes.byteLength !== RELIABLE_COMMAND_ACK_BYTES) {
+    throw new Error(
+      `Reliable command ack must contain exactly ${RELIABLE_COMMAND_ACK_BYTES} bytes`,
+    );
+  }
+  requireHeader(bytes, RELIABLE_COMMAND_ACK_KIND);
+  const sequence = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
+    2,
+    false,
+  );
+  if (sequence === 0) throw new Error("Reliable command ack names sequence zero");
+  const outcome = RELIABLE_COMMAND_OUTCOMES[bytes[6]];
+  if (!outcome) throw new Error(`Unknown reliable command ack outcome ${bytes[6]}`);
+  return { sequence, outcome };
 }
 
 export function decodeGameServerSnapshot(frame) {
@@ -360,6 +394,14 @@ export class DedicatedGameSession {
     this.reconnectRequested = false;
     this.reconnectTask = null;
     this.pendingCommands = [];
+    // Reliable one-shots in send order until the authority acknowledges them; they survive
+    // reconnects and are re-sent on the next connection's lane.
+    this.reliableCommands = [];
+    this.lastReliableSequence = 0;
+    // The current connection's command lane, opened on demand; null between connections.
+    this.lane = null;
+    // The generation whose handshake completed, so the lane opens only on a live connection.
+    this.establishedGeneration = null;
   }
 
   async connect(callbacks = {}) {
@@ -370,6 +412,8 @@ export class DedicatedGameSession {
     this.callbacks = callbacks;
     this.welcome = null;
     this.pendingCommands = [];
+    this.reliableCommands = [];
+    this.lastReliableSequence = 0;
     this.callbacks.onStateChange?.("connecting");
     try {
       return await this.openTransport(this.endpoint, false);
@@ -438,12 +482,15 @@ export class DedicatedGameSession {
       await boundedWait(this.flushPendingCommands(transport, generation), abort.signal);
       this.requireCurrentTransport(transport, generation);
 
+      this.establishedGeneration = generation;
       this.callbacks.onWelcome?.(welcome, { resumed });
       this.callbacks.onStateChange?.("connected");
       void this.consumeSnapshots(transport, generation);
       transport.closed
         .then(() => this.handleTransportFailure(transport, generation))
         .catch((error) => this.handleTransportFailure(transport, generation, error));
+      // Unacknowledged one-shots from the previous connection go out first, in order.
+      this.ensureLane();
       return welcome;
     } catch (error) {
       if (transport) this.detachTransport(transport, generation, true);
@@ -484,6 +531,7 @@ export class DedicatedGameSession {
     }
     this.datagramWriter = null;
     this.transport = null;
+    this.lane = null;
     if (closeTransport) {
       try {
         transport.close({ closeCode: 0, reason: "connection replaced" });
@@ -554,6 +602,9 @@ export class DedicatedGameSession {
 
     if (this.closedByClient) return;
     this.pendingCommands = [];
+    this.rejectReliableCommands(
+      new Error("Dedicated reconnect grace expired before the command was acknowledged"),
+    );
     this.welcome = null;
     if (lastError) this.callbacks.onError?.(lastError);
     this.callbacks.onStateChange?.("disconnected");
@@ -603,6 +654,143 @@ export class DedicatedGameSession {
     }
   }
 
+  /**
+   * Sends a one-shot command on the reliable command lane. Resolves with "applied" or
+   * "duplicate" once the authority acknowledged it and rejects for a rejected command, or
+   * when the session closes or its reconnect grace expires first. Until then the command is
+   * buffered and re-sent, in order, on every new connection.
+   */
+  async sendReliableCommand(sequence, payload) {
+    const frame = encodeGameServerCommand(sequence, payload);
+    if (this.closedByClient || !this.welcome) {
+      throw new Error("Dedicated session is not connected");
+    }
+    if (sequence <= this.lastReliableSequence) {
+      throw new Error(
+        `Reliable command sequence ${sequence} does not follow ${this.lastReliableSequence}`,
+      );
+    }
+    if (this.reliableCommands.length >= MAX_UNACKED_RELIABLE_COMMANDS) {
+      throw new Error(
+        `Dedicated reliable command buffer exceeds ${MAX_UNACKED_RELIABLE_COMMANDS} unacknowledged entries`,
+      );
+    }
+    this.lastReliableSequence = sequence;
+    const acknowledged = new Promise((resolve, reject) => {
+      this.reliableCommands.push({ sequence, frame: frame.slice(), resolve, reject });
+    });
+    this.ensureLane();
+    if (this.lane?.writer) void this.pumpLane(this.lane);
+    return acknowledged;
+  }
+
+  // Opens the connection's one command lane when one-shots wait and the connection is live.
+  ensureLane() {
+    if (this.lane || this.reliableCommands.length === 0 || this.closedByClient) return;
+    const transport = this.transport;
+    const generation = this.connectionGeneration;
+    if (!transport || !this.connectionAbort || this.establishedGeneration !== generation) return;
+    const lane = { transport, generation, writer: null, sent: 0, pumping: false };
+    this.lane = lane;
+    void this.openLane(lane, this.connectionAbort.signal);
+  }
+
+  async openLane(lane, signal) {
+    try {
+      const stream = await boundedWait(lane.transport.createBidirectionalStream(), signal);
+      if (this.lane !== lane) return;
+      const writer = stream.writable.getWriter();
+      void this.readAcks(lane, stream.readable);
+      await writer.write(encodeCommandLaneHeader());
+      if (this.lane !== lane) return;
+      lane.writer = writer;
+      await this.pumpLane(lane);
+    } catch (error) {
+      this.failLane(lane, error);
+    }
+  }
+
+  // Writes every buffered command the lane has not carried yet, in order.
+  async pumpLane(lane) {
+    if (lane.pumping || !lane.writer) return;
+    lane.pumping = true;
+    try {
+      while (this.lane === lane && lane.sent < this.reliableCommands.length) {
+        const { frame } = this.reliableCommands[lane.sent];
+        lane.sent += 1;
+        await lane.writer.write(frame);
+      }
+    } catch (error) {
+      this.failLane(lane, error);
+    } finally {
+      lane.pumping = false;
+    }
+  }
+
+  async readAcks(lane, readable) {
+    const reader = readable.getReader();
+    let buffered = new Uint8Array(0);
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (this.lane !== lane) return;
+        // The server ends its ack stream only after the client finished the lane, which
+        // this client never does, so any end is a lane fault.
+        if (done) {
+          throw new Error(
+            buffered.byteLength > 0
+              ? "Reliable command lane ended inside an ack"
+              : "Reliable command lane ended",
+          );
+        }
+        const bytes = asBytes(value);
+        const next = new Uint8Array(buffered.byteLength + bytes.byteLength);
+        next.set(buffered);
+        next.set(bytes, buffered.byteLength);
+        buffered = next;
+        while (buffered.byteLength >= RELIABLE_COMMAND_ACK_BYTES) {
+          const ack = decodeReliableCommandAck(buffered.subarray(0, RELIABLE_COMMAND_ACK_BYTES));
+          buffered = buffered.slice(RELIABLE_COMMAND_ACK_BYTES);
+          this.acceptAck(lane, ack);
+        }
+      }
+    } catch (error) {
+      this.failLane(lane, error);
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  // Acks arrive in send order, so each must name the oldest command in flight on this lane.
+  acceptAck(lane, { sequence, outcome }) {
+    const oldest = this.reliableCommands[0];
+    if (lane.sent === 0 || !oldest || oldest.sequence !== sequence) {
+      throw new Error(`Unexpected reliable command ack for sequence ${sequence}`);
+    }
+    this.reliableCommands.shift();
+    lane.sent -= 1;
+    if (outcome === "rejected") {
+      oldest.reject(new Error(`Dedicated command ${sequence} was rejected by the authority`));
+    } else {
+      oldest.resolve(outcome);
+    }
+  }
+
+  // A lane fault closes the whole connection; unacknowledged commands stay buffered and are
+  // re-sent after the resume, where the reliable watermark turns any already applied one
+  // into a duplicate.
+  failLane(lane, error) {
+    if (this.lane !== lane) return;
+    this.handleTransportFailure(lane.transport, lane.generation, error);
+  }
+
+  rejectReliableCommands(error) {
+    const commands = this.reliableCommands;
+    this.reliableCommands = [];
+    this.lane = null;
+    for (const command of commands) command.reject(error);
+  }
+
   close() {
     this.closedByClient = true;
     this.reconnectRequested = false;
@@ -623,5 +811,6 @@ export class DedicatedGameSession {
     this.transport = null;
     this.welcome = null;
     this.pendingCommands = [];
+    this.rejectReliableCommands(new Error("Dedicated session was closed"));
   }
 }

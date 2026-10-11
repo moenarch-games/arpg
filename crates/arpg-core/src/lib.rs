@@ -299,6 +299,19 @@ impl<C> PlayerCommand<C> {
     }
 }
 
+/// The ordering lane a command arrived on.
+///
+/// Each lane has its own per-player sequence watermark, so a command is stale only
+/// against earlier commands of its own lane. `Datagram` is the default lane: local play,
+/// peer play and every caller of [`AuthoritativeGame::apply_command`] use it, and it keeps
+/// latest-wins semantics for held state. `Reliable` is the ordered, acknowledged lane that
+/// dedicated play uses for one-shot commands. Gameplay rules do not depend on the lane.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub enum CommandLane {
+    Datagram,
+    Reliable,
+}
+
 /// Transport-neutral authority boundary for one ARPG simulation instance.
 ///
 /// Local play, a browser peer host, and a dedicated `game-server` host all
@@ -313,6 +326,15 @@ pub trait AuthoritativeGame: Send + 'static {
     fn add_player(&mut self, player_id: PlayerId) -> Result<(), GameError>;
     fn remove_player(&mut self, player_id: PlayerId) -> bool;
     fn apply_command(&mut self, command: PlayerCommand<Self::Command>) -> Result<(), GameError>;
+    /// Applies a command delivered on `lane`. The default ignores the lane.
+    fn apply_lane_command(
+        &mut self,
+        lane: CommandLane,
+        command: PlayerCommand<Self::Command>,
+    ) -> Result<(), GameError> {
+        let _ = lane;
+        self.apply_command(command)
+    }
     fn advance_tick(&mut self) -> Result<(), GameError>;
     fn snapshot(&self) -> Result<Self::Snapshot, GameError>;
 }
@@ -1374,7 +1396,12 @@ pub struct PlayerSaveState {
     pub health: u16,
     pub experience: u32,
     pub gold: u32,
+    /// Datagram-lane watermark.
     pub last_sequence: u32,
+    /// Reliable-lane watermark. Saves written before the reliable lane omit it and load
+    /// with 0; the save schema version is unchanged.
+    #[serde(default)]
+    pub last_reliable_sequence: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1839,7 +1866,10 @@ pub struct ArpgGame {
     #[cfg(test)]
     monsters_without_bodies: bool,
     players: BTreeMap<PlayerId, PlayerState>,
+    /// Datagram-lane watermarks.
     last_sequences: BTreeMap<PlayerId, u32>,
+    /// Reliable-lane watermarks, independent of the datagram lane.
+    last_reliable_sequences: BTreeMap<PlayerId, u32>,
     rooms: Vec<RoomSnapshot>,
     doors: Vec<DoorSnapshot>,
     player_spawns: [Vec3i; MAX_PLAYERS],
@@ -1946,6 +1976,7 @@ impl ArpgGame {
             monsters_without_bodies: false,
             players: BTreeMap::new(),
             last_sequences: BTreeMap::new(),
+            last_reliable_sequences: BTreeMap::new(),
             rooms,
             doors,
             player_spawns,
@@ -2089,6 +2120,11 @@ impl ArpgGame {
                     experience: state.experience,
                     gold: state.gold,
                     last_sequence: self.last_sequences.get(&id).copied().unwrap_or_default(),
+                    last_reliable_sequence: self
+                        .last_reliable_sequences
+                        .get(&id)
+                        .copied()
+                        .unwrap_or_default(),
                 })
             })
             .collect::<Result<Vec<_>, GameError>>()?;
@@ -2265,7 +2301,7 @@ impl ArpgGame {
             {
                 return Err(GameError::new("saved counter opportunity is invalid"));
             }
-            if player.last_sequence == u32::MAX {
+            if player.last_sequence == u32::MAX || player.last_reliable_sequence == u32::MAX {
                 return Err(GameError::new(
                     "saved command sequence leaves no valid next command",
                 ));
@@ -2540,6 +2576,8 @@ impl ArpgGame {
                 gold: player.gold,
             };
             game.last_sequences.insert(player.id, player.last_sequence);
+            game.last_reliable_sequences
+                .insert(player.id, player.last_reliable_sequence);
             let [velocity_x, velocity_y, velocity_z] = player.velocity;
             let speed_range = -PLAYER_SPEED..=PLAYER_SPEED;
             if velocity_y != 0
@@ -2760,6 +2798,20 @@ impl ArpgGame {
             )
             .expect("arrow damage fits u16");
         (speed, damage)
+    }
+
+    fn lane_sequences(&self, lane: CommandLane) -> &BTreeMap<PlayerId, u32> {
+        match lane {
+            CommandLane::Datagram => &self.last_sequences,
+            CommandLane::Reliable => &self.last_reliable_sequences,
+        }
+    }
+
+    fn lane_sequences_mut(&mut self, lane: CommandLane) -> &mut BTreeMap<PlayerId, u32> {
+        match lane {
+            CommandLane::Datagram => &mut self.last_sequences,
+            CommandLane::Reliable => &mut self.last_reliable_sequences,
+        }
     }
 
     fn validate_loadout(content: &Content, player: &PlayerSaveState) -> Result<(), GameError> {
@@ -4846,12 +4898,14 @@ impl AuthoritativeGame for ArpgGame {
             },
         );
         self.last_sequences.insert(player_id, 0);
+        self.last_reliable_sequences.insert(player_id, 0);
         Ok(())
     }
 
     fn remove_player(&mut self, player_id: PlayerId) -> bool {
         let removed = self.players.remove(&player_id).is_some();
         self.last_sequences.remove(&player_id);
+        self.last_reliable_sequences.remove(&player_id);
         if removed {
             self.world.remove_body(Self::player_body_id(player_id));
         }
@@ -4859,11 +4913,19 @@ impl AuthoritativeGame for ArpgGame {
     }
 
     fn apply_command(&mut self, command: PlayerCommand<Self::Command>) -> Result<(), GameError> {
+        self.apply_lane_command(CommandLane::Datagram, command)
+    }
+
+    fn apply_lane_command(
+        &mut self,
+        lane: CommandLane,
+        command: PlayerCommand<Self::Command>,
+    ) -> Result<(), GameError> {
         if !self.players.contains_key(&command.player_id) {
             return Err(GameError::new("command references an unknown player"));
         }
         let last_sequence = self
-            .last_sequences
+            .lane_sequences(lane)
             .get(&command.player_id)
             .copied()
             .unwrap_or_default();
@@ -5003,7 +5065,7 @@ impl AuthoritativeGame for ArpgGame {
                     .draw_ticks = None;
             }
         }
-        self.last_sequences
+        self.lane_sequences_mut(lane)
             .insert(command.player_id, command.sequence);
         Ok(())
     }

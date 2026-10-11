@@ -2,7 +2,7 @@
 
 use arpg_core::{AuthoritativeGame, PlayerCommand};
 use arpg_protocol::WireProtocol;
-use game_server::{GameSimulation, SimulationError, SimulationSnapshot};
+use game_server::{CommandLane, GameSimulation, SimulationError, SimulationSnapshot};
 
 pub struct GameServerAdapter<G, P> {
     game: G,
@@ -66,6 +66,23 @@ where
         self.game.apply_command(command).map_err(map_game_error)
     }
 
+    fn apply_lane_command(
+        &mut self,
+        player_id: game_server::PlayerId,
+        lane: CommandLane,
+        sequence: u32,
+        payload: &[u8],
+    ) -> Result<(), SimulationError> {
+        let command = self
+            .protocol
+            .decode_command(payload)
+            .map_err(map_protocol_error)?;
+        let command = PlayerCommand::new(player_id, sequence, command).map_err(map_game_error)?;
+        self.game
+            .apply_lane_command(map_lane(lane), command)
+            .map_err(map_game_error)
+    }
+
     fn advance_tick(&mut self) -> Result<(), SimulationError> {
         self.game.advance_tick().map_err(map_game_error)
     }
@@ -77,6 +94,13 @@ where
             .encode_snapshot(&snapshot)
             .map_err(map_protocol_error)?;
         Ok(SimulationSnapshot::new(self.game.current_tick(), payload))
+    }
+}
+
+fn map_lane(lane: CommandLane) -> arpg_core::CommandLane {
+    match lane {
+        CommandLane::Datagram => arpg_core::CommandLane::Datagram,
+        CommandLane::Reliable => arpg_core::CommandLane::Reliable,
     }
 }
 
