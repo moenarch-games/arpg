@@ -157,6 +157,17 @@ test("admits chests and interaction results and rejects malformed ones", () => {
     expect(() => decodeSnapshot(encode(candidate))).toThrow();
 });
 
+test("rooms publish their encounter definition and malformed ones are rejected", () => {
+  const room = { id: 2, minX: 0, maxX: 100, minZ: 0, maxZ: 100, kind: "combat" };
+  const start = { ...room, id: 1, kind: "start", encounter: null };
+  const combat = { ...room, encounter: "encounter.brute" };
+  const decoded = decodeSnapshot(encode({ ...payload, rooms: [start, combat] }));
+  expect(decoded.rooms[0].encounter).toBeNull();
+  expect(decoded.rooms[1].encounter).toBe("encounter.brute");
+  for (const encounter of ["", "e".repeat(65), 7])
+    expect(() => decodeSnapshot(encode({ ...payload, rooms: [{ ...room, encounter }] }))).toThrow();
+});
+
 test("requires the authority's content revision", () => {
   for (const contentRevision of [undefined, "", "XYZ", "0123456789abcdef0"])
     expect(() => decodeSnapshot(encode({ ...payload, contentRevision }))).toThrow();
