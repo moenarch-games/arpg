@@ -1230,14 +1230,33 @@ fn fixture_runs_replay_identically_per_seed_and_vary_between_seeds() {
             {
                 session.defeat(member);
             }
-            session.open_chest(room);
-            (table, session.trace, session.snapshot())
+            let results = session.open_chest(room);
+            (table, session.trace, session.snapshot(), results)
         };
         let first = run(&bundle);
         let replay = run(&bundle);
         assert_eq!(first, replay, "seed {seed} must replay identically");
-        assert_eq!(first.2.players[0].gold, HOARD_GOLD, "seed {seed}");
-        tables.insert(first.0);
+        let (table, _, snapshot, results) = first;
+        // A defeated member's gold drop can lie nearer the standing spot than the chest,
+        // so Interact may pick it up first; the chest itself pays the hoard exactly once.
+        assert_eq!(
+            opened_gold(&results),
+            [HOARD_GOLD],
+            "seed {seed}: {results:?}"
+        );
+        let credited = results
+            .iter()
+            .map(|result| match result {
+                InteractionResult::PickedUp { gold, .. }
+                | InteractionResult::Opened { gold, .. } => *gold,
+                InteractionResult::Refused { .. } => 0,
+            })
+            .sum::<u32>();
+        assert_eq!(
+            snapshot.players[0].gold, credited,
+            "seed {seed}: gold comes only from the resolved interactions"
+        );
+        tables.insert(table);
     }
     assert!(tables.len() > 1, "spawn positions follow the seed");
 }
