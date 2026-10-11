@@ -7,7 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::{Mutex, OnceLock};
+use std::ops::Deref;
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use serde::{Deserialize, Serialize};
 
@@ -288,10 +289,70 @@ impl fmt::Display for ContentError {
     }
 }
 
+/// A published definition id (for example `sword.lightSwing`): an owned, cheaply cloned
+/// string that stays valid after the game and content it came from are dropped.
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DefinitionId(Arc<str>);
+
+impl DefinitionId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Deref for DefinitionId {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for DefinitionId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for DefinitionId {
+    fn from(id: &str) -> Self {
+        Self(Arc::from(id))
+    }
+}
+
+impl fmt::Debug for DefinitionId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&*self.0, formatter)
+    }
+}
+
+impl fmt::Display for DefinitionId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl PartialEq<str> for DefinitionId {
+    fn eq(&self, other: &str) -> bool {
+        *self.0 == *other
+    }
+}
+
+impl PartialEq<&str> for DefinitionId {
+    fn eq(&self, other: &&str) -> bool {
+        *self.0 == **other
+    }
+}
+
+/// A definition id by its position in the id table of the content it was resolved in, so
+/// resolved definitions stay plain `Copy` data without borrowing the content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct IdRef(usize);
+
 /// Resolved strike parameters used by the hot path.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct StrikeDef<'a> {
-    pub id: &'a str,
+pub(crate) struct StrikeDef {
+    pub id: IdRef,
     pub reach: i64,
     pub frontal: bool,
     pub max_targets: usize,
@@ -300,11 +361,11 @@ pub(crate) struct StrikeDef<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ActionDef<'a> {
+pub(crate) struct ActionDef {
     pub windup_ticks: u8,
     pub active_ticks: u8,
     pub recovery_ticks: u8,
-    pub strike: Option<StrikeDef<'a>>,
+    pub strike: Option<StrikeDef>,
     pub damage_numerator: u16,
     pub damage_denominator: u16,
     pub stagger_ticks: u8,
@@ -321,10 +382,10 @@ pub(crate) struct ComboTransition {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct MonsterDef<'a> {
-    pub id: &'a str,
+pub(crate) struct MonsterDef {
+    pub id: IdRef,
     pub health: u16,
-    pub strike: StrikeDef<'a>,
+    pub strike: StrikeDef,
     pub windup_ticks: u8,
     pub active_ticks: u8,
     pub recovery_ticks: u8,
@@ -350,8 +411,8 @@ pub(crate) struct ProjectileDefinition {
 /// A resolved encounter: spawn-group entries refer to `monsters` by index and the reward to
 /// `rewards` by index.
 #[derive(Clone, Debug)]
-pub(crate) struct EncounterDef<'a> {
-    pub id: &'a str,
+pub(crate) struct EncounterDef {
+    pub id: IdRef,
     /// (monster definition index, count) in authored order.
     pub spawn_group: Vec<(usize, u32)>,
     pub activation: EncounterActivation,
@@ -365,25 +426,41 @@ pub(crate) struct RewardDef {
     pub gold: u32,
 }
 
-pub(crate) type StrikeDefinition = StrikeDef<'static>;
-pub(crate) type MonsterDefinition = MonsterDef<'static>;
-pub(crate) type EncounterDefinition = EncounterDef<'static>;
-/// The validated content an authority runs; it lives for the rest of the process.
-pub(crate) type Content = Resolved<'static>;
+pub(crate) type StrikeDefinition = StrikeDef;
+pub(crate) type MonsterDefinition = MonsterDef;
+pub(crate) type EncounterDefinition = EncounterDef;
 
-/// A validated bundle with resolved references.
+/// The validated content an authority runs: a canonical bundle with its resolution. Games
+/// own it through an `Arc`, so custom content is freed with the last game running it.
 #[derive(Debug)]
-pub(crate) struct Resolved<'a> {
+pub(crate) struct Content {
     /// The canonical bundle this was resolved from.
-    pub bundle: &'a ContentBundle,
+    pub bundle: ContentBundle,
+    resolved: Resolved,
+}
+
+impl Deref for Content {
+    type Target = Resolved;
+
+    fn deref(&self) -> &Resolved {
+        &self.resolved
+    }
+}
+
+/// A validated bundle with resolved references. It owns everything it holds, so it never
+/// borrows the bundle it was resolved from.
+#[derive(Debug)]
+pub(crate) struct Resolved {
     pub revision: String,
+    /// Every definition id the resolved definitions refer to by [`IdRef`].
+    ids: Vec<DefinitionId>,
     pub counter_window_ticks: u64,
-    actions: BTreeMap<ActionKind, ActionDef<'a>>,
+    actions: BTreeMap<ActionKind, ActionDef>,
     pub combos: Vec<ComboTransition>,
     /// Canonical (id) order; monsters refer to their definition by index.
-    pub monsters: Vec<MonsterDef<'a>>,
+    pub monsters: Vec<MonsterDef>,
     /// Canonical (id) order.
-    pub encounters: Vec<EncounterDef<'a>>,
+    pub encounters: Vec<EncounterDef>,
     /// Canonical (id) order.
     pub rewards: Vec<RewardDef>,
     /// Index into `encounters` for each combat room, in generation order (repeating).
@@ -395,8 +472,13 @@ pub(crate) struct Resolved<'a> {
     pub targeting: TargetingData,
 }
 
-impl<'a> Resolved<'a> {
-    pub fn action(&self, kind: ActionKind) -> ActionDef<'a> {
+impl Resolved {
+    /// The definition id `id` stands for.
+    pub fn id(&self, id: IdRef) -> &DefinitionId {
+        &self.ids[id.0]
+    }
+
+    pub fn action(&self, kind: ActionKind) -> ActionDef {
         *self
             .actions
             .get(&kind)
@@ -413,7 +495,7 @@ impl<'a> Resolved<'a> {
             .max(self.bow.arrow_stagger_ticks)
     }
 
-    pub fn monster(&self, definition: usize) -> &MonsterDef<'a> {
+    pub fn monster(&self, definition: usize) -> &MonsterDef {
         &self.monsters[definition]
     }
 
@@ -435,7 +517,7 @@ impl<'a> Resolved<'a> {
     }
 
     /// The encounter generated into the combat room at `combat_room_index`.
-    pub fn room_encounter(&self, combat_room_index: usize) -> &EncounterDef<'a> {
+    pub fn room_encounter(&self, combat_room_index: usize) -> &EncounterDef {
         &self.encounters[self.room_encounters[combat_room_index % self.room_encounters.len()]]
     }
 
@@ -536,8 +618,13 @@ impl ContentBundle {
     }
 
     /// Validates every reference and numeric bound, collecting all violations.
-    pub(crate) fn validate<'a>(&'a self) -> Result<Resolved<'a>, Vec<ContentError>> {
+    pub(crate) fn validate(&self) -> Result<Resolved, Vec<ContentError>> {
         let mut errors = Vec::new();
+        let mut id_table = Vec::new();
+        let mut intern = |id: &str| {
+            id_table.push(DefinitionId::from(id));
+            IdRef(id_table.len() - 1)
+        };
         let mut fail = |path: String, message: &str| {
             errors.push(ContentError {
                 path,
@@ -578,7 +665,10 @@ impl ContentBundle {
         let mut strike_by_id = BTreeMap::new();
         for (index, strike) in self.strikes.iter().enumerate() {
             let path = format!("strikes[{index}] {}", strike.id);
-            if strike_by_id.insert(strike.id.as_str(), strike).is_some() {
+            if strike_by_id
+                .insert(strike.id.as_str(), (intern(&strike.id), strike))
+                .is_some()
+            {
                 fail(path.clone(), "duplicate strike id");
             }
             if !(1..=1_000).contains(&strike.reach) {
@@ -588,8 +678,8 @@ impl ContentBundle {
                 fail(path, "maxTargets must be positive or null");
             }
         }
-        let resolve_strike = |strike: &'a StrikeData| StrikeDef {
-            id: strike.id.as_str(),
+        let resolve_strike = |&(id, strike): &(IdRef, &StrikeData)| StrikeDef {
+            id,
             reach: strike.reach,
             frontal: strike.frontal,
             max_targets: strike.max_targets.map_or(usize::MAX, |count| {
@@ -714,7 +804,7 @@ impl ContentBundle {
             }
             let reach = strike_by_id
                 .get(monster.strike.as_str())
-                .map_or(0, |strike| strike.reach);
+                .map_or(0, |(_, strike)| strike.reach);
             if i64::from(monster.aggro_range) < reach {
                 fail(
                     path.clone(),
@@ -777,7 +867,7 @@ impl ContentBundle {
             }
             match strike_by_id.get(monster.strike.as_str()) {
                 Some(strike) => {
-                    if strike.reach < MIN_MONSTER_STRIKE_REACH {
+                    if strike.1.reach < MIN_MONSTER_STRIKE_REACH {
                         fail(
                             path.clone(),
                             &format!(
@@ -786,7 +876,7 @@ impl ContentBundle {
                         );
                     }
                     monsters.push(MonsterDef {
-                        id: monster.id.as_str(),
+                        id: intern(&monster.id),
                         health: monster.health,
                         strike: resolve_strike(strike),
                         windup_ticks: monster.windup_ticks,
@@ -904,7 +994,7 @@ impl ContentBundle {
                 }
             };
             encounters.push(EncounterDef {
-                id: encounter.id.as_str(),
+                id: intern(&encounter.id),
                 spawn_group,
                 activation: encounter.activation,
                 completion: encounter.completion,
@@ -975,8 +1065,8 @@ impl ContentBundle {
 
         if errors.is_empty() {
             Ok(Resolved {
-                bundle: self,
                 revision: self.revision(),
+                ids: id_table,
                 counter_window_ticks: self.counter_window_ticks,
                 actions,
                 combos,
@@ -1057,181 +1147,99 @@ pub(crate) fn validate_tuning(
     }
 }
 
-static BASE: OnceLock<&'static Content> = OnceLock::new();
-
-/// Most distinct bundles besides the built-in one a process resolves. Validated content is
-/// immutable and published ids are borrowed for the process lifetime (strike events carry
-/// `&'static str`), so a resolved bundle is never freed; this bound keeps that retention
-/// finite. Loading a bundle that is already resolved does not count again.
-pub const MAX_LOADED_CONTENT_BUNDLES: usize = 16;
-
-/// Every other bundle an authority has run in this process, by revision: each distinct
-/// bundle is resolved once and then shared by every game that runs it.
-static LOADED: Mutex<Registry> = Mutex::new(Registry {
-    entries: BTreeMap::new(),
-    candidates: BTreeMap::new(),
+/// The built-in content: resolved once and shared by every game that runs it, for the rest
+/// of the process.
+static BASE: LazyLock<Arc<Content>> = LazyLock::new(|| {
+    let bundle = ContentBundle::from_json(BASE_BUNDLE).expect("built-in content parses");
+    Arc::new(resolve(bundle).unwrap_or_else(|errors| {
+        panic!("built-in content is invalid: {errors:?}");
+    }))
 });
+
+/// The custom content games of this process run, by revision. Entries are weak: games own
+/// their content, and an entry whose content every game dropped is pruned. The registry
+/// only lets games of one bundle share its resolution and refuses a bundle whose revision
+/// already stands for a different bundle that is running.
+static RUNNING: Mutex<BTreeMap<String, Weak<Content>>> = Mutex::new(BTreeMap::new());
 
 /// Why a bundle was not loaded.
 #[derive(Debug)]
 pub(crate) enum LoadError {
     /// The bundle violates its invariants.
     Invalid(Vec<ContentError>),
-    /// A valid bundle the process will not resolve (revision collision or capacity).
+    /// A valid bundle whose revision already identifies a different running bundle.
     Refused(String),
 }
 
-/// Resolved bundles of this process. A bundle is first resolved as a *candidate*; it takes
-/// one of the [`MAX_LOADED_CONTENT_BUNDLES`] slots only once a game built from it succeeded
-/// ([`Registry::admit`]). A game that fails to build (an invalid save, for example) leaves
-/// its candidate pending, where a retry with the same bundle reuses it: failures never use
-/// up a slot, and at most as many candidates as slots are ever pending.
-struct Registry {
-    entries: BTreeMap<String, &'static Content>,
-    candidates: BTreeMap<String, &'static Content>,
+/// Validates the canonical `bundle` and resolves it.
+fn resolve(bundle: ContentBundle) -> Result<Content, Vec<ContentError>> {
+    let resolved = bundle.validate()?;
+    Ok(Content { bundle, resolved })
 }
 
-impl Registry {
-    /// The resolution of the canonical `bundle` with `revision` to build a game from:
-    /// an admitted or pending identical one, or a new pending candidate. A revision
-    /// already standing for a different bundle (the built-in one included) is refused, as
-    /// is a new bundle when no slot is left or too many candidates are pending. Nothing is
-    /// retained unless the bundle is valid.
-    fn candidate(
-        &mut self,
-        base: &'static Content,
-        bundle: ContentBundle,
-        revision: String,
-    ) -> Result<&'static Content, LoadError> {
-        let known = if revision == base.revision {
-            Some(base)
-        } else {
-            self.entries
-                .get(&revision)
-                .or_else(|| self.candidates.get(&revision))
-                .copied()
-        };
-        if let Some(content) = known {
-            if *content.bundle == bundle {
-                return Ok(content);
-            }
-            return Err(LoadError::Refused(format!(
-                "content revision {revision} already identifies a different bundle in this process"
-            )));
-        }
-        bundle.check().map_err(LoadError::Invalid)?;
-        if self.entries.len() >= MAX_LOADED_CONTENT_BUNDLES {
-            return Err(Self::full());
-        }
-        if self.candidates.len() >= MAX_LOADED_CONTENT_BUNDLES {
-            return Err(LoadError::Refused(format!(
-                "{MAX_LOADED_CONTENT_BUNDLES} content bundles already wait for a game to succeed with them; no further bundle is loaded"
-            )));
-        }
-        let content = resolve_forever(bundle).map_err(LoadError::Invalid)?;
-        self.candidates.insert(revision, content);
-        Ok(content)
-    }
-
-    /// Gives a candidate a slot once a game built from it succeeded. Admitted and built-in
-    /// content need nothing.
-    fn admit(
-        &mut self,
-        base: &'static Content,
-        content: &'static Content,
-    ) -> Result<(), LoadError> {
-        if std::ptr::eq(content, base) || self.entries.contains_key(&content.revision) {
-            return Ok(());
-        }
-        if self.entries.len() >= MAX_LOADED_CONTENT_BUNDLES {
-            return Err(Self::full());
-        }
-        self.candidates.remove(&content.revision);
-        self.entries.insert(content.revision.clone(), content);
-        Ok(())
-    }
-
-    fn full() -> LoadError {
-        LoadError::Refused(format!(
-            "this process already runs {MAX_LOADED_CONTENT_BUNDLES} content bundles besides the built-in one; no further bundle is loaded"
-        ))
-    }
-
-    /// A candidate admitted at once: for callers with nothing that can fail in between.
-    #[cfg(test)]
-    fn load(
-        &mut self,
-        base: &'static Content,
-        bundle: ContentBundle,
-        revision: String,
-    ) -> Result<&'static Content, LoadError> {
-        let content = self.candidate(base, bundle, revision)?;
-        self.admit(base, content)?;
-        Ok(content)
-    }
+fn collision(revision: &str) -> LoadError {
+    LoadError::Refused(format!(
+        "content revision {revision} already identifies a different bundle in this process"
+    ))
 }
 
-/// Validates `bundle` and resolves it for the rest of the process.
-fn resolve_forever(bundle: ContentBundle) -> Result<&'static Content, Vec<ContentError>> {
-    bundle.check()?;
-    let bundle: &'static ContentBundle = Box::leak(Box::new(bundle));
-    let content = bundle
-        .validate()
-        .expect("a bundle that passed its check resolves");
-    Ok(Box::leak(Box::new(content)))
-}
-
-fn base() -> &'static Content {
-    BASE.get_or_init(|| {
-        let bundle = ContentBundle::from_json(BASE_BUNDLE).expect("built-in content parses");
-        resolve_forever(bundle).unwrap_or_else(|errors| {
-            panic!("built-in content is invalid: {errors:?}");
-        })
-    })
-}
-
-fn registry() -> std::sync::MutexGuard<'static, Registry> {
-    LOADED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// The validated content for `bundle` in canonical order to build a game from: the
-/// built-in content when it is the built-in bundle, otherwise the shared resolution of
-/// that bundle. Call [`admit`] once the game was built.
-pub(crate) fn candidate(bundle: ContentBundle) -> Result<&'static Content, LoadError> {
+/// The validated content for `bundle` in canonical order for a game to own: the built-in
+/// content when it is the built-in bundle, the content a running game of the same bundle
+/// owns, or a new resolution. A bundle whose revision stands for a different built-in or
+/// running bundle is refused.
+pub(crate) fn load(bundle: ContentBundle) -> Result<Arc<Content>, LoadError> {
     let bundle = bundle.into_canonical();
     let revision = bundle.hash();
-    registry().candidate(base(), bundle, revision)
+    load_as(bundle, revision)
 }
 
-/// Records that a game built from `content` (from [`candidate`]) succeeded.
-pub(crate) fn admit(content: &'static Content) -> Result<(), LoadError> {
-    registry().admit(base(), content)
-}
-
-/// [`candidate`] admitted at once.
-#[cfg(test)]
-pub(crate) fn load(bundle: ContentBundle) -> Result<&'static Content, LoadError> {
-    let content = candidate(bundle)?;
-    admit(content)?;
+/// [`load`] of a canonical bundle under `revision` (forced in tests to collide).
+fn load_as(bundle: ContentBundle, revision: String) -> Result<Arc<Content>, LoadError> {
+    let base = content();
+    if revision == base.revision {
+        return if base.bundle == bundle {
+            Ok(Arc::clone(base))
+        } else {
+            Err(collision(&revision))
+        };
+    }
+    let mut running = RUNNING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(content) = running.get(&revision).and_then(Weak::upgrade) {
+        return if content.bundle == bundle {
+            Ok(content)
+        } else {
+            Err(collision(&revision))
+        };
+    }
+    let mut content = resolve(bundle).map_err(LoadError::Invalid)?;
+    // A forced revision stands in for a real hash collision.
+    content.resolved.revision = revision.clone();
+    let content = Arc::new(content);
+    running.retain(|_, entry| entry.strong_count() > 0);
+    running.insert(revision, Arc::downgrade(&content));
     Ok(content)
 }
 
-/// Whether a bundle with `revision` is resolved (besides the built-in one).
+/// The running content the registry holds for `revision`, if any.
 #[cfg(test)]
-pub(crate) fn is_loaded(revision: &str) -> bool {
-    registry().entries.contains_key(revision)
+pub(crate) fn registered(revision: &str) -> Option<Arc<Content>> {
+    RUNNING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(revision)
+        .and_then(Weak::upgrade)
 }
 
 /// The validated built-in content every authority runs unless it was given another bundle.
-pub(crate) fn content() -> &'static Content {
-    base()
+pub(crate) fn content() -> &'static Arc<Content> {
+    &BASE
 }
 
 /// The canonical built-in bundle.
 pub fn base_bundle() -> &'static ContentBundle {
-    base().bundle
+    &content().bundle
 }
 
 /// Revision of the built-in content, recorded in snapshots and saves.
@@ -1261,34 +1269,37 @@ mod tests {
         bundle
     }
 
-    fn admitted(
-        registry: &mut Registry,
-        bundle: ContentBundle,
-    ) -> Result<&'static Content, LoadError> {
-        let revision = bundle.revision();
-        registry.load(base(), bundle.into_canonical(), revision)
-    }
-
     #[test]
     fn a_bundle_claiming_the_built_in_revision_is_refused_unless_it_is_the_built_in_bundle() {
-        let mut registry = Registry {
-            entries: BTreeMap::new(),
-            candidates: BTreeMap::new(),
-        };
         // A colliding revision (forced here) must not silently run the built-in content.
-        let collision = registry.load(base(), paying(26), content_revision().to_owned());
+        let collision = load_as(paying(26).into_canonical(), content_revision().to_owned());
         assert!(
             matches!(&collision, Err(LoadError::Refused(reason)) if reason.contains("different bundle")),
             "{collision:?}"
         );
-        assert!(registry.entries.is_empty());
-        // The built-in bundle itself reuses the built-in content.
-        let same = registry
-            .load(base(), base_bundle().clone(), content_revision().to_owned())
-            .unwrap();
-        assert!(std::ptr::eq(same, base()));
-        assert!(std::ptr::eq(load(base_bundle().clone()).unwrap(), base()));
-        assert!(registry.entries.is_empty());
+        assert!(registered(content_revision()).is_none());
+        // The built-in bundle itself is the built-in content.
+        let same = load(base_bundle().clone()).unwrap();
+        assert!(Arc::ptr_eq(&same, content()));
+        assert!(registered(content_revision()).is_none());
+    }
+
+    #[test]
+    fn a_bundle_claiming_the_revision_of_a_running_bundle_is_refused() {
+        let running = load(paying(30)).unwrap();
+        let revision = running.revision.clone();
+        let collision = load_as(paying(31).into_canonical(), revision.clone());
+        assert!(
+            matches!(&collision, Err(LoadError::Refused(reason)) if reason.contains("different bundle")),
+            "{collision:?}"
+        );
+        // The running bundle itself is still served, shared.
+        assert!(Arc::ptr_eq(&load(paying(30)).unwrap(), &running));
+        // Once no game runs it, the revision no longer stands for it.
+        drop(running);
+        let other = load_as(paying(31).into_canonical(), revision.clone()).unwrap();
+        assert_eq!(other.revision, revision);
+        assert_eq!(other.bundle, paying(31).into_canonical());
     }
 
     #[test]
@@ -1312,37 +1323,64 @@ mod tests {
         assert_eq!(reordered.revision(), shuffled.revision());
         let first = load(shuffled.clone()).unwrap();
         let second = load(reordered).unwrap();
-        assert!(std::ptr::eq(first, second), "one registry entry");
+        assert!(Arc::ptr_eq(&first, &second), "one shared resolution");
         assert_eq!(first.revision, shuffled.revision());
-        assert_eq!(*first.bundle, shuffled.into_canonical());
+        assert_eq!(first.bundle, shuffled.into_canonical());
     }
 
     #[test]
-    fn the_registry_is_bounded_and_reuses_loaded_bundles() {
-        let mut registry = Registry {
-            entries: BTreeMap::new(),
-            candidates: BTreeMap::new(),
-        };
-        let mut loaded = Vec::new();
-        for gold in 1..=u32::try_from(MAX_LOADED_CONTENT_BUNDLES).unwrap() {
-            loaded.push(admitted(&mut registry, paying(1_000 + gold)).unwrap());
-        }
-        // An invalid bundle is reported as invalid and never retained.
-        let invalid = admitted(&mut registry, paying(0));
-        assert!(matches!(invalid, Err(LoadError::Invalid(_))), "{invalid:?}");
-        // A new distinct bundle beyond the capacity is refused …
-        let over = admitted(&mut registry, paying(2_000));
+    fn content_is_shared_while_it_runs_and_freed_with_its_last_owner() {
+        let first = load(paying(28)).unwrap();
+        let revision = first.revision.clone();
+        let second = load(paying(28)).unwrap();
         assert!(
-            matches!(&over, Err(LoadError::Refused(reason)) if reason.contains("16 content bundles")),
-            "{over:?}"
+            Arc::ptr_eq(&first, &second),
+            "identical bundles share content"
         );
-        assert_eq!(registry.entries.len(), MAX_LOADED_CONTENT_BUNDLES);
-        // … while an identical bundle and the built-in one are still served.
-        let again = admitted(&mut registry, paying(1_001)).unwrap();
-        assert!(std::ptr::eq(again, loaded[0]));
-        let built_in = admitted(&mut registry, base_bundle().clone()).unwrap();
-        assert!(std::ptr::eq(built_in, base()));
-        assert_eq!(registry.entries.len(), MAX_LOADED_CONTENT_BUNDLES);
+        let weak = Arc::downgrade(&first);
+        drop((first, second));
+        assert!(
+            weak.upgrade().is_none(),
+            "content is freed with its last owner"
+        );
+        assert!(registered(&revision).is_none());
+        // It resolves again on demand, identically.
+        let again = load(paying(28)).unwrap();
+        assert_eq!(again.revision, revision);
+        assert_eq!(again.bundle, paying(28).into_canonical());
+
+        // Any number of distinct bundles load; an invalid one is reported as invalid and
+        // never registered.
+        let many = (0..40)
+            .map(|gold| load(paying(3_000 + gold)).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(many.len(), 40);
+        let invalid = paying(0);
+        let invalid_revision = invalid.revision();
+        let refused = load(invalid);
+        assert!(matches!(refused, Err(LoadError::Invalid(_))), "{refused:?}");
+        assert!(registered(&invalid_revision).is_none());
+    }
+
+    #[test]
+    fn resolved_definitions_publish_their_ids() {
+        let content = content();
+        let swing = content
+            .action(ActionKind::PrimaryAttack)
+            .strike
+            .expect("the light attack strikes");
+        assert_eq!(content.id(swing.id), "sword.lightSwing");
+        let names = content
+            .monsters
+            .iter()
+            .map(|monster| content.id(monster.id).as_str())
+            .collect::<Vec<_>>();
+        let canonical = base_bundle()
+            .monsters
+            .iter()
+            .map(|monster| monster.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, canonical);
     }
 
     #[test]
