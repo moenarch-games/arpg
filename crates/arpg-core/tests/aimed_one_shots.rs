@@ -547,11 +547,18 @@ fn invalid_aims() -> [[i16; 2]; 6] {
     ]
 }
 
+/// A named arrangement: how to set it up and which aimed command it sends.
+type Arrangement = (
+    &'static str,
+    fn() -> Session,
+    fn(Option<[i16; 2]>) -> ArpgCommand,
+);
+
 /// An invalid embedded aim rejects the whole command exactly as `SetAim` rejects that
 /// direction: the same error, no action, no aim change, and the sequence stays usable.
 #[test]
 fn an_invalid_embedded_aim_is_rejected_like_set_aim_and_has_no_effect() {
-    let arrangements: [(&str, fn() -> Session, fn(Option<[i16; 2]>) -> ArpgCommand); 3] = [
+    let arrangements: [Arrangement; 3] = [
         (
             "primary attack",
             || {
