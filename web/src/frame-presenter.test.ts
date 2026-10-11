@@ -297,6 +297,23 @@ test("a resize re-sizes the renderer and redraws with the new viewport", () => {
   expect(h.renderers).toHaveLength(1);
 });
 
+test("a resize during a pending frame draws once and keeps the one-tick active cue", () => {
+  const h = harness();
+  createFramePresenter(h.options);
+  const drawnBefore = h.renderers[0].rendered.length;
+
+  h.snapshots.publish(snapshot(1, { actionPhase: "active" }));
+  h.snapshots.publish(snapshot(2, { actionPhase: "recovery" }));
+  expect(h.frames.size).toBe(1);
+  h.setRect({ width: 390, height: 844 });
+  h.observers[0].onResize();
+  h.flushFrames();
+
+  expect(h.renderers[0].rendered.length - drawnBefore).toBe(1);
+  expect(h.lastFrame()).toMatchObject({ width: 390, height: 844 });
+  expect(h.lastFrame().snapshot.players[0].action.phase).toBe("active");
+});
+
 test("dispose releases the subscription, pending frame, observer and renderer", () => {
   const h = harness();
   const presenter = createFramePresenter(h.options);

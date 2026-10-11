@@ -107,7 +107,13 @@ export function createFramePresenter<Canvas extends CanvasLike, Snapshot, Frame>
     if (disposed) return;
     const rect = canvas.getBoundingClientRect();
     renderer.setSize(rect.width, rect.height, pixelRatio());
-    // A resized drawing buffer is blank until the next draw.
+    // A resized drawing buffer is blank until the next draw. Draw now and drop any queued
+    // frame: this draw already consumes its cue, and a second draw before paint would
+    // overwrite a one-tick active cue with the latest snapshot.
+    if (frameRequest !== null) {
+      options.cancelFrame(frameRequest);
+      frameRequest = null;
+    }
     draw();
   };
 
