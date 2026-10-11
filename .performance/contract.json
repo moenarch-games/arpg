@@ -87,15 +87,15 @@
           "description": "connected players, all in the active encounter room"
         },
         "monsters": {
-          "description": "monsters in the world: four in the active encounter, the rest in dormant rooms"
+          "description": "monsters in the world: four in the active encounter, the rest in the four dormant rooms, at most eight (one encounter) per room"
         }
       },
       "scalePoints": [
-        { "players": 1, "monsters": 64 },
-        { "players": 2, "monsters": 64 },
-        { "players": 4, "monsters": 64 },
-        { "players": 4, "monsters": 16 },
-        { "players": 4, "monsters": 256 }
+        { "players": 1, "monsters": 20 },
+        { "players": 2, "monsters": 20 },
+        { "players": 4, "monsters": 20 },
+        { "players": 4, "monsters": 12 },
+        { "players": 4, "monsters": 36 }
       ],
       "metrics": [
         {
@@ -144,13 +144,13 @@
       "description": "Materialize one requested authoritative snapshot of a world with four players and four engaged monsters, the rest dormant. Output work is linear in exported entities.",
       "dimensions": {
         "monsters": {
-          "description": "monsters in the world, each exported in the snapshot"
+          "description": "monsters in the world, each exported in the snapshot: four engaged, the rest at most eight per dormant room"
         }
       },
       "scalePoints": [
-        { "monsters": 16 },
-        { "monsters": 64 },
-        { "monsters": 256 }
+        { "monsters": 12 },
+        { "monsters": 20 },
+        { "monsters": 36 }
       ],
       "metrics": [
         {
@@ -199,20 +199,20 @@
           "description": "living players, all candidates of every deciding monster"
         },
         "engagedMonsters": {
-          "description": "monsters in the players' active encounter room"
+          "description": "monsters in the players' active encounter room, at most eight (one encounter)"
         },
         "unrelatedMonsters": {
-          "description": "monsters in dormant rooms without players"
+          "description": "monsters in the four dormant rooms without players, at most eight (one encounter) per room"
         }
       },
       "scalePoints": [
-        { "players": 1, "engagedMonsters": 4, "unrelatedMonsters": 16 },
-        { "players": 2, "engagedMonsters": 4, "unrelatedMonsters": 16 },
+        { "players": 1, "engagedMonsters": 4, "unrelatedMonsters": 8 },
+        { "players": 2, "engagedMonsters": 4, "unrelatedMonsters": 8 },
+        { "players": 4, "engagedMonsters": 4, "unrelatedMonsters": 8 },
+        { "players": 4, "engagedMonsters": 2, "unrelatedMonsters": 8 },
+        { "players": 4, "engagedMonsters": 8, "unrelatedMonsters": 8 },
         { "players": 4, "engagedMonsters": 4, "unrelatedMonsters": 16 },
-        { "players": 4, "engagedMonsters": 2, "unrelatedMonsters": 16 },
-        { "players": 4, "engagedMonsters": 8, "unrelatedMonsters": 16 },
-        { "players": 4, "engagedMonsters": 4, "unrelatedMonsters": 128 },
-        { "players": 4, "engagedMonsters": 4, "unrelatedMonsters": 512 }
+        { "players": 4, "engagedMonsters": 4, "unrelatedMonsters": 32 }
       ],
       "metrics": [
         {
@@ -244,13 +244,13 @@
       "description": "Apply one movement command for one player to a world with four players and four engaged monsters while the dormant population grows. Domain work a command causes, such as a target-lock search, is outside this bookkeeping bound.",
       "dimensions": {
         "unrelatedMonsters": {
-          "description": "monsters in dormant rooms without players"
+          "description": "monsters in the four dormant rooms without players, at most eight (one encounter) per room"
         }
       },
       "scalePoints": [
+        { "unrelatedMonsters": 8 },
         { "unrelatedMonsters": 16 },
-        { "unrelatedMonsters": 128 },
-        { "unrelatedMonsters": 512 }
+        { "unrelatedMonsters": 32 }
       ],
       "metrics": [
         {

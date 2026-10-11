@@ -8,9 +8,12 @@
 //! physics-engine.
 
 #[cfg(feature = "operation-work")]
+pub mod contract;
+
+#[cfg(feature = "operation-work")]
 use super::{
-    ArpgGame, AuthoritativeGame, GameError, MAX_PLAYERS, PLAYER_Y, RoomKind, RoomSnapshot, RunSeed,
-    Vec3i,
+    ArpgGame, AuthoritativeGame, DungeonRng, GameError, MAX_ENCOUNTER_SPAWNS, MAX_PLAYERS,
+    PLAYER_Y, RoomKind, RoomSnapshot, RunSeed, Vec3i, spawn_position,
 };
 
 /// Work kinds counted by gameplay code.
@@ -129,8 +132,10 @@ pub struct WorkFixture {
 impl WorkFixture {
     /// Engaged monsters stand in one row this far apart.
     const ENGAGED_SPACING: i32 = 100;
-    /// The most engaged monsters the row holds inside the arena.
-    pub const MAX_ENGAGED_MONSTERS: u32 = 12;
+    /// Every room holds at most one encounter's worth of monsters, so each fixture world is
+    /// one the content could produce: the engaged group is one encounter, and the unrelated
+    /// population fills the dormant rooms up to this many each.
+    pub const MAX_MONSTERS_PER_ROOM: u32 = MAX_ENCOUNTER_SPAWNS as u32;
 
     pub fn build(&self, seed: RunSeed) -> Result<ArpgGame, GameError> {
         let players = usize::try_from(self.players).unwrap_or(usize::MAX);
@@ -139,10 +144,10 @@ impl WorkFixture {
                 "a work fixture holds 1 to {MAX_PLAYERS} players"
             )));
         }
-        if self.engaged_monsters == 0 || self.engaged_monsters > Self::MAX_ENGAGED_MONSTERS {
+        if self.engaged_monsters == 0 || self.engaged_monsters > Self::MAX_MONSTERS_PER_ROOM {
             return Err(GameError::new(format!(
                 "a work fixture engages 1 to {} monsters",
-                Self::MAX_ENGAGED_MONSTERS
+                Self::MAX_MONSTERS_PER_ROOM
             )));
         }
         let mut game = ArpgGame::new_with_seed(seed)?;
@@ -155,8 +160,12 @@ impl WorkFixture {
         let [arena, dormant @ ..] = combat_rooms.as_slice() else {
             return Err(GameError::new("the dungeon has no combat room"));
         };
-        if dormant.is_empty() {
-            return Err(GameError::new("the dungeon has no second combat room"));
+        let rooms = u32::try_from(dormant.len()).unwrap_or(u32::MAX);
+        if self.unrelated_monsters > rooms.saturating_mul(Self::MAX_MONSTERS_PER_ROOM) {
+            return Err(GameError::new(format!(
+                "{rooms} dormant rooms hold at most {} unrelated monsters",
+                rooms.saturating_mul(Self::MAX_MONSTERS_PER_ROOM)
+            )));
         }
         let template = *game
             .monsters
@@ -179,19 +188,19 @@ impl WorkFixture {
                 ..template
             });
         }
+        // Unrelated monsters go round-robin over the dormant rooms, placed like a generated
+        // spawn group: apart from each other and from fixed colliders.
+        let mut rng = DungeonRng::new(u64::from(seed));
+        let mut placed = vec![Vec::new(); dormant.len()];
         for index in 0..self.unrelated_monsters {
-            let rooms = u32::try_from(dormant.len()).unwrap_or(u32::MAX);
-            let room = &dormant[usize::try_from(index % rooms).unwrap_or_default()];
-            let slot = i32::try_from(index / rooms).unwrap_or(i32::MAX);
-            let (x, z) = room.center();
+            let slot = usize::try_from(index % rooms).unwrap_or_default();
+            let room = &dormant[slot];
+            let position = spawn_position(room, &placed[slot], &game.static_colliders, &mut rng);
+            placed[slot].push(position);
             monsters.push(super::MonsterState {
                 id: self.engaged_monsters + 1 + index,
                 room_id: room.id,
-                position: Vec3i::new(
-                    x + (slot % 8) * 60 - 210,
-                    PLAYER_Y,
-                    z + (slot / 8 % 8) * 60 - 210,
-                ),
+                position,
                 ..template
             });
         }

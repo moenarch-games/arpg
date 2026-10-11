@@ -3,8 +3,9 @@
 //! 1. The four-player journey: wall-clock is advisory, the physics step budget blocks.
 //! 2. The operation work contracts (schemaVersion 2, coding-tooling work-complexity syntax):
 //!    every declared operation runs at every declared scale point, twice, and must replay
-//!    identically. Budgets and `constant`/`linear` growth bounds are then checked with the
-//!    coding-tooling semantics on the deterministic counters.
+//!    identically. `arpg_core::check_work_contract` then checks the budgets and the
+//!    `constant`/`linear` growth bounds with the coding-tooling semantics, failing closed on a
+//!    malformed or incomplete contract or measurement.
 //!
 //! The last stdout line is the `operations` part of a `coding-tooling/work-evidence/v1`
 //! document; `scripts/collect_work_evidence.py` adds the suite and the contract hash.
@@ -13,8 +14,9 @@ use std::time::Instant;
 
 use arpg_core::{
     ArpgCommand, ArpgGame, AuthoritativeGame, OperationWork, PlayerCommand, WorkFixture,
+    check_work_contract,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 
 const RUNS: usize = 3;
 const TICKS: u64 = 3_600;
@@ -310,7 +312,8 @@ fn runner(operation: &str) -> Option<Runner> {
 }
 
 /// Runs a scale point twice: the counters and the authoritative outcome must replay.
-fn measure(run: Runner, dimensions: &Dimensions) -> Result<Metrics, String> {
+fn measure(operation: &str, dimensions: &Dimensions) -> Result<Metrics, String> {
+    let run = runner(operation).ok_or("no runner measures this operation")?;
     let first = run(dimensions)?;
     let second = run(dimensions)?;
     if first != second {
@@ -319,165 +322,22 @@ fn measure(run: Runner, dimensions: &Dimensions) -> Result<Metrics, String> {
     Ok(first.0)
 }
 
-struct Sample {
-    dimensions: Dimensions,
-    metrics: Metrics,
-}
-
-/// The growth semantics of coding-tooling `performance work` (docs/work-complexity.md):
-/// samples are grouped by every other dimension and ordered by the bounded one.
-fn growth_violations(
-    samples: &[Sample],
-    metric: &str,
-    dimension: &str,
-    bound: &str,
-) -> Vec<String> {
-    // Points (bounded dimension, value) keyed by the values of every other dimension.
-    let mut groups = BTreeMap::<Vec<(&String, &u64)>, Vec<(i128, i128)>>::new();
-    for sample in samples {
-        let key = sample
-            .dimensions
-            .iter()
-            .filter(|(name, _)| name.as_str() != dimension)
-            .collect::<Vec<_>>();
-        groups.entry(key).or_default().push((
-            i128::from(sample.dimensions[dimension]),
-            i128::from(sample.metrics[metric]),
-        ));
-    }
-    let mut violations = Vec::new();
-    for (others, mut points) in groups {
-        points.sort_unstable();
-        if points.len() < 2 {
-            continue;
-        }
-        let (x0, v0) = points[0];
-        let (x1, v1) = points[1];
-        let reference_rate = (v1 - v0).max(0);
-        for index in 1..points.len() {
-            let (x, v) = points[index];
-            let holds = match bound {
-                "constant" => v <= v0,
-                "linear" if points.len() == 2 => v * x0 <= v0 * x,
-                "linear" => {
-                    let (previous_x, previous_v) = points[index - 1];
-                    (v - previous_v) * (x1 - x0) <= reference_rate * (x - previous_x)
-                }
-                _ => false,
-            };
-            if !holds {
-                violations.push(format!(
-                    "{metric} is not {bound} in {dimension} (others {others:?}): {v} at {dimension}={x}, {v0} at {dimension}={x0}"
-                ));
-            }
-        }
-    }
-    violations
-}
-
-fn operations() -> Result<Value, Vec<String>> {
-    let contract: Value =
-        serde_json::from_str(CONTRACT).map_err(|error| vec![format!("contract: {error}")])?;
-    if contract["schemaVersion"] != 2 {
-        return Err(vec!["contract is not schemaVersion 2".to_owned()]);
-    }
-    let declared = contract["operations"]
-        .as_array()
-        .filter(|operations| !operations.is_empty())
-        .ok_or_else(|| vec!["contract declares no operations".to_owned()])?;
-    let mut failures = Vec::new();
-    let mut evidence = Vec::new();
-    for operation in declared {
-        let id = operation["id"].as_str().unwrap_or_default();
-        let Some(run) = runner(id) else {
-            failures.push(format!("{id}: no runner measures this operation"));
-            continue;
-        };
-        let declared_metrics = operation["metrics"].as_array().cloned().unwrap_or_default();
-        let earlier_failures = failures.len();
-        let mut samples = Vec::new();
-        for point in operation["scalePoints"].as_array().into_iter().flatten() {
-            let dimensions = point
-                .as_object()
-                .into_iter()
-                .flatten()
-                .map(|(name, value)| (name.clone(), value.as_u64().unwrap_or_default()))
-                .collect::<Dimensions>();
-            match measure(run, &dimensions) {
-                Ok(metrics) => samples.push(Sample {
-                    dimensions,
-                    metrics,
-                }),
-                Err(error) => failures.push(format!("{id} {dimensions:?}: {error}")),
-            }
-        }
-        for sample in &samples {
-            let names = declared_metrics
-                .iter()
-                .filter_map(|metric| metric["name"].as_str())
-                .collect::<Vec<_>>();
-            let measured = sample
-                .metrics
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            let mut sorted = names.clone();
-            sorted.sort_unstable();
-            if sorted != measured {
-                failures.push(format!(
-                    "{id}: measured metrics {measured:?} do not match the declared {names:?}"
-                ));
-            }
-            println!(
-                "operation={id} dimensions={:?} metrics={:?}",
-                sample.dimensions, sample.metrics
-            );
-        }
-        // Bounds are only evaluated on complete, matching samples.
-        if failures.len() == earlier_failures {
-            for metric in &declared_metrics {
-                let name = metric["name"].as_str().unwrap_or_default();
-                if let Some(max) = metric["budget"]["max"].as_u64() {
-                    for sample in &samples {
-                        let value = sample.metrics[name];
-                        if value > max {
-                            failures.push(format!(
-                                "{id}: {name}={value} exceeds its budget {max} at {:?}",
-                                sample.dimensions
-                            ));
-                        }
-                    }
-                }
-                for growth in metric["growth"].as_array().into_iter().flatten() {
-                    let dimension = growth["dimension"].as_str().unwrap_or_default();
-                    let bound = growth["bound"].as_str().unwrap_or_default();
-                    failures.extend(
-                        growth_violations(&samples, name, dimension, bound)
-                            .into_iter()
-                            .map(|violation| format!("{id}: {violation}")),
+fn main() {
+    journey();
+    match check_work_contract(CONTRACT, &mut measure) {
+        Ok(evidence) => {
+            for operation in evidence["operations"].as_array().into_iter().flatten() {
+                for sample in operation["samples"].as_array().into_iter().flatten() {
+                    println!(
+                        "operation={} dimensions={} metrics={}",
+                        operation["id"].as_str().unwrap_or_default(),
+                        sample["dimensions"],
+                        sample["metrics"]
                     );
                 }
             }
+            println!("{evidence}");
         }
-        evidence.push(json!({
-            "id": id,
-            "samples": samples
-                .iter()
-                .map(|sample| json!({ "dimensions": sample.dimensions, "metrics": sample.metrics }))
-                .collect::<Vec<_>>(),
-        }));
-    }
-    if failures.is_empty() {
-        Ok(json!({ "operations": evidence }))
-    } else {
-        Err(failures)
-    }
-}
-
-fn main() {
-    journey();
-    match operations() {
-        Ok(evidence) => println!("{evidence}"),
         Err(failures) => {
             for failure in failures {
                 eprintln!("operation work contract violated: {failure}");

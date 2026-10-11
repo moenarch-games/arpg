@@ -33,7 +33,7 @@ mod physics_workloads;
 mod workbench;
 use operation_work::{Counter, count};
 #[cfg(feature = "operation-work")]
-pub use operation_work::{OperationWork, WorkFixture};
+pub use operation_work::{OperationWork, WorkFixture, contract::check_work_contract};
 
 pub type DoorId = u64;
 pub type GroundLootId = u64;
