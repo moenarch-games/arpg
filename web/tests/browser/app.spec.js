@@ -142,6 +142,56 @@ test("leaving and re-entering the world restarts one paused-aware simulation", a
   await expect.poll(tickOf).toBe(paused + 1);
 });
 
+// Normal play (Enter World, not the training route) through the runtime owners of #88: the
+// presenter sizes and keeps one canvas renderer, keyboard input reaches the authority in
+// gameplay context but not while Settings is open, a graphics change keeps play running,
+// and leaving and re-entering repeats all of it.
+test("normal play renders, takes keyboard input and survives settings and re-entry", async ({
+  page,
+  appUrl,
+}) => {
+  await page.goto(appUrl);
+  const canvas = page.getByLabel("ARPG game world", { exact: true });
+  const guard = page.getByRole("button", { name: "Hold shield", exact: true });
+
+  for (let round = 0; round < 3; round += 1) {
+    await page.getByRole("button", { name: "Enter World", exact: true }).click();
+    await expect(page.locator("canvas")).toHaveCount(1);
+    await expect
+      .poll(() => canvas.evaluate((element) => element.width * element.height))
+      .toBeGreaterThan(0);
+    await expect(guard).toBeEnabled();
+
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.keyboard.down("f");
+    await expect(guard).toHaveAttribute("data-guard", "raised");
+    await page.keyboard.up("f");
+    await expect(guard).not.toHaveAttribute("data-guard", /.+/);
+
+    // Menu context: gameplay keys do not reach the authority while Settings is open.
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+    await expect(settings).toBeVisible();
+    await page.keyboard.down("f");
+    await page.waitForTimeout(250);
+    // Combat buttons are hidden behind Settings; the HUD guard status stays rendered.
+    await expect(page.locator(".guard-status")).toHaveCount(0);
+    await page.keyboard.up("f");
+    if (round === 1) await settings.getByLabel("Enable shadows").click();
+    await settings.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(settings).not.toBeVisible();
+
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.keyboard.down("f");
+    await expect(guard).toHaveAttribute("data-guard", "raised");
+    await page.keyboard.up("f");
+    await expect(page.locator("canvas")).toHaveCount(1);
+
+    await page.getByRole("button", { name: "Characters", exact: true }).click();
+    await expect(page.getByRole("main", { name: "Character selection" })).toBeVisible();
+  }
+});
+
 test("the training arena exports its session as a replayable reproduction", async ({
   page,
   appUrl,
