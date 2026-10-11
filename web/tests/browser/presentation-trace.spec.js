@@ -12,6 +12,7 @@ import { expect, test } from "./fixtures.js";
 
 const KEY = "arpg-presentation";
 const SCENARIO = "?scenario=training&seed=42&fixture=enemy";
+const CLOCK_START = Date.UTC(2026, 0, 1);
 
 async function download(page, trigger) {
   const pending = page.waitForEvent("download");
@@ -43,8 +44,13 @@ async function run(browser, appUrl, { stored = null, midRun = null } = {}) {
         ([key, value]) => localStorage.setItem(key, value),
         [KEY, JSON.stringify(stored)],
       );
+    // Freeze page time until training is paused, so both runs pause before the authority's
+    // first tick instead of after however many real-time ticks the page load took.
+    await page.clock.install({ time: CLOCK_START });
+    await page.clock.pauseAt(CLOCK_START + 1_000);
     await page.goto(`${appUrl}${SCENARIO}`);
     await page.getByRole("button", { name: "Pause", exact: true }).click();
+    await page.clock.resume();
     if (stored) {
       // The preferences really are in effect for this run.
       await expect(page.locator("html")).toHaveAttribute("data-flashes", "reduced");
