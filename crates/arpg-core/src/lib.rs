@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
+use std::sync::{Arc, LazyLock};
 
 use physics_engine::{
     BodyId, BodyKind, Ray, RigidBody, SUBTICKS_PER_TICK, Vec3i, World, WorldConfig, ray_cast_first,
@@ -14,8 +15,8 @@ use content::{
     MonsterDefinition, StrikeDefinition, content,
 };
 pub use content::{
-    CONTENT_FORMAT_VERSION, ContentBundle, ContentError, MAX_ENCOUNTER_SPAWNS,
-    MAX_LOADED_CONTENT_BUNDLES, base_bundle, content_revision,
+    CONTENT_FORMAT_VERSION, ContentBundle, ContentError, DefinitionId, MAX_ENCOUNTER_SPAWNS,
+    base_bundle, content_revision,
 };
 use navigation::{Cell, FieldRoute, FieldWork, NAV_CELL_SIZE, Rect, RoomGrid, TargetField, isqrt};
 pub use workbench::{
@@ -496,13 +497,13 @@ impl ScenarioId {
     }
 
     /// The room the scenario is arranged in: a function of seed and content.
-    fn room(self, monsters: &[MonsterState]) -> Result<RoomId, GameError> {
+    fn room(self, content: &Content, monsters: &[MonsterState]) -> Result<RoomId, GameError> {
         let Some(enemy) = self.enemy() else {
             return Ok(SCENARIO_ROOM);
         };
         monsters
             .iter()
-            .find(|monster| monster.definition().id == enemy)
+            .find(|monster| *content.id(monster.definition().id) == *enemy)
             .map(|monster| monster.room_id)
             .ok_or_else(|| GameError::new(format!("no combat room holds a {enemy}")))
     }
@@ -1558,15 +1559,20 @@ pub enum StrikeResult {
     Obstructed,
 }
 
+/// The strike definition arrows publish: arrows are bow tuning, not a content strike.
+static BOW_ARROW_DEFINITION: LazyLock<DefinitionId> = LazyLock::new(|| "bow.arrow".into());
+
 /// One reasoned strike outcome. Player and monster melee share this result path; later
 /// projectile, block and guard-break outcomes extend `StrikeResult` rather than adding a
 /// parallel path per weapon.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StrikeOutcome {
     /// Position among every event (strikes and interactions) resolved in the same tick.
     pub order: u32,
     pub strike: StrikeId,
-    pub definition: &'static str,
+    /// The strike definition id, owned: it stays valid after the game and its content are
+    /// dropped.
+    pub definition: DefinitionId,
     pub target: StrikeTarget,
     pub result: StrikeResult,
 }
@@ -1593,8 +1599,9 @@ struct PlayerState {
 #[derive(Clone, Copy, Debug)]
 struct MonsterState {
     id: u32,
-    /// Its definition in the content the game runs.
-    definition: &'static MonsterDefinition,
+    /// Its definition in the content the game runs (plain data; its id is resolved through
+    /// that content).
+    definition: MonsterDefinition,
     room_id: RoomId,
     position: Vec3i,
     health: u16,
@@ -1616,7 +1623,7 @@ struct MonsterState {
 impl MonsterState {
     fn new(
         id: u32,
-        definition: &'static MonsterDefinition,
+        definition: MonsterDefinition,
         room_id: RoomId,
         position: Vec3i,
         guard_max_points: u16,
@@ -1640,7 +1647,7 @@ impl MonsterState {
         }
     }
 
-    fn definition(&self) -> &'static MonsterDefinition {
+    fn definition(&self) -> MonsterDefinition {
         self.definition
     }
 
@@ -1855,8 +1862,9 @@ enum NavigationMode {
 #[derive(Debug)]
 pub struct ArpgGame {
     /// The validated content this game runs: the built-in bundle unless it was created or
-    /// restored with another one.
-    content: &'static Content,
+    /// restored with another one. The game owns it: custom content is freed with the last
+    /// game running it.
+    content: Arc<Content>,
     run_seed: RunSeed,
     tick: u64,
     world: World,
@@ -1906,24 +1914,21 @@ impl ArpgGame {
     }
 
     pub fn new_with_seed(run_seed: RunSeed) -> Result<Self, GameError> {
-        Self::generated(content(), run_seed)
+        Self::generated(Arc::clone(content()), run_seed)
     }
 
     /// The ordinary generated dungeon for `run_seed` running `bundle` instead of the
     /// built-in content. The bundle is validated first and refused with every violation;
-    /// snapshots and saves carry its revision.
+    /// snapshots and saves carry its revision. The game owns that content, which is freed
+    /// with the last game running it.
     pub fn new_with_content(bundle: ContentBundle, run_seed: RunSeed) -> Result<Self, GameError> {
-        let content = Self::content_candidate(bundle)?;
-        let game = Self::generated(content, run_seed)?;
-        content::admit(content).map_err(Self::load_error)?;
-        Ok(game)
+        Self::generated(Self::load_content(bundle)?, run_seed)
     }
 
-    /// The resolution of `bundle` to build a game from. It takes a registry slot only once
-    /// the game was built ([`content::admit`]), so a failed construction or restore never
-    /// uses one up.
-    fn content_candidate(bundle: ContentBundle) -> Result<&'static Content, GameError> {
-        content::candidate(bundle).map_err(Self::load_error)
+    /// The validated content of `bundle` for a game to own, shared with any running game of
+    /// the same bundle.
+    fn load_content(bundle: ContentBundle) -> Result<Arc<Content>, GameError> {
+        content::load(bundle).map_err(Self::load_error)
     }
 
     fn load_error(error: content::LoadError) -> GameError {
@@ -1942,7 +1947,7 @@ impl ArpgGame {
         }
     }
 
-    fn generated(content: &'static Content, run_seed: RunSeed) -> Result<Self, GameError> {
+    fn generated(content: Arc<Content>, run_seed: RunSeed) -> Result<Self, GameError> {
         let mut world = World::new(WorldConfig {
             gravity: Vec3i::ZERO,
             ..WorldConfig::default()
@@ -1953,7 +1958,7 @@ impl ArpgGame {
             static_colliders,
             player_spawns,
             monsters,
-        } = generate_dungeon(content, run_seed);
+        } = generate_dungeon(&content, run_seed);
         let chests = rooms
             .iter()
             .filter(|room| room.kind == RoomKind::Combat)
@@ -1979,6 +1984,7 @@ impl ArpgGame {
                 .map_err(physics_error)?;
         }
 
+        let tuning = Tuning::from_content(&content);
         Ok(Self {
             content,
             run_seed,
@@ -2007,7 +2013,7 @@ impl ArpgGame {
             scenario: ScenarioId::Dungeon,
             chests,
             interaction_events: Vec::new(),
-            tuning: Tuning::from_content(content),
+            tuning,
             workbench: None,
         })
     }
@@ -2022,11 +2028,11 @@ impl ArpgGame {
     }
 
     fn arranged_scenario(scenario: ScenarioId, run_seed: RunSeed) -> Result<Self, GameError> {
-        let mut game = Self::with_scenario_layout(content(), scenario, run_seed)?;
+        let mut game = Self::with_scenario_layout(Arc::clone(content()), scenario, run_seed)?;
         let Some(target_offset) = scenario.target_offset() else {
             return Ok(game);
         };
-        let room_id = scenario.room(&game.monsters)?;
+        let room_id = scenario.room(&game.content, &game.monsters)?;
         let (center_x, center_z) = game
             .rooms
             .iter()
@@ -2056,7 +2062,7 @@ impl ArpgGame {
     /// The generated dungeon plus the scenario's fixed geometry (no placements). Saves
     /// restore through this so authored pillars come back while positions come from the save.
     fn with_scenario_layout(
-        content: &'static Content,
+        content: Arc<Content>,
         scenario: ScenarioId,
         run_seed: RunSeed,
     ) -> Result<Self, GameError> {
@@ -2065,7 +2071,7 @@ impl ArpgGame {
         if scenario == ScenarioId::Dungeon {
             return Ok(game);
         }
-        let room_id = scenario.room(&game.monsters)?;
+        let room_id = scenario.room(&game.content, &game.monsters)?;
         let (center_x, center_z) = game
             .rooms
             .iter()
@@ -2207,7 +2213,7 @@ impl ArpgGame {
 
     /// Restores a save made with the built-in content.
     pub fn from_save_state(save: ArpgSaveState) -> Result<Self, GameError> {
-        Self::restore(save, content())
+        Self::restore(save, Arc::clone(content()))
     }
 
     /// Restores a save made with `bundle`. The bundle is validated first, and like
@@ -2225,10 +2231,7 @@ impl ArpgGame {
                 save.content_revision
             )));
         }
-        let content = Self::content_candidate(bundle)?;
-        let game = Self::restore(save, content)?;
-        content::admit(content).map_err(Self::load_error)?;
-        Ok(game)
+        Self::restore(save, Self::load_content(bundle)?)
     }
 
     fn check_save_versions(save: &ArpgSaveState) -> Result<(), GameError> {
@@ -2247,7 +2250,7 @@ impl ArpgGame {
         Ok(())
     }
 
-    fn restore(save: ArpgSaveState, content: &'static Content) -> Result<Self, GameError> {
+    fn restore(save: ArpgSaveState, content: Arc<Content>) -> Result<Self, GameError> {
         Self::check_save_versions(&save)?;
         if save.content_revision != content.revision {
             return Err(GameError::new(format!(
@@ -2259,7 +2262,9 @@ impl ArpgGame {
             return Err(GameError::new("save contains too many players"));
         }
 
-        let mut game = Self::with_scenario_layout(content, save.scenario, save.run_seed)?;
+        let mut game =
+            Self::with_scenario_layout(Arc::clone(&content), save.scenario, save.run_seed)?;
+        let content: &Content = &content;
         game.tick = save.tick;
 
         if save.rooms.len() != game.rooms.len() {
@@ -3104,11 +3109,11 @@ impl ArpgGame {
             .players
             .get_mut(&player_id)
             .ok_or_else(|| GameError::new("experience references an unknown player"))?;
-        let previous_level = Self::level_for_experience(self.content, state.experience);
-        let previous_max_health = Self::max_health_for_level(self.content, previous_level);
+        let previous_level = Self::level_for_experience(&self.content, state.experience);
+        let previous_max_health = Self::max_health_for_level(&self.content, previous_level);
         state.experience = state.experience.saturating_add(amount);
-        let level = Self::level_for_experience(self.content, state.experience);
-        let max_health = Self::max_health_for_level(self.content, level);
+        let level = Self::level_for_experience(&self.content, state.experience);
+        let max_health = Self::max_health_for_level(&self.content, level);
         if max_health > previous_max_health {
             state.health = state
                 .health
@@ -3131,7 +3136,7 @@ impl ArpgGame {
         // and lowers a drawn bow without shooting.
         state.guard.stance = None;
         state.draw_ticks = None;
-        state.action = Some(Self::new_action(self.content, kind, state, aim));
+        state.action = Some(Self::new_action(&self.content, kind, state, aim));
         Ok(())
     }
 
@@ -3264,7 +3269,7 @@ impl ArpgGame {
 
     /// The encounter a combat room runs: generation assigns it from the combat room's
     /// position among the generated rooms, never from the published id.
-    fn room_encounter(&self, room_id: RoomId) -> Option<&'static EncounterDefinition> {
+    fn room_encounter(&self, room_id: RoomId) -> Option<&EncounterDefinition> {
         self.rooms
             .iter()
             .filter(|room| room.kind == RoomKind::Combat)
@@ -3632,7 +3637,7 @@ impl ArpgGame {
             .ok_or_else(|| GameError::new("player physics body is missing"))?
             .position();
         let player_level = Self::level_for_experience(
-            self.content,
+            &self.content,
             self.players
                 .get(&player_id)
                 .ok_or_else(|| GameError::new("attack references an unknown player"))?
@@ -3647,7 +3652,7 @@ impl ArpgGame {
             action.damage_denominator,
             action.stagger_ticks,
         );
-        let attack_damage = Self::attack_damage_for_level(self.content, player_level)
+        let attack_damage = Self::attack_damage_for_level(&self.content, player_level)
             .saturating_mul(damage_numerator)
             / damage_denominator.max(1);
         let active_rooms = self
@@ -3707,7 +3712,7 @@ impl ArpgGame {
                     self.push_strike_outcome(StrikeOutcome {
                         order: 0,
                         strike,
-                        definition: definition.id,
+                        definition: self.content.id(definition.id).clone(),
                         target,
                         result,
                     });
@@ -3736,7 +3741,7 @@ impl ArpgGame {
             self.push_strike_outcome(StrikeOutcome {
                 order: 0,
                 strike,
-                definition: definition.id,
+                definition: self.content.id(definition.id).clone(),
                 target,
                 result,
             });
@@ -3775,21 +3780,21 @@ impl ArpgGame {
                 if action.ticks_remaining > 1 {
                     action.ticks_remaining -= 1;
                     state.action = Some(action);
-                    Self::commit_buffered_combo(self.content, state, aim);
+                    Self::commit_buffered_combo(&self.content, state, aim);
                     None
                 } else {
                     match action.phase {
                         ActionPhase::Windup => {
                             action.phase = ActionPhase::Active;
-                            action.ticks_remaining = action.kind.active_ticks(self.content);
+                            action.ticks_remaining = action.kind.active_ticks(&self.content);
                             state.action = Some(action);
                             Some((action.kind, action.facing_x, action.facing_z, action.aim))
                         }
                         ActionPhase::Active => {
                             action.phase = ActionPhase::Recovery;
-                            action.ticks_remaining = action.kind.recovery_ticks(self.content);
+                            action.ticks_remaining = action.kind.recovery_ticks(&self.content);
                             state.action = Some(action);
-                            Self::commit_buffered_combo(self.content, state, aim);
+                            Self::commit_buffered_combo(&self.content, state, aim);
                             None
                         }
                         ActionPhase::Recovery => {
@@ -3991,7 +3996,7 @@ impl ArpgGame {
                 source: arrow.source,
                 tick: arrow.launched_at_tick,
             },
-            definition: "bow.arrow",
+            definition: BOW_ARROW_DEFINITION.clone(),
             target: StrikeTarget::Monster(monster_id),
             result: StrikeResult::Hit { damage, defeated },
         });
@@ -4187,7 +4192,7 @@ impl ArpgGame {
                 self.push_strike_outcome(StrikeOutcome {
                     order: 0,
                     strike,
-                    definition: definition.id,
+                    definition: self.content.id(definition.id).clone(),
                     target,
                     result: StrikeResult::Obstructed,
                 });
@@ -4263,7 +4268,7 @@ impl ArpgGame {
         self.push_strike_outcome(StrikeOutcome {
             order: 0,
             strike,
-            definition: definition.id,
+            definition: self.content.id(definition.id).clone(),
             target: StrikeTarget::Player(player_id),
             result,
         });
@@ -4811,18 +4816,21 @@ impl ArpgGame {
         let encounters = self
             .rooms
             .iter()
-            .map(|room| self.room_encounter(room.id))
+            .map(|room| {
+                self.room_encounter(room.id)
+                    .map(|encounter| (encounter.activation, encounter.completion))
+            })
             .collect::<Vec<_>>();
         for (room, encounter) in self.rooms.iter_mut().zip(encounters) {
             // The start room runs no encounter and stays cleared.
-            let Some(encounter) = encounter else {
+            let Some((activation, completion)) = encounter else {
                 continue;
             };
-            let activated = match encounter.activation {
+            let activated = match activation {
                 EncounterActivation::PlayerEntersRoom => occupied_rooms.contains(&room.id),
             };
             // Every monster of the room counts, including any a workbench arranged there.
-            let completed = match encounter.completion {
+            let completed = match completion {
                 EncounterCompletion::SpawnGroupDefeated => {
                     !rooms_with_living_monsters.contains(&room.id)
                 }
@@ -5019,7 +5027,7 @@ impl AuthoritativeGame for ArpgGame {
                     .expect("player existence checked");
                 let counter = state.counter.filter(|counter| counter.usable_at(tick));
                 if state.health > 0 && state.action.is_some() {
-                    Self::combo_input(self.content, state, ComboInput::Light, aim);
+                    Self::combo_input(&self.content, state, ComboInput::Light, aim);
                 } else if counter.is_some() && state.health > 0 && state.action.is_none() {
                     // Starting the counter atomically consumes the opportunity.
                     state.counter = None;
@@ -5035,7 +5043,7 @@ impl AuthoritativeGame for ArpgGame {
                     .get_mut(&command.player_id)
                     .expect("player existence checked");
                 if state.health > 0 && state.action.is_some() {
-                    Self::combo_input(self.content, state, ComboInput::Heavy, aim);
+                    Self::combo_input(&self.content, state, ComboInput::Heavy, aim);
                 } else {
                     self.start_action(command.player_id, ActionKind::SecondaryAttack)?
                 }
@@ -5093,7 +5101,7 @@ impl AuthoritativeGame for ArpgGame {
                     && state.hurt_ticks_remaining == 0
                     && state.action.is_none()
                 {
-                    let mut action = Self::new_action(self.content, ActionKind::Shoot, state, aim);
+                    let mut action = Self::new_action(&self.content, ActionKind::Shoot, state, aim);
                     action.charge = drawn;
                     state.action = Some(action);
                 }
@@ -5200,18 +5208,18 @@ impl AuthoritativeGame for ArpgGame {
                     .world
                     .body(Self::player_body_id(id))
                     .ok_or_else(|| GameError::new("player physics body is missing"))?;
-                let level = Self::level_for_experience(self.content, state.experience);
+                let level = Self::level_for_experience(&self.content, state.experience);
                 Ok(PlayerSnapshot {
                     id,
                     position: vec_to_array(body.position()),
                     health: state.health,
-                    max_health: Self::max_health_for_level(self.content, level),
+                    max_health: Self::max_health_for_level(&self.content, level),
                     level,
                     experience: state.experience,
                     experience_into_level: state.experience
                         % self.content.progression.experience_per_level,
                     experience_for_next_level: self.content.progression.experience_per_level,
-                    attack_damage: Self::attack_damage_for_level(self.content, level),
+                    attack_damage: Self::attack_damage_for_level(&self.content, level),
                     gold: state.gold,
                     alive: state.health > 0,
                     facing: [state.facing_x, state.facing_z],
@@ -5267,7 +5275,7 @@ impl AuthoritativeGame for ArpgGame {
                 .iter()
                 .map(|monster| MonsterSnapshot {
                     id: monster.id,
-                    definition: monster.definition().id.to_owned(),
+                    definition: self.content.id(monster.definition().id).to_string(),
                     room_id: monster.room_id,
                     position: vec_to_array(monster.position),
                     health: monster.health,
@@ -5275,7 +5283,7 @@ impl AuthoritativeGame for ArpgGame {
                     alive: monster.health > 0,
                     action: monster
                         .action
-                        .map(|action| action.snapshot(monster.definition())),
+                        .map(|action| action.snapshot(&monster.definition())),
                     reaction: (monster.stagger_ticks_remaining > 0).then_some(
                         MonsterReactionSnapshot {
                             kind: MonsterReactionKind::Stagger,
@@ -5326,7 +5334,7 @@ impl AuthoritativeGame for ArpgGame {
                     order: outcome.order,
                     source: outcome.strike.source,
                     strike_tick: outcome.strike.tick,
-                    definition: outcome.definition.to_owned(),
+                    definition: outcome.definition.to_string(),
                     target: outcome.target,
                     result: outcome.result,
                 })
@@ -5335,7 +5343,7 @@ impl AuthoritativeGame for ArpgGame {
     }
 }
 
-fn generate_dungeon(content: &'static Content, seed: RunSeed) -> GeneratedDungeon {
+fn generate_dungeon(content: &Content, seed: RunSeed) -> GeneratedDungeon {
     let mut colliders = Vec::new();
     let mut doors = Vec::new();
     let mut rng = DungeonRng::new(u64::from(seed));
@@ -5451,7 +5459,7 @@ fn generate_dungeon(content: &'static Content, seed: RunSeed) -> GeneratedDungeo
         .filter(|room| room.kind == RoomKind::Combat)
         .enumerate()
     {
-        room.encounter = Some(content.room_encounter(index).id.to_owned());
+        room.encounter = Some(content.id(content.room_encounter(index).id).to_string());
     }
     let start_room = rooms
         .iter()
@@ -5538,7 +5546,7 @@ fn generated_player_spawns(start_room: &RoomSnapshot) -> [Vec3i; MAX_PLAYERS] {
 /// order, ids from 1. Every member draws its position from the dungeon RNG exactly as a
 /// lone room monster always has, so single-member groups generate the same dungeon.
 fn generated_monsters(
-    content: &'static Content,
+    content: &Content,
     rooms: &[RoomSnapshot],
     colliders: &[StaticColliderSnapshot],
     rng: &mut DungeonRng,
@@ -5557,7 +5565,7 @@ fn generated_monsters(
                 placed.push(position);
                 monsters.push(MonsterState::new(
                     u32::try_from(monsters.len() + 1).expect("monster id must fit u32"),
-                    content.monster(definition),
+                    *content.monster(definition),
                     room.id,
                     position,
                     content.guard.max_points,
@@ -5934,7 +5942,7 @@ mod tests {
         content()
             .monsters
             .iter()
-            .position(|definition| definition.id == id)
+            .position(|definition| *content().id(definition.id) == *id)
             .expect("built-in content defines this monster")
     }
 
@@ -6691,7 +6699,7 @@ mod tests {
     fn place_monster_of(game: &mut ArpgGame, id: u32, definition: &str, x: i32, z: i32) {
         game.monsters.push(MonsterState::new(
             id,
-            content().monster(definition_index(definition)),
+            *content().monster(definition_index(definition)),
             STRIKE_ROOM,
             Vec3i::new(x, PLAYER_Y, z),
             content().guard.max_points,
@@ -6726,7 +6734,8 @@ mod tests {
             outcomes.extend(
                 game.strike_outcomes()
                     .iter()
-                    .filter(|outcome| outcome.strike.source == StrikeSource::Player(1)),
+                    .filter(|outcome| outcome.strike.source == StrikeSource::Player(1))
+                    .cloned(),
             );
         }
         outcomes
@@ -7240,7 +7249,6 @@ mod tests {
         place_monster(&mut game, 1, x + 120, z);
         raise_guard_fully(&mut game);
         let unblockable = StrikeDefinition {
-            id: "test.unblockable",
             blockable: false,
             ..monster_claw()
         };
@@ -7435,7 +7443,7 @@ mod tests {
                 game.strike_outcomes()
                     .iter()
                     .filter(|outcome| outcome.strike.source == StrikeSource::Player(1))
-                    .copied(),
+                    .cloned(),
             );
         }
         assert_eq!(outcomes.len(), 1);
@@ -7680,7 +7688,7 @@ mod tests {
         game
     }
 
-    fn player_definitions(game: &mut ArpgGame) -> Vec<&'static str> {
+    fn player_definitions(game: &mut ArpgGame) -> Vec<DefinitionId> {
         let mut definitions = Vec::new();
         while current_action(game).is_some() {
             game.advance_tick().unwrap();
@@ -7688,7 +7696,7 @@ mod tests {
                 game.strike_outcomes()
                     .iter()
                     .filter(|outcome| outcome.strike.source == StrikeSource::Player(1))
-                    .map(|outcome| outcome.definition),
+                    .map(|outcome| outcome.definition.clone()),
             );
         }
         definitions
@@ -7983,7 +7991,7 @@ mod tests {
                 game.strike_outcomes()
                     .iter()
                     .filter(|outcome| outcome.definition == "bow.arrow")
-                    .copied(),
+                    .cloned(),
             );
             if game.arrows.is_empty() && current_action(game).is_none() {
                 break;
@@ -8953,7 +8961,7 @@ mod tests {
                     });
                     continue;
                 };
-                let room_id = scenario.room(&game.monsters).unwrap();
+                let room_id = scenario.room(&game.content, &game.monsters).unwrap();
                 let room = snapshot
                     .rooms
                     .iter()
@@ -9904,7 +9912,7 @@ mod tests {
                 content().reward(encounter.reward).gold,
                 CHEST_GOLD_AMOUNT,
                 "{}",
-                encounter.id
+                content().id(encounter.id)
             );
         }
     }
@@ -9934,7 +9942,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == SKIRMISHER_ROOM)
             .unwrap();
-        assert_eq!(monster.definition().id, SKIRMISHER);
+        assert_eq!(content().id(monster.definition().id), SKIRMISHER);
         monster.position = Vec3i::new(center_x + offset, PLAYER_Y, center_z);
         let id = monster.id;
         (game, id)
@@ -10174,54 +10182,55 @@ mod tests {
     }
 
     #[test]
-    fn failed_restores_never_use_up_a_content_slot() {
-        // A valid bundle that never ran a game, and a save that matches its revision but
-        // whose room set is broken, so only the restore itself fails.
+    fn games_of_one_bundle_share_its_content_and_the_last_one_frees_it() {
         let mut bundle = base_bundle().clone();
         bundle.rewards[0].gold = 40_000;
-        let mut save = ArpgGame::new_with_seed(9).unwrap().save_state().unwrap();
-        save.content_revision = bundle.revision();
-        save.rooms.pop();
-        for _ in 0..=MAX_LOADED_CONTENT_BUNDLES {
-            assert!(ArpgGame::from_save_state_with_content(save.clone(), bundle.clone()).is_err());
-        }
-        assert!(!content::is_loaded(&bundle.revision()), "never admitted");
-
-        // Every slot is still there for legitimate bundles: new ones load and restore.
-        for gold in 41_000..41_000 + u32::try_from(MAX_LOADED_CONTENT_BUNDLES).unwrap() - 2 {
-            let mut legitimate = base_bundle().clone();
-            legitimate.rewards[0].gold = gold;
-            let game = ArpgGame::new_with_content(legitimate.clone(), 9)
-                .expect("a legitimate new bundle still loads");
-            let restored =
-                ArpgGame::from_save_state_with_content(game.save_state().unwrap(), legitimate)
-                    .expect("and its save restores");
-            assert_eq!(
-                restored.snapshot().unwrap().content_revision,
-                game.snapshot().unwrap().content_revision
-            );
-        }
-        // The failed bundle itself is admitted once a valid save of it restores.
-        let valid = ArpgGame::new_with_content(bundle.clone(), 9).unwrap();
-        assert!(content::is_loaded(&bundle.revision()));
+        let first = ArpgGame::new_with_content(bundle.clone(), 9).unwrap();
+        let restored =
+            ArpgGame::from_save_state_with_content(first.save_state().unwrap(), bundle.clone())
+                .unwrap();
         assert!(
-            ArpgGame::from_save_state_with_content(valid.save_state().unwrap(), bundle).is_ok()
+            Arc::ptr_eq(&first.content, &restored.content),
+            "one resolution"
         );
+        let weak = Arc::downgrade(&first.content);
+        drop(first);
+        assert!(weak.upgrade().is_some(), "the restored game still owns it");
+        drop(restored);
+        assert!(weak.upgrade().is_none(), "freed with the last game");
+        assert!(content::registered(&bundle.revision()).is_none());
+
+        // Built-in games all run the one built-in content.
+        let built_in = ArpgGame::new_with_seed(9).unwrap();
+        let as_custom = ArpgGame::new_with_content(base_bundle().clone(), 9).unwrap();
+        assert!(Arc::ptr_eq(&built_in.content, content()));
+        assert!(Arc::ptr_eq(&as_custom.content, content()));
     }
 
     #[test]
-    fn a_save_from_another_bundle_is_refused_before_that_bundle_is_retained() {
+    fn failed_restores_keep_no_content() {
+        // A valid bundle that never ran a game, and a save that matches its revision but
+        // whose room set is broken, so only the restore itself fails.
+        let mut bundle = base_bundle().clone();
+        bundle.rewards[0].gold = 40_001;
+        let mut save = ArpgGame::new_with_seed(9).unwrap().save_state().unwrap();
+        save.content_revision = bundle.revision();
+        save.rooms.pop();
+        assert!(ArpgGame::from_save_state_with_content(save, bundle.clone()).is_err());
+        assert!(content::registered(&bundle.revision()).is_none());
+
+        // A save from another bundle is refused before that bundle is resolved.
         let mut game = ArpgGame::new_with_seed(7).unwrap();
         game.add_player(1).unwrap();
-        let save = game.save_state().unwrap();
         let mut other = base_bundle().clone();
         other.rewards[0].gold = 31_337;
         let revision = other.revision();
-        let Err(error) = ArpgGame::from_save_state_with_content(save, other) else {
+        let Err(error) = ArpgGame::from_save_state_with_content(game.save_state().unwrap(), other)
+        else {
             panic!("a built-in save does not restore with another bundle");
         };
         assert!(error.message().contains("content revision"), "{error}");
-        assert!(!content::is_loaded(&revision), "nothing was retained");
+        assert!(content::registered(&revision).is_none());
     }
 
     #[test]
@@ -11471,7 +11480,10 @@ mod tests {
             .iter()
             .position(|monster| monster.room_id == 6)
             .unwrap();
-        assert_eq!(game.monsters[defender].definition().id, DEFENDER);
+        assert_eq!(
+            content().id(game.monsters[defender].definition().id),
+            DEFENDER
+        );
         let ready = save.monsters[defender]
             .guard
             .expect("a shield monster saves its guard");
@@ -12035,7 +12047,7 @@ mod tests {
         let id = game
             .monsters
             .iter()
-            .find(|m| m.definition().id == ARCHER)
+            .find(|m| *content().id(m.definition().id) == *ARCHER)
             .unwrap()
             .id;
         let shot = advance_until_shot(&mut game);
@@ -12078,7 +12090,7 @@ mod tests {
         let id = blocked
             .monsters
             .iter()
-            .find(|m| m.definition().id == ARCHER)
+            .find(|m| *content().id(m.definition().id) == *ARCHER)
             .unwrap()
             .id;
         command_as(&mut blocked, 1, ArpgCommand::SetGuard { raised: true });
@@ -12125,7 +12137,7 @@ mod tests {
     fn ranged_archer_id(game: &ArpgGame) -> u32 {
         game.monsters
             .iter()
-            .find(|m| m.definition().id == ARCHER)
+            .find(|m| *content().id(m.definition().id) == *ARCHER)
             .unwrap()
             .id
     }
@@ -12291,7 +12303,7 @@ mod tests {
         let id = game
             .monsters
             .iter()
-            .find(|m| m.definition().id == BRUISER)
+            .find(|m| *content().id(m.definition().id) == *BRUISER)
             .unwrap()
             .id;
         (game, id)

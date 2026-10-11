@@ -243,7 +243,7 @@ pub(crate) struct Workbench {
 
 impl Workbench {
     pub fn new(game: &ArpgGame) -> Result<Self, GameError> {
-        let room_id = game.scenario.room(&game.monsters)?;
+        let room_id = game.scenario.room(&game.content, &game.monsters)?;
         let center = game
             .rooms
             .iter()
@@ -331,11 +331,11 @@ impl ArpgGame {
         definition: &str,
         [offset_x, offset_z]: [i32; 2],
     ) -> Result<(), GameError> {
-        let definition = self
-            .content
+        let content = &self.content;
+        let definition = *content
             .monsters
             .iter()
-            .find(|candidate| candidate.id == definition)
+            .find(|candidate| *content.id(candidate.id) == *definition)
             .ok_or_else(|| GameError::new(format!("unknown monster definition {definition:?}")))?;
         let bounds = -MAX_SPAWN_OFFSET..=MAX_SPAWN_OFFSET;
         if !bounds.contains(&offset_x) || !bounds.contains(&offset_z) {
@@ -694,7 +694,7 @@ mod tests {
         content()
             .monsters
             .iter()
-            .position(|monster| monster.id == definition)
+            .position(|monster| *content().id(monster.id) == *definition)
             .unwrap()
     }
 
