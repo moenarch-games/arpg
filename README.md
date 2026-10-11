@@ -74,7 +74,7 @@ Savestate semantics also live in `arpg-core`: the browser only persists or trans
 
 - **Local** — the browser runs `arpg-core` through `arpg-web-wasm`.
 - **Peer-hosted co-op** — one browser runs that same Rust/Wasm authority; guests submit sequenced commands and consume host snapshots. `multiplayer-setup-service` remains payload-opaque setup infrastructure.
-- **Dedicated online** — the browser connects directly to the runnable `arpg-game-server` WebTransport endpoint. `game-server` owns admission, ticks, reconnect identity, recovery, and transport framing; the browser submits versioned `arpg-protocol` command payloads (held input as datagrams, one-shots such as attacks on the acknowledged reliable command lane; see [dedicated command delivery](docs/ARCHITECTURE.md#dedicated-command-delivery)) and renders verified authoritative snapshots.
+- **Dedicated online** — the browser connects directly to the runnable `arpg-game-server` WebTransport endpoint. `game-server` owns admission, ticks, reconnect identity, recovery, and transport framing; the browser submits versioned `arpg-protocol` command payloads (held input as datagrams, one-shots such as attacks and the bow draw, release and cancel on the acknowledged reliable command lane; see [dedicated command delivery](docs/ARCHITECTURE.md#dedicated-command-delivery)) and renders verified authoritative snapshots.
 
 Peer-hosted co-op is a convenience/trust mode, not an anti-cheat boundary. The host can cheat. Dedicated play is the trusted authority model.
 

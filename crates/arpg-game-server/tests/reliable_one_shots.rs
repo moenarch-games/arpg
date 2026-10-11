@@ -1,8 +1,8 @@
 //! Reliable one-shot commands on the dedicated authority (#143).
 //!
-//! The browser sends one-shot commands (attacks, interact, weapon and target changes) on
-//! the `game-server` reliable command lane and held state (movement, aim, guard, bow) as
-//! datagrams with the #139 refresh. `MatchRuntime::submit_lane_command` keeps one
+//! The browser sends one-shot commands (attacks, interact, weapon and target changes) and
+//! the bow transitions on the `game-server` reliable command lane and held state (movement,
+//! aim, guard) as datagrams with the #139 refresh. `MatchRuntime::submit_lane_command` keeps one
 //! watermark per (player, lane) and calls `GameSimulation::apply_lane_command`. These
 //! tests drive the real ARPG simulation through `MatchRuntime` and pin what the dedicated
 //! authority must do with lost, reordered and re-sent commands.

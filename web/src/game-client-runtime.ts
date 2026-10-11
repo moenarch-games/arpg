@@ -178,26 +178,22 @@ function idleMovement() {
   };
 }
 
-type HeldInput = "guard" | "movement" | "aim" | "bow";
-const HELD_INPUTS: readonly HeldInput[] = ["guard", "movement", "aim", "bow"];
+type HeldInput = "guard" | "movement" | "aim";
+const HELD_INPUTS: readonly HeldInput[] = ["guard", "movement", "aim"];
 // Dedicated held-input re-assertion cadence: 5 per second per input, for as long as the
 // session runs. Every held datagram carries one input under the datagram lane's sequence
 // watermark, so a reordered newer datagram can discard an older one; only a refresh that
 // never stops guarantees that each input's current value eventually lands as the newest
 // command.
 const HELD_REFRESH_INTERVAL_MS = 200;
-// Held commands travel as dedicated datagrams and the refresh re-sends them. Every other
-// command is a one-shot (attack, interact, weapon or target change) and travels on the
-// reliable command lane, which has its own watermark, so no datagram can overtake and drop
-// it (#143).
-const HELD_COMMAND_TYPES = new Set([
-  "setGuard",
-  "setMovement",
-  "setAim",
-  "drawBow",
-  "releaseBow",
-  "cancelBow",
-]);
+// Held commands carry an absolute value the authority can take again at any time, so they
+// travel as dedicated datagrams and the refresh re-sends them. Every other command travels
+// on the reliable command lane, which has its own watermark, so no datagram can overtake
+// and drop it (#143): one-shots (attack, interact, weapon or target change) and the bow
+// transitions. A release consumes the draw it shoots, so a lost release followed by a new
+// draw would merge two shots into one; on the lane draw, release and cancel stay lossless
+// and in order.
+const HELD_COMMAND_TYPES = new Set(["setGuard", "setMovement", "setAim"]);
 
 export function createGameClientRuntime(options: GameClientRuntimeOptions) {
   const schedule = options.setInterval ?? ((callback, ms) => globalThis.setInterval(callback, ms));
@@ -235,7 +231,6 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
   // bounded cadence: indefinitely while it differs from rest, and for a few periods after
   // it returns to rest so a lost release still converges (#139).
   let heldRefreshTimer: unknown = null;
-  let bowTerminal: "releaseBow" | "cancelBow" | null = null;
   let heldRefreshRotation = 0;
   // The core load in flight, and the latest start waiting for it. A request only activates
   // while its source generation is still current.
@@ -335,7 +330,6 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
     drawSources.clear();
     aim = null;
     guardRaiseSent = false;
-    bowTerminal = null;
     heldRefreshRotation = 0;
   };
 
@@ -441,7 +435,6 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
             // A refresh only repeats held state, so its failure is not news to the player.
             if (dedicated === session && !quiet) status(`Dedicated command failed: ${error}`);
           });
-          noteBowTerminal(command.type);
         } else {
           // Settles on the authority's ack; a rejection or an ended session is reported.
           void session.sendReliableCommand(++sequence, payload).catch((error) => {
@@ -459,18 +452,13 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
     }
   };
 
-  // Remembers the last bow release or cancel, which the refresh repeats once nothing is drawn.
-  function noteBowTerminal(type: unknown) {
-    if (type === "releaseBow" || type === "cancelBow") bowTerminal = type;
-  }
-
   // Re-sends the whole current held set with fresh sequences on every period, rotating the
   // order so each input is regularly the newest datagram, so neither a lost datagram nor
   // reordering against another input (the authority drops datagram sequences below the
   // datagram watermark) can leave the dedicated authority holding a stale value for longer
-  // than a few periods. One-shots are on the reliable lane, so a refresh cannot drop them.
-  // Every repeated value is idempotent at the authority: a repeated raise or draw is a
-  // continued hold, a repeated lower, release or cancel without a draw does nothing.
+  // than a few periods. One-shots and bow transitions are on the reliable lane, so a refresh
+  // cannot drop them. Every repeated value is idempotent at the authority: a repeated guard,
+  // movement or aim only sets the value it already has.
   const refreshHeldInput = () => {
     if (state.mode !== "dedicated" || !dedicated) {
       stopHeldRefresh();
@@ -485,10 +473,6 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
       },
       movement: () => send({ type: "setMovement", x: movement.lastX, z: movement.lastZ }),
       aim: () => send({ type: "setAim", direction: aim }),
-      bow: () => {
-        if (drawSources.size > 0) send({ type: "drawBow" });
-        else if (bowTerminal) send({ type: bowTerminal });
-      },
     };
     for (let index = 0; index < HELD_INPUTS.length; index += 1) {
       refreshers[HELD_INPUTS[(heldRefreshRotation + index) % HELD_INPUTS.length]]();

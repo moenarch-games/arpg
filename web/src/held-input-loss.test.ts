@@ -21,8 +21,10 @@
 // character walking on after release for longer than half a second is a gameplay-visible
 // desync (blocks taken or missed, positions drifting), while 500 ms leaves room for any
 // sensible re-assertion period or a reliable retransmission over a real round trip.
-// Traffic bound: COMMANDS_PER_SECOND_PER_INPUT = 10 for each of the HELD_INPUTS = 4 held
-// inputs (guard, movement, aim, bow draw), i.e. at most 40 commands per second in total.
+// Traffic bound: COMMANDS_PER_SECOND_PER_INPUT = 10 for each of the HELD_INPUTS = 3 held
+// inputs (guard, movement, aim), i.e. at most 30 commands per second in total. Bow draw,
+// release and cancel moved to the reliable command lane (#143 review): a release consumes
+// its draw, so they cannot be lost as datagrams and are never re-asserted.
 // With nothing lost the runtime may re-assert the current held set (even the empty one,
 // while idle), but convergence must not be bought by re-sending every input every 60 Hz
 // tick (240 per second): a 10 Hz re-assertion of each input already fits the 500 ms bound.
@@ -36,7 +38,7 @@ const LOCAL_REVISION = "0123456789abcdef";
 const PLAYER_ID = 1;
 const CONVERGENCE_BOUND_MS = 500;
 const COMMANDS_PER_SECOND_PER_INPUT = 10;
-const HELD_INPUTS = 4;
+const HELD_INPUTS = 3;
 const HELD_TYPES = new Set([
   "setGuard",
   "setMovement",
@@ -269,6 +271,19 @@ async function dedicatedFixture({ weapon = "swordAndShield" } = {}) {
       expect(session.closed).toBe(false);
       expect(runtime.getState()).toMatchObject({ lifecycle: "running", playerId: PLAYER_ID });
     },
+    // A bow transition armed to be lost went out on the reliable lane instead: nothing was
+    // lost, on the one connection, which never reconnected.
+    expectReliableNoLossNoReconnect(type) {
+      expect(session.lost).toBe(0);
+      expect(session.sent.filter((entry) => entry.command.type === type)).not.toHaveLength(0);
+      for (const entry of session.sent.filter((sent) => sent.command.type === type)) {
+        expect(entry.lane).toBe("sendReliableCommand");
+      }
+      expect(sessions).toHaveLength(1);
+      expect(session.connects).toBe(1);
+      expect(session.closed).toBe(false);
+      expect(runtime.getState()).toMatchObject({ lifecycle: "running", playerId: PLAYER_ID });
+    },
     // No stale replay: sequences strictly increase over every lane, and every command sent
     // since `since` (the last player input) carries the currently held value. One-shot
     // actions are never re-sent.
@@ -439,23 +454,23 @@ test("a lost aim clear returns the authority to committed facing", async () => {
   fixture.close();
 });
 
-test("a lost bow draw is drawing at the authority while the draw stays held", async () => {
+test("a bow draw is not lost with datagrams and is drawing at the authority", async () => {
   const fixture = await dedicatedFixture({ weapon: "bow" });
   const expected = { ...NOTHING_HELD, bow: "drawn" };
   const since = fixture.mark();
   fixture.session.loseNext((command) => command.type === "drawBow");
   fixture.runtime.setBowDraw("keyboard", true);
   await flush();
-  expect(fixture.authority.drawing).toBe(false);
+  expect(fixture.authority.drawing).toBe(true);
 
   await fixture.run(CONVERGENCE_BOUND_MS);
-  fixture.expectSingleLossNoReconnect();
+  fixture.expectReliableNoLossNoReconnect("drawBow");
   expect(fixture.authority.held()).toEqual(authorityView(expected));
   fixture.expectNoStaleReplay(since, expected);
   fixture.close();
 });
 
-test("a lost bow cancel lowers the draw at the authority and never shoots", async () => {
+test("a bow cancel is not lost with datagrams, lowers the draw and never shoots", async () => {
   const fixture = await dedicatedFixture({ weapon: "bow" });
   fixture.runtime.setBowDraw("touch", true);
   await fixture.settle();
@@ -466,16 +481,16 @@ test("a lost bow cancel lowers the draw at the authority and never shoots", asyn
   fixture.session.loseNext((command) => command.type === "cancelBow");
   fixture.runtime.setBowDraw("touch", false, { interrupted: true });
   await flush();
-  expect(fixture.authority.drawing).toBe(true);
+  expect(fixture.authority.drawing).toBe(false);
 
   await fixture.run(CONVERGENCE_BOUND_MS);
-  fixture.expectSingleLossNoReconnect();
+  fixture.expectReliableNoLossNoReconnect("cancelBow");
   expect(fixture.authority.held()).toEqual(authorityView(expected));
   fixture.expectNoStaleReplay(since, expected);
   fixture.close();
 });
 
-test("a lost bow release leaves the authority not drawing", async () => {
+test("a bow release is not lost with datagrams and leaves the authority not drawing", async () => {
   const fixture = await dedicatedFixture({ weapon: "bow" });
   fixture.runtime.setBowDraw("keyboard", true);
   await fixture.settle();
@@ -485,10 +500,10 @@ test("a lost bow release leaves the authority not drawing", async () => {
   fixture.session.loseNext((command) => command.type === "releaseBow");
   fixture.runtime.setBowDraw("keyboard", false);
   await flush();
-  expect(fixture.authority.drawing).toBe(true);
+  expect(fixture.authority.drawing).toBe(false);
 
   await fixture.run(CONVERGENCE_BOUND_MS);
-  fixture.expectSingleLossNoReconnect();
+  fixture.expectReliableNoLossNoReconnect("releaseBow");
   expect(fixture.authority.held()).toEqual(authorityView(NOTHING_HELD));
   fixture.expectNoStaleReplay(since, NOTHING_HELD);
   fixture.close();

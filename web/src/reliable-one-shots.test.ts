@@ -14,10 +14,10 @@
 //   or a closed session.
 // - In dedicated mode, `dispatch` sends the one-shot types `primaryAttack`,
 //   `secondaryAttack`, `interact`, `equipWeapon`, `cycleTarget` and `clearTarget` with
-//   `sendReliableCommand`. The held types `setMovement`, `setAim`, `setGuard`, `drawBow`,
-//   `releaseBow` and `cancelBow` (including every refresh) keep using `sendCommand`.
-//   Bow release and cancel stay held: the refresh repeats the last terminal bow command
-//   and the authority treats a repeat without a draw as a no-op.
+//   `sendReliableCommand`, and so the bow transitions `drawBow`, `releaseBow` and
+//   `cancelBow`: a release consumes its draw, so a lost release followed by a new draw
+//   would merge two shots into one. The held types `setMovement`, `setAim` and `setGuard`
+//   (including every refresh) keep using `sendCommand`.
 // - Both lanes share the runtime's one sequence counter, so sequences strictly increase in
 //   send order across lanes.
 // - A rejected one-shot surfaces as a status message containing "rejected" and leaves the
@@ -39,14 +39,9 @@ const ONE_SHOTS = [
   { type: "clearTarget" },
 ];
 const ONE_SHOT_TYPES = new Set(ONE_SHOTS.map((command) => command.type));
-const HELD_TYPES = new Set([
-  "setGuard",
-  "setMovement",
-  "setAim",
-  "drawBow",
-  "releaseBow",
-  "cancelBow",
-]);
+const HELD_TYPES = new Set(["setGuard", "setMovement", "setAim"]);
+// Bow transitions travel on the reliable lane too, but are not one-shot actions.
+const BOW_TYPES = new Set(["drawBow", "releaseBow", "cancelBow"]);
 
 const snapshotJson = (tick) =>
   JSON.stringify({
@@ -261,9 +256,13 @@ test("one-shots use the reliable lane and held input stays on datagrams", async 
   const heldLanes = fixture.lanesOf((type) => HELD_TYPES.has(type));
   expect(heldLanes.length).toBeGreaterThan(5);
   expect(new Set(heldLanes)).toEqual(new Set(["datagram"]));
+  expect(fixture.lanesOf((type) => BOW_TYPES.has(type))).toEqual(["reliable", "reliable"]);
   expect(
     fixture.session.sent.every(
-      (entry) => HELD_TYPES.has(entry.command.type) || ONE_SHOT_TYPES.has(entry.command.type),
+      (entry) =>
+        HELD_TYPES.has(entry.command.type) ||
+        ONE_SHOT_TYPES.has(entry.command.type) ||
+        BOW_TYPES.has(entry.command.type),
     ),
   ).toBe(true);
 
@@ -347,6 +346,48 @@ test("a rejected one-shot surfaces as a status and the session keeps running", a
   await fixture.run(TICK_INTERVAL_MS);
   expect(fixture.authority.oneShots().map((entry) => entry.command)).toEqual([
     { type: "primaryAttack" },
+  ]);
+  fixture.close();
+});
+
+// Codex review on #151: a release that is lost or overtaken, followed by a new draw before
+// the next refresh, must not merge two intended shots into one. Bow transitions travel on
+// the reliable lane, so a held-back datagram cannot delay or drop them.
+test("a delayed release followed by a new draw and a second release gives two shots", async () => {
+  const fixture = await dedicatedFixture();
+  fixture.runtime.dispatch({ type: "equipWeapon", weapon: "bow" });
+  fixture.runtime.setBowDraw("keyboard", true);
+  await fixture.run(500);
+
+  // A datagram sent now is held back behind the later traffic; the next draw follows
+  // before any refresh could repeat the release.
+  fixture.session.datagrams = "hold";
+  fixture.runtime.setBowDraw("keyboard", false);
+  fixture.session.datagrams = "deliver";
+  fixture.runtime.setBowDraw("keyboard", true);
+  await fixture.run(500);
+  fixture.runtime.setBowDraw("keyboard", false);
+  await fixture.run(500);
+  fixture.session.releaseHeldBack();
+  await fixture.run(500);
+
+  // The authority's bow: a release shoots the draw it consumes.
+  let drawing = false;
+  let shots = 0;
+  for (const { command } of fixture.authority.applied) {
+    if (command.type === "drawBow") drawing = true;
+    if (command.type === "cancelBow") drawing = false;
+    if (command.type === "releaseBow" && drawing) {
+      drawing = false;
+      shots += 1;
+    }
+  }
+  expect(shots).toBe(2);
+  expect(fixture.lanesOf((type) => BOW_TYPES.has(type))).toEqual([
+    "reliable",
+    "reliable",
+    "reliable",
+    "reliable",
   ]);
   fixture.close();
 });
