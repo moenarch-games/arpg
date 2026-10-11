@@ -78,6 +78,23 @@ Peer-hosted authority is a convenience/trust model, not an anti-cheat boundary. 
 
 `game-server` remains responsible for server-owned player/session identity, tick scheduling, command watermarks, snapshots, reconnect/resume, replay evidence, multi-match hosting, draining, and graceful recovery. ARPG does not duplicate those mechanisms.
 
+#### Dedicated command delivery
+
+Dedicated commands use two `game-server` command lanes ([game-server ADR 0008](https://github.com/moritzbrantner/game-server/blob/main/docs/adr/0008-reliable-command-lane.md)). The browser picks the lane by command kind; gameplay rules never depend on it.
+
+- **Held state** (`setMovement`, `setAim`, `setGuard`, `drawBow`, `releaseBow`, `cancelBow`) travels as best-effort WebTransport datagrams with latest-wins semantics. A datagram may be lost, and one overtaken by a newer datagram is ignored as stale. The client re-asserts the whole held set on a bounded cadence (#139), so the authority converges on what the player holds within a few refresh periods. Release and cancel are held too: a repeat without a draw does nothing.
+- **One-shots** (`primaryAttack`, `secondaryAttack`, `interact`, `equipWeapon`, `cycleTarget`, `clearTarget`) travel on the connection's reliable command lane: one bidirectional stream, opened when the first one-shot of a connection is sent, that carries the commands in order. The authority acknowledges each one as applied, duplicate or rejected. `DedicatedGameSession` keeps every command until its ack (at most 256), and after a resume re-sends the unacknowledged ones, in order, before newer ones. A re-sent command that already reached the authority before the outage is a duplicate: the reliable watermark ignores it, so an attack or interaction applies at most once while the player keeps its slot.
+
+`MatchRuntime` keeps one sequence watermark per (player, lane), and `ArpgGame` mirrors that through `AuthoritativeGame::apply_lane_command`: a command is stale only against earlier commands of its own lane, so a one-shot overtaken by a newer held datagram still applies. `apply_command` is the datagram lane, which local and peer play use. Player saves keep both watermarks (`lastSequence` and the defaulted `lastReliableSequence`). The browser uses one sequence counter for both lanes, which keeps each lane strictly increasing.
+
+Ordering holds only within a lane. A one-shot and a held datagram may reach the authority in either order. Replay and recovery record the order that actually happened.
+
+Failures:
+
+- A **rejected** ack means the simulation refused that command with a `game-server` `command_rejected`. It is final for that attempt, it is reported as a status message, and the session continues. ARPG does not reject one-shots today: a command that cannot take effect, such as a weapon change during an action, is accepted and does nothing.
+- A **malformed or unexpected ack**, or an ack stream that ends, fails closed: the client closes the connection and resumes it like any transport failure, keeping its unacknowledged one-shots for the new lane. Lane faults on the server side (a malformed frame, a fatal simulation error, a frozen runtime) also close the connection, with the same outcome.
+- When the reconnect grace expires or the session is closed, unacknowledged one-shots are dropped and reported as failed. Delivery is not guaranteed after the player is removed or the server process fails without graceful recovery.
+
 The game-server dependency is pinned to a full commit in `Cargo.toml` (and resolved in `Cargo.lock`) rather than following a branch tip; Renovate proposes digest updates. `Cargo.toml` is authoritative for the accepted revision; the README's pinned-foundations list is a reader-facing mirror and must change in the same PR.
 
 ## Shared multiplayer protocol

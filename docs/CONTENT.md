@@ -101,13 +101,15 @@ a session they changed can no longer be saved.
 `counterWindowTicks` is a half-open command window `[usableFromTick, expiresAtTick)` judged
 at the tick the authority **applies** a command. There is no lag compensation: a peer host
 applies a guest command when the reliable channel delivers it, and the dedicated
-`game-server` runtime when the datagram arrives; commands carry no tick, so neither can be
+`game-server` runtime when its reliable command lane delivers it (attacks are one-shots,
+see [dedicated command delivery](ARCHITECTURE.md#dedicated-command-delivery)); commands
+carry no tick, so neither can be
 judged as of the past. A remote player sees the opportunity one-way delay *d* after it was
 granted and its attack arrives *d* later again, so the practical reaction window is the
 window minus the round trip. Both topologies publish a snapshot every tick, so snapshot
 cadence adds no whole-tick loss. Ticks and command delivery are independent events (the
 browser host's tick interval and its reliable-channel callback; the game-server tick loop and
-its datagram receiver), so a command that arrives at a tick boundary may be applied on either
+its command lane), so a command that arrives at a tick boundary may be applied on either
 adjacent tick: read each figure below as exact on the authority's tick grid and ±1 tick at
 a boundary. The millisecond values are nominal, assuming steady 60 Hz scheduling; a throttled
 or stalled peer host (for example a hidden tab) slows the simulation instead of catching up,
@@ -131,7 +133,7 @@ attack. The same tests show that delay, reordering, duplication and reconnect ne
 extra time or a second counter: a counter command overtaken by a newer sequence is ignored
 as stale, a duplicated one spends one counter only, and a reconnect within the grace period
 neither moves `expiresAtTick` nor restores a spent opportunity (the runtime's sequence
-watermark survives it). Tune the window with the remote round trip in mind. Any future lag
+watermarks survive it). Tune the window with the remote round trip in mind. Any future lag
 compensation must stay authority-owned and bounded: it may never let a delayed, reordered
 or replayed command extend a window or earn a second counter without a new block.
 
