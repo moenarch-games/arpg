@@ -7,11 +7,14 @@
 // animation frame from the latest snapshot; one-tick active action phases seen between draws
 // still reach the drawn frame. The focused player, the character accent and the viewport are
 // applied in place. Graphics options the renderer only takes at creation (shadows, pixel
-// ratio limit) replace the renderer, and only when they actually change.
+// ratio limit) replace the renderer, and only when they actually change. Presentation
+// effects (#61: palette, stagger lift) also apply in place and redraw the latest snapshot, so
+// a change shows while the game is paused.
 //
 // Presentation only: it reads projected snapshots and never decides gameplay outcomes.
 
 import { createActiveCueTracker } from "./frame-cues.js";
+import { FULL_EFFECTS } from "./presentation-effects.js";
 
 export interface GraphicsOptions {
   shadows: boolean;
@@ -22,7 +25,11 @@ export interface PresenterView {
   playerId: number | null;
   accent: string;
   graphics: GraphicsOptions;
+  // From `resolvePresentationEffects`; FULL_EFFECTS when omitted.
+  effects?: PresentationEffects;
 }
+
+export type PresentationEffects = typeof FULL_EFFECTS;
 
 export interface CanvasLike {
   getBoundingClientRect(): { width: number; height: number };
@@ -52,6 +59,7 @@ export interface FramePresenterOptions<Canvas extends CanvasLike, Snapshot, Fram
     width: number,
     height: number,
     accent: string,
+    effects: PresentationEffects,
   ): Frame;
   observeResize(canvas: Canvas, onResize: () => void): () => void;
   requestFrame(callback: (time: number) => void): unknown;
@@ -72,7 +80,11 @@ export function createFramePresenter<Canvas extends CanvasLike, Snapshot, Frame>
   const { canvas, snapshots } = options;
   const pixelRatio = options.pixelRatio ?? (() => globalThis.devicePixelRatio ?? 1);
   const background = options.background ?? DEFAULT_BACKGROUND;
-  let view: PresenterView = { ...options.view, graphics: { ...options.view.graphics } };
+  let view: PresenterView = {
+    effects: FULL_EFFECTS,
+    ...options.view,
+    graphics: { ...options.view.graphics },
+  };
   let disposed = false;
   let frameRequest: unknown = null;
   const cues = createActiveCueTracker();
@@ -90,7 +102,14 @@ export function createFramePresenter<Canvas extends CanvasLike, Snapshot, Frame>
     if (!snapshot) return;
     const rect = canvas.getBoundingClientRect();
     renderer.render(
-      options.buildFrame(snapshot, view.playerId, rect.width, rect.height, view.accent),
+      options.buildFrame(
+        snapshot,
+        view.playerId,
+        rect.width,
+        rect.height,
+        view.accent,
+        view.effects ?? FULL_EFFECTS,
+      ),
     );
   };
 

@@ -3,17 +3,10 @@
 
 import * as THREE from "three";
 import { CAMERA_FOV_DEGREES, CAMERA_OFFSET } from "./aim-input.js";
+import { FULL_EFFECTS } from "./presentation-effects.js";
 
-// Monster body colours and head cues by published behaviour (#109); attack phases and
-// stagger keep their own colours.
-const MONSTER_BEHAVIOR_COLORS: Record<string, string> = {
-  pursuing: "#a3483b",
-  retreating: "#8a5a7a",
-  holding: "#8f4037",
-  searching: "#8a6a3c",
-  returning: "#5f5866",
-  idle: "#73433d",
-};
+// Monster head cues by published behaviour (#109). Body colours by behaviour, attack
+// phase and stagger come from the presentation palette (presentation-effects.js).
 const MONSTER_BEHAVIOR_CUES: Record<string, string> = {
   pursuing: "#ff7a59",
   retreating: "#d58bd0",
@@ -81,12 +74,17 @@ function dungeonFloor(snapshot, scale) {
 
 // The primitive shield board of a raised or rising guard, `offset` in front of `position`
 // along the unit direction it faces. Players and shield monsters share it.
-function shieldBoard(id, position, [directionX, directionZ], offset, look) {
+function shieldBoard(id, position, [directionX, directionZ], offset, look, palette) {
   const yaw = Math.atan2(directionX, directionZ);
   return {
     id,
     geometry: { kind: "box", size: [0.5, 0.6, 0.08] },
-    color: look === "blocked" ? "#e8f4ff" : look === "raised" ? "#8fb3d9" : "#55687d",
+    color:
+      look === "blocked"
+        ? palette.shieldBlocked
+        : look === "raised"
+          ? palette.shieldRaised
+          : palette.shieldRising,
     transform: {
       translation: [
         position[0] + directionX * offset,
@@ -98,7 +96,17 @@ function shieldBoard(id, position, [directionX, directionZ], offset, look) {
   };
 }
 
-export function buildFrame(snapshot, focusPlayerId, width, height, focusPlayerAccent = "#d6b45f") {
+// `effects` (presentation-effects.js) picks the combat palette and the stagger lift; nothing
+// else in the frame depends on it.
+export function buildFrame(
+  snapshot,
+  focusPlayerId,
+  width,
+  height,
+  focusPlayerAccent = "#d6b45f",
+  effects = FULL_EFFECTS,
+) {
+  const { palette } = effects;
   const scale = snapshot.worldUnitsPerMeter;
   const focus =
     snapshot.players.find((player) => player.id === focusPlayerId) ?? snapshot.players[0];
@@ -165,19 +173,20 @@ export function buildFrame(snapshot, focusPlayerId, width, height, focusPlayerAc
       const facingZ = facing[1] / facingLength;
       const actionColor =
         player.action?.phase === "windup"
-          ? "#e3a45d"
+          ? palette.playerWindup
           : player.action?.phase === "active"
-            ? "#fff0a3"
+            ? palette.playerActive
             : player.action?.phase === "recovery"
-              ? "#9d8060"
+              ? palette.playerRecovery
               : null;
       const color = !player.alive
         ? "#45413d"
         : player.reaction?.kind === "hurt"
-          ? "#e05a4f"
+          ? palette.playerHurt
           : player.reaction?.kind === "guardBroken"
-            ? "#9b6bd6"
-            : (actionColor ?? (player.id === focusPlayerId ? focusPlayerAccent : "#6f91b6"));
+            ? palette.playerGuardBroken
+            : (actionColor ??
+              (player.id === focusPlayerId ? focusPlayerAccent : palette.playerPeer));
       // The thin shield board faces along the authoritative 8-way facing, which the core's
       // guard cone uses, not the exact aim shown by the weapon and marker.
       const guardFacing = player.facing ?? [1, 0];
@@ -192,6 +201,7 @@ export function buildFrame(snapshot, focusPlayerId, width, height, focusPlayerAc
               [guardX, guardZ],
               0.42,
               player.reaction?.kind === "blocked" ? "blocked" : player.guard.phase,
+              palette,
             ),
           ]
         : [];
@@ -261,18 +271,18 @@ export function buildFrame(snapshot, focusPlayerId, width, height, focusPlayerAc
       .filter((monster) => monster.alive)
       .flatMap((monster) => {
         const translation = monster.position.map((value) => value / scale);
-        if (monster.reaction?.kind === "stagger") translation[1] += 0.08;
+        if (monster.reaction?.kind === "stagger") translation[1] += effects.staggerLift;
         const phase = monster.action?.phase;
         const monsterColor =
           monster.reaction?.kind === "stagger"
-            ? "#e8a25d"
+            ? palette.monsterStagger
             : phase === "active"
-              ? "#ff6a4f"
+              ? palette.monsterActive
               : phase === "windup"
-                ? "#c85b46"
+                ? palette.monsterWindup
                 : phase === "recovery"
-                  ? "#6e3934"
-                  : (MONSTER_BEHAVIOR_COLORS[monster.behavior] ?? "#8f4037");
+                  ? palette.monsterRecovery
+                  : (palette.monsterBehavior[monster.behavior] ?? palette.monsterDefault);
         const nodes = [
           {
             id: `monster-${monster.id}`,
@@ -296,6 +306,7 @@ export function buildFrame(snapshot, focusPlayerId, width, height, focusPlayerAc
               [towardX / length, towardZ / length],
               0.55,
               monster.guard.phase,
+              palette,
             ),
           );
         }
@@ -359,7 +370,8 @@ export function buildFrame(snapshot, focusPlayerId, width, height, focusPlayerAc
           monster.action.range
         ) {
           const radius = monster.action.range / scale;
-          const telegraphColor = phase === "active" ? "#f06a4e" : "#824239";
+          const telegraphColor =
+            phase === "active" ? palette.telegraphActive : palette.telegraphWindup;
           for (let index = 0; index < 12; index += 1) {
             const angle = (index / 12) * Math.PI * 2;
             nodes.push({
