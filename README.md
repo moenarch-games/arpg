@@ -28,6 +28,8 @@ This is deliberately not yet a content-complete ARPG. The slice exists to prove 
 
 ## Capability status
 
+See the [Decision Atlas](docs/decisions/atlas.md) for the permanent owner-approved product tree and narrowly scoped implementation-evidence checkboxes; this capability table is a technical inventory and does not establish the complete user-visible crypt experience.
+
 The near-term execution order is the content-readiness roadmap [#50](https://github.com/moritzbrantner/arpg/issues/50); [`docs/ROADMAP.md`](docs/ROADMAP.md) keeps the long-term game vision.
 
 | Capability | Status | Implementation | Exercised by |
