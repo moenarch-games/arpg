@@ -34,8 +34,21 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
+      # Reuse the exact wasm-pack executable across CI and Pages workflows.
+      # Cargo installation only runs when the cache is absent or invalid.
+      - name: Restore wasm-pack CLI
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/wasm-pack
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.98.1-wasm-pack-0.13.1
       - name: Install wasm-pack
-        run: cargo install wasm-pack --locked --version 0.13.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v wasm-pack >/dev/null 2>&1 || [[ "$(wasm-pack --version)" != "wasm-pack 0.13.1" ]]; then
+            cargo install wasm-pack --locked --version 0.13.1 --force
+          fi
+          test "$(wasm-pack --version)" = "wasm-pack 0.13.1"
       - name: Install web dependencies
         working-directory: web
         run: bun install --frozen-lockfile
