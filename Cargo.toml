@@ -19,7 +19,7 @@ arpg-core = { path = "crates/arpg-core" }
 arpg-protocol = { path = "crates/arpg-protocol" }
 game-server = { git = "https://github.com/moritzbrantner/game-server.git", rev = "3350c6efc7abb65fd8d7ab2d78a7168bfafbbaab" }
 graph-kernels = { git = "https://github.com/moritzbrantner/rust-kernels.git", rev = "45a7571890e1bbffc7f2ff5f517b5c4c7859d17c" }
-physics-engine = { git = "https://github.com/moritzbrantner/physics-engine.git", rev = "65e00816fa4e17c899f45d618dcdc8c40990dc00" }
+physics-engine = { git = "https://github.com/moritzbrantner/physics-engine.git", rev = "0ccbcc9ecd67dc40aa129e2f857b07ab06cd3951" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
