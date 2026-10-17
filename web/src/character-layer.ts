@@ -1,7 +1,8 @@
 // In-world humanoid characters (#55, #188): one instance of the shared character asset per
-// player in the snapshot, placed at the player's authoritative position, turned to the
-// direction the frame shows and animated from authoritative motion. Presentation only: it
-// reads snapshots and never feeds anything back into gameplay.
+// player in the snapshot, standing at the player's authoritative position (its origin is at
+// its feet, so it stands at the body's published feet height and rises and falls with a
+// jump, #59), turned to the direction the frame shows and animated from authoritative
+// motion. Presentation only: it reads snapshots and never feeds anything back into gameplay.
 //
 // Animation time follows the simulation timeline (snapshot ticks), so pausing, stepping and
 // the render frame rate behave like the game. Standing plays the idle clip (the guard clip
@@ -51,6 +52,8 @@ interface PlayerLike {
   aim?: number[] | null;
   lockedMonsterId?: number | null;
   action?: { facing: number[]; aim?: number[] | null } | null;
+  // Authoritative height and support (#59).
+  motion?: { grounded: boolean; feetY: number; groundY?: number | null } | null;
 }
 
 interface SnapshotLike {
@@ -192,7 +195,9 @@ export function createCharacterLayer(options: {
             player.weapon && asset.equip ? asset.equip(state.instance, player.weapon) : () => {};
         }
         const [x, y, z] = player.position;
-        state.instance.root.position.set(x / scale, y / scale, z / scale);
+        // The character's origin is its feet. Gait speed above stays horizontal: a jump's
+        // vertical motion never reads as walking.
+        state.instance.root.position.set(x / scale, (player.motion?.feetY ?? y) / scale, z / scale);
         const [facingX, facingZ] = presentedFacing(player);
         // The character faces +Z at rest.
         state.instance.root.rotation.set(0, Math.atan2(facingX, facingZ), 0);
