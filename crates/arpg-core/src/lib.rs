@@ -17,7 +17,7 @@ pub use content::{
     CONTENT_FORMAT_VERSION, ContentBundle, ContentError, DefinitionId, MAX_ENCOUNTER_SPAWNS,
     base_bundle, content_revision,
 };
-use navigation::{Cell, FieldRoute, FieldWork, NAV_CELL_SIZE, Rect, RoomGrid, TargetField, isqrt};
+use navigation::{Cell, FieldRoute, FieldWork, NAV_CELL_SIZE, Rect, RoomGrid, TargetField};
 pub use workbench::{
     MAX_WORKBENCH_MONSTERS, MAX_WORKBENCH_SPAWNS, TuningParameter, TuningValue, WorkbenchOperation,
 };
@@ -34,9 +34,9 @@ use operation_work::{Counter, count};
 #[cfg(feature = "operation-work")]
 pub use operation_work::{OperationWork, WorkFixture, contract::check_work_contract};
 
-/// A position, extent or per-tick velocity in whole world units: level layout, gameplay
-/// rule geometry and snapshots. Physical positions are `f32` ([`Vector`]); rules read them
-/// through [`Vec3i::rounded`].
+/// A position or extent in whole world units: level layout and snapshots. Authoritative
+/// positions and velocities are `f32` ([`Vector`]) and gameplay rules read them directly;
+/// only snapshots round them, through [`Vec3i::rounded`] (Atlas 2.3.2, #182).
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Vec3i {
     pub x: i32,
@@ -51,7 +51,7 @@ impl Vec3i {
         Self { x, y, z }
     }
 
-    /// The nearest whole world-unit point to a physical position.
+    /// The nearest whole world-unit point to a physical position, for snapshots only.
     pub(crate) fn rounded(position: Vector) -> Self {
         // Positions lie within the dungeon, far inside `i32`.
         Self::new(
@@ -80,7 +80,9 @@ pub const WORLD_UNITS_PER_METER: i32 = 100;
 /// length carries no meaning, so `[1, 0]` and `[1000, 0]` aim the same way.
 pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// 13: Rapier physics (#175): `f32` positions and velocities; schema 12 saves are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 13;
+/// 14: gameplay rules on `f32` positions (#182): projectiles, ground loot and monster posts
+/// are `f32` game state; schema 13 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 14;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -826,9 +828,9 @@ pub struct StrikeEventSnapshot {
     pub result: StrikeResult,
 }
 
-/// One authoritative projectile in flight: a player's arrow, or a ranged monster's shot
-/// (#108). Both fly the same path; a player's arrow hits monsters, a monster's shot hits
-/// players.
+/// One projectile in flight as published: a player's arrow, or a ranged monster's shot
+/// (#108), with its position and velocity rounded to whole world units. Both fly the same
+/// path; a player's arrow hits monsters, a monster's shot hits players.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArrowSnapshot {
@@ -1183,17 +1185,16 @@ pub struct RoomSnapshot {
 impl RoomSnapshot {
     /// Whether a physical position lies inside the room on the plane.
     fn contains_xz(&self, position: Vector) -> bool {
-        position.x >= self.min_x as f32
-            && position.x <= self.max_x as f32
-            && position.z >= self.min_z as f32
-            && position.z <= self.max_z as f32
+        self.contains_xz_with_margin(position, 0)
     }
 
-    fn contains_xz_with_margin(&self, position: Vec3i, margin: i32) -> bool {
-        position.x >= self.min_x + margin
-            && position.x <= self.max_x - margin
-            && position.z >= self.min_z + margin
-            && position.z <= self.max_z - margin
+    /// Whether a physical position lies inside the room shrunk by `margin` on every side.
+    fn contains_xz_with_margin(&self, position: Vector, margin: i32) -> bool {
+        let (x, z) = (f64::from(position.x), f64::from(position.z));
+        x >= f64::from(self.min_x + margin)
+            && x <= f64::from(self.max_x - margin)
+            && z >= f64::from(self.min_z + margin)
+            && z <= f64::from(self.max_z - margin)
     }
 
     fn center(&self) -> (i32, i32) {
@@ -1421,6 +1422,30 @@ pub struct GroundLootSnapshot {
     pub amount: u32,
 }
 
+/// A saved projectile: its authoritative `f32` position and velocity (#182).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArrowSaveState {
+    pub id: u64,
+    pub source: StrikeSource,
+    pub launched_at_tick: u64,
+    pub position: [f32; 3],
+    /// World units travelled per tick; committed at release and never steered.
+    pub velocity: [f32; 3],
+    pub damage: u16,
+    pub ticks_remaining: u8,
+}
+
+/// Saved ground loot: it lies where its monster fell, in `f32` world units (#182).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GroundLootSaveState {
+    pub id: GroundLootId,
+    pub position: [f32; 3],
+    pub kind: LootKind,
+    pub amount: u32,
+}
+
 /// Saved game state. Physical positions and velocities are the authoritative `f32` values;
 /// Rapier's own state is never saved: a load rebuilds the physical world from the seed and
 /// this state.
@@ -1434,9 +1459,9 @@ pub struct ArpgSaveState {
     pub players: Vec<PlayerSaveState>,
     pub rooms: Vec<RoomSaveState>,
     pub monsters: Vec<MonsterSaveState>,
-    pub ground_loot: Vec<GroundLootSnapshot>,
+    pub ground_loot: Vec<GroundLootSaveState>,
     pub next_ground_loot_id: GroundLootId,
-    pub arrows: Vec<ArrowSnapshot>,
+    pub arrows: Vec<ArrowSaveState>,
     pub next_arrow_id: u64,
     pub scenario: ScenarioId,
     /// Ids of chests already opened.
@@ -1500,9 +1525,9 @@ pub struct MonsterSaveState {
     pub health: u16,
     pub action: Option<MonsterActionSaveState>,
     pub stagger_ticks_remaining: u8,
-    /// Where the monster stood when its encounter first evaluated it; leash and return
-    /// measure from here.
-    pub post: Option<[i32; 3]>,
+    /// Where the monster stood when its encounter first evaluated it, in world units;
+    /// leash and return measure from here.
+    pub post: Option<[f32; 3]>,
     pub engagement: Engagement,
     /// Whether steering moved the body in the tick the save was taken after: the one
     /// input of the published behaviour that the rest of the state does not determine.
@@ -1680,7 +1705,8 @@ struct MonsterState {
     health: u16,
     action: Option<MonsterActionState>,
     stagger_ticks_remaining: u8,
-    post: Option<Vec3i>,
+    /// Where it stood when its encounter first evaluated it (leash and return).
+    post: Option<Vector>,
     engagement: Engagement,
     /// Whether steering gave the body a velocity in the last tick.
     steered: bool,
@@ -1722,11 +1748,6 @@ impl MonsterState {
 
     fn definition(&self) -> MonsterDefinition {
         self.definition
-    }
-
-    /// Where gameplay rules see the monster: its position in whole world units.
-    fn at(&self) -> Vec3i {
-        Vec3i::rounded(self.position)
     }
 
     /// The published behaviour: a function of authoritative state and whether the body
@@ -1776,27 +1797,79 @@ impl MonsterState {
 }
 
 /// How a free monster's body moves this tick (#65, #109).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Steering {
     Hold,
     /// Toward a place within strike reach of the engaged target.
     Pursue {
-        target: Vec3i,
+        target: Vector,
     },
     /// Away from an engaged target that came nearer than the retreat range (#108).
     Retreat {
-        target: Vec3i,
+        target: Vector,
     },
     /// Back to the post.
     Return {
-        post: Vec3i,
+        post: Vector,
     },
+}
+
+/// One authoritative projectile in flight (see [`ArrowSnapshot`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ArrowState {
+    id: u64,
+    source: StrikeSource,
+    launched_at_tick: u64,
+    position: Vector,
+    /// World units travelled per tick; committed at release and never steered.
+    velocity: Vector,
+    damage: u16,
+    ticks_remaining: u8,
+}
+
+impl ArrowState {
+    fn snapshot(&self) -> ArrowSnapshot {
+        ArrowSnapshot {
+            id: self.id,
+            source: self.source,
+            launched_at_tick: self.launched_at_tick,
+            position: vec_to_array(Vec3i::rounded(self.position)),
+            velocity: vec_to_array(Vec3i::rounded(self.velocity)),
+            damage: self.damage,
+            ticks_remaining: self.ticks_remaining,
+        }
+    }
+
+    fn save(&self) -> ArrowSaveState {
+        ArrowSaveState {
+            id: self.id,
+            source: self.source,
+            launched_at_tick: self.launched_at_tick,
+            position: self.position.to_array(),
+            velocity: self.velocity.to_array(),
+            damage: self.damage,
+            ticks_remaining: self.ticks_remaining,
+        }
+    }
+
+    fn restore(save: &ArrowSaveState) -> Self {
+        Self {
+            id: save.id,
+            source: save.source,
+            launched_at_tick: save.launched_at_tick,
+            position: Vector::from_array(save.position),
+            velocity: Vector::from_array(save.velocity),
+            damage: save.damage,
+            ticks_remaining: save.ticks_remaining,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
 struct GroundLootState {
     id: GroundLootId,
-    position: Vec3i,
+    /// Where its monster fell, in world units.
+    position: Vector,
     kind: LootKind,
     amount: u32,
 }
@@ -1968,7 +2041,7 @@ pub struct ArpgGame {
     next_ground_loot_id: GroundLootId,
     static_colliders: Vec<StaticColliderSnapshot>,
     strike_outcomes: Vec<StrikeOutcome>,
-    arrows: Vec<ArrowSnapshot>,
+    arrows: Vec<ArrowState>,
     next_arrow_id: u64,
     scenario: ScenarioId,
     chests: Vec<ChestSnapshot>,
@@ -2248,7 +2321,7 @@ impl ArpgGame {
                         target_player_id: action.target_player_id,
                     }),
                     stagger_ticks_remaining: monster.stagger_ticks_remaining,
-                    post: monster.post.map(vec_to_array),
+                    post: monster.post.map(|post| post.to_array()),
                     engagement: monster.engagement,
                     steered: monster.steered,
                     retreating: monster.retreating,
@@ -2258,15 +2331,15 @@ impl ArpgGame {
             ground_loot: self
                 .ground_loot
                 .iter()
-                .map(|loot| GroundLootSnapshot {
+                .map(|loot| GroundLootSaveState {
                     id: loot.id,
-                    position: vec_to_array(loot.position),
+                    position: loot.position.to_array(),
                     kind: loot.kind,
                     amount: loot.amount,
                 })
                 .collect(),
             next_ground_loot_id: self.next_ground_loot_id,
-            arrows: self.arrows.clone(),
+            arrows: self.arrows.iter().map(ArrowState::save).collect(),
             next_arrow_id: self.next_arrow_id,
             scenario: self.scenario,
             opened_chests: self
@@ -2525,11 +2598,12 @@ impl ArpgGame {
                     && position.y == PLAYER_Y as f32
                     && room.contains_xz(position)
             });
-            let post_in_room = saved.post.is_none_or(|post| {
+            let post_in_room = saved.post.map(Vector::from_array).is_none_or(|post| {
                 game.rooms.iter().any(|room| {
                     room.id == saved.room_id
-                        && post[1] == PLAYER_Y
-                        && room.contains_xz_with_margin(array_to_vec(post), 0)
+                        && post.is_finite()
+                        && post.y == PLAYER_Y as f32
+                        && room.contains_xz(post)
                 })
             });
             if !room_contains_monster || !post_in_room {
@@ -2543,7 +2617,7 @@ impl ArpgGame {
                 target_player_id: action.target_player_id,
             });
             monster.stagger_ticks_remaining = saved.stagger_ticks_remaining;
-            monster.post = saved.post.map(array_to_vec);
+            monster.post = saved.post.map(Vector::from_array);
             monster.engagement = saved.engagement;
             monster.steered = saved.steered;
             monster.retreating = saved.retreating;
@@ -2556,8 +2630,9 @@ impl ArpgGame {
         let mut loot_ids = BTreeSet::new();
         let mut ground_loot = Vec::with_capacity(save.ground_loot.len());
         for loot in save.ground_loot {
+            let position = Vector::from_array(loot.position);
             if loot.id < GROUND_LOOT_ID_BASE
-                || !game.dungeon_contains(loot.position, Vec3i::ZERO)
+                || !game.dungeon_contains(position, Vec3i::ZERO)
                 || loot.amount != content.loot.monster_gold
                 || !loot_ids.insert(loot.id)
                 || loot.id >= save.next_ground_loot_id
@@ -2566,7 +2641,7 @@ impl ArpgGame {
             }
             ground_loot.push(GroundLootState {
                 id: loot.id,
-                position: array_to_vec(loot.position),
+                position,
                 kind: loot.kind,
                 amount: loot.amount,
             });
@@ -2611,7 +2686,7 @@ impl ArpgGame {
                             1,
                             arrow.damage == definition.damage
                                 && projectile_velocity_is_possible(
-                                    arrow.velocity,
+                                    Vector::from_array(arrow.velocity),
                                     projectile.speed,
                                 ),
                         ))
@@ -2628,12 +2703,12 @@ impl ArpgGame {
                 || save.tick - arrow.launched_at_tick
                     != u64::from(lifetime - arrow.ticks_remaining) + unflown
                 || !possible
-                || !game.dungeon_contains(arrow.position, Vec3i::ZERO)
+                || !game.dungeon_contains(Vector::from_array(arrow.position), Vec3i::ZERO)
             {
                 return Err(GameError::new("save contains an invalid arrow"));
             }
         }
-        game.arrows = save.arrows;
+        game.arrows = save.arrows.iter().map(ArrowState::restore).collect();
         game.next_arrow_id = save.next_arrow_id;
 
         let mut opened = BTreeSet::new();
@@ -2760,42 +2835,26 @@ impl ArpgGame {
     /// Whether a saved entity with `half_extents` lies on the gameplay plane
     /// inside the generated dungeon without overlapping its walls or pillars.
     /// Touching fixed geometry is allowed; penetrating it is not.
-    fn dungeon_contains(&self, position: [i32; 3], half_extents: Vec3i) -> bool {
-        let [x, y, z] = position;
-        let inside_extents = y == PLAYER_Y
-            && self
-                .rooms
-                .iter()
-                .map(|room| room.min_x)
-                .min()
-                .is_some_and(|min| x >= min)
-            && self
-                .rooms
-                .iter()
-                .map(|room| room.max_x)
-                .max()
-                .is_some_and(|max| x <= max)
-            && self
-                .rooms
-                .iter()
-                .map(|room| room.min_z)
-                .min()
-                .is_some_and(|min| z >= min)
-            && self
-                .rooms
-                .iter()
-                .map(|room| room.max_z)
-                .max()
-                .is_some_and(|max| z <= max);
+    fn dungeon_contains(&self, position: Vector, half_extents: Vec3i) -> bool {
+        let extent = |select: fn(&RoomSnapshot) -> i32, pick: fn(i32, i32) -> i32| {
+            self.rooms.iter().map(select).reduce(pick).map(f64::from)
+        };
+        let [x, _, z] = position.to_array().map(f64::from);
+        let inside_extents = position.is_finite()
+            && position.y == PLAYER_Y as f32
+            && extent(|room| room.min_x, i32::min).is_some_and(|min| x >= min)
+            && extent(|room| room.max_x, i32::max).is_some_and(|max| x <= max)
+            && extent(|room| room.min_z, i32::min).is_some_and(|min| z >= min)
+            && extent(|room| room.max_z, i32::max).is_some_and(|max| z <= max);
+        let position = position.to_array().map(f64::from);
         let half_extents = vec_to_array(half_extents);
         inside_extents
             && !self.static_colliders.iter().any(|collider| {
                 collider.kind != StaticColliderKind::Door
                     && (0..3).all(|axis| {
                         let reach =
-                            i64::from(collider.half_extents[axis]) + i64::from(half_extents[axis]);
-                        (i64::from(position[axis]) - i64::from(collider.position[axis])).abs()
-                            < reach
+                            f64::from(collider.half_extents[axis]) + f64::from(half_extents[axis]);
+                        (position[axis] - f64::from(collider.position[axis])).abs() < reach
                     })
             })
     }
@@ -2841,23 +2900,18 @@ impl ArpgGame {
         (axis(x, z), axis(z, x))
     }
 
-    /// The aim direction from `origin` towards `target`, scaled into the aim limit.
-    fn direction_between(origin: Vec3i, target: Vec3i) -> Option<[i16; 2]> {
-        let dx = i64::from(target.x - origin.x);
-        let dz = i64::from(target.z - origin.z);
+    /// The aim direction from `origin` towards `target` on the plane: the larger component
+    /// is the full aim limit and the other is rounded to the nearest step of it. `None` when
+    /// the positions coincide on the plane.
+    fn direction_between(origin: Vector, target: Vector) -> Option<[i16; 2]> {
+        let (dx, dz) = xz_delta(origin, target);
         let largest = dx.abs().max(dz.abs());
-        if largest == 0 {
+        if largest == 0.0 || !largest.is_finite() {
             return None;
         }
-        let limit = i64::from(AIM_COMPONENT_LIMIT);
-        let scale = |component: i64| {
-            let scaled = if largest > limit {
-                component * limit / largest
-            } else {
-                component
-            };
-            i16::try_from(scaled).expect("scaled aim component fits the aim limit")
-        };
+        let limit = f64::from(AIM_COMPONENT_LIMIT);
+        // Within ±limit by construction; `as` saturates in any case.
+        let scale = |component: f64| (component * limit / largest).round() as i16;
         Some([scale(dx), scale(dz)])
     }
 
@@ -2892,17 +2946,24 @@ impl ArpgGame {
     /// Whether some accepted draw and direction produce this arrow's velocity and damage.
     /// Facing and aimed launches round each component toward zero, so a launched arrow's
     /// planar speed lies within two units below its draw speed and never above it.
-    fn arrow_launch_is_possible(bow: &BowData, arrow: &ArrowSnapshot) -> bool {
-        (bow.min_draw_ticks..=bow.full_draw_ticks).any(|charge| {
-            let (speed, damage) = Self::arrow_launch(bow, charge);
-            let [vx, vy, vz] = arrow.velocity.map(i64::from);
-            let speed = i64::from(speed);
-            let length_sq = vx * vx + vz * vz;
-            damage == arrow.damage
-                && vy == 0
-                && (speed - 2) * (speed - 2) <= length_sq
-                && length_sq <= speed * speed
-        })
+    /// A launch commits whole-unit velocity components, so any other saved value is refused.
+    fn arrow_launch_is_possible(bow: &BowData, arrow: &ArrowSaveState) -> bool {
+        let whole = arrow
+            .velocity
+            .iter()
+            .all(|component| component.is_finite() && component.fract() == 0.0);
+        // Launch speeds are at most `u16::MAX`, far inside `i64` and exact in `f32`.
+        whole
+            && (bow.min_draw_ticks..=bow.full_draw_ticks).any(|charge| {
+                let (speed, damage) = Self::arrow_launch(bow, charge);
+                let [vx, vy, vz] = arrow.velocity.map(|component| component as i64);
+                let speed = i64::from(speed);
+                let length_sq = vx * vx + vz * vz;
+                damage == arrow.damage
+                    && vy == 0
+                    && (speed - 2) * (speed - 2) <= length_sq
+                    && length_sq <= speed * speed
+            })
     }
 
     /// Speed and damage of an arrow launched with `charge` draw ticks: the minimum accepted
@@ -3129,11 +3190,12 @@ impl ArpgGame {
 
     /// Where a shield monster's guard faces: toward its engaged target (#92). `None` when
     /// it is engaged with nobody it can face, so no strike meets its shield.
-    fn monster_guard_facing(&self, monster: &MonsterState) -> Option<(i64, i64)> {
+    fn monster_guard_facing(&self, monster: &MonsterState) -> Option<(f64, f64)> {
         let target = monster.engaged_target()?;
-        let position = Vec3i::rounded(self.players.get(&target)?.position);
-        let at = monster.at();
-        Some((i64::from(position.x - at.x), i64::from(position.z - at.z)))
+        Some(xz_delta(
+            monster.position,
+            self.players.get(&target)?.position,
+        ))
     }
 
     /// The velocity a player intends this tick: last tick's resolved velocity converging on
@@ -3184,7 +3246,7 @@ impl ArpgGame {
         component
     }
 
-    fn room_at_position(&self, position: Vec3i) -> Option<RoomId> {
+    fn room_at_position(&self, position: Vector) -> Option<RoomId> {
         self.rooms
             .iter()
             .find(|room| room.contains_xz_with_margin(position, ROOM_ACTIVATION_MARGIN))
@@ -3314,20 +3376,21 @@ impl ArpgGame {
 
     /// Whether `(dx, dz)` lies within 60° of the direction `(facing_x, facing_z)`, which may
     /// be an eight-way facing or an exact aim direction.
-    fn target_is_in_front(facing_x: i64, facing_z: i64, dx: i64, dz: i64) -> bool {
+    fn target_is_in_front(facing: (f64, f64), (dx, dz): (f64, f64)) -> bool {
+        let (facing_x, facing_z) = facing;
         let distance_sq = dx * dx + dz * dz;
-        if distance_sq == 0 {
+        if distance_sq == 0.0 {
             return true;
         }
         let facing_len_sq = facing_x * facing_x + facing_z * facing_z;
-        if facing_len_sq == 0 {
+        if facing_len_sq == 0.0 {
             return true;
         }
         let dot = dx * facing_x + dz * facing_z;
-        dot > 0 && 4 * dot * dot >= distance_sq * facing_len_sq
+        dot > 0.0 && 4.0 * dot * dot >= distance_sq * facing_len_sq
     }
 
-    fn spawn_ground_loot(&mut self, position: Vec3i) -> Result<(), GameError> {
+    fn spawn_ground_loot(&mut self, position: Vector) -> Result<(), GameError> {
         let id = self.next_ground_loot_id;
         self.next_ground_loot_id = self
             .next_ground_loot_id
@@ -3386,14 +3449,9 @@ impl ArpgGame {
     /// loot over chests and then the lower id. `usable` is false for a locked chest.
     fn interaction_candidates(
         &self,
-        position: Vec3i,
-    ) -> Vec<(i64, InteractionTarget, Vec3i, bool)> {
-        let range_sq = INTERACT_RANGE * INTERACT_RANGE;
-        let distance_sq = |at: Vec3i| {
-            let dx = i64::from(at.x - position.x);
-            let dz = i64::from(at.z - position.z);
-            dx * dx + dz * dz
-        };
+        position: Vector,
+    ) -> Vec<(f64, InteractionTarget, Vector, bool)> {
+        let distance_sq = |at: Vector| xz_distance_sq(position, at);
         let loot = self.ground_loot.iter().map(|loot| {
             (
                 distance_sq(loot.position),
@@ -3407,7 +3465,7 @@ impl ArpgGame {
             .iter()
             .filter(|chest| !chest.opened)
             .map(|chest| {
-                let at = array_to_vec(chest.position);
+                let at = vector(array_to_vec(chest.position));
                 (
                     distance_sq(at),
                     InteractionTarget::Chest(chest.id),
@@ -3417,9 +3475,11 @@ impl ArpgGame {
             });
         let mut candidates = loot
             .chain(chests)
-            .filter(|(distance, ..)| *distance <= range_sq)
+            .filter(|(distance, ..)| within_range(*distance, INTERACT_RANGE))
             .collect::<Vec<_>>();
-        candidates.sort_unstable_by_key(|(distance, target, ..)| (*distance, *target));
+        candidates.sort_unstable_by(|(left, left_target, ..), (right, right_target, ..)| {
+            left.total_cmp(right).then(left_target.cmp(right_target))
+        });
         candidates
     }
 
@@ -3427,7 +3487,7 @@ impl ArpgGame {
     /// browser shows prompts from this, never from its own radius.
     fn interaction_choice(
         &self,
-        position: Vec3i,
+        position: Vector,
     ) -> Result<Result<InteractionTarget, InteractionRefusal>, GameError> {
         let mut refusal = InteractionRefusal::NothingInRange;
         for (_, target, at, usable) in self.interaction_candidates(position) {
@@ -3505,23 +3565,26 @@ impl ArpgGame {
     fn strike_contacts(
         &self,
         definition: StrikeDefinition,
-        origin: Vec3i,
-        facing: (i64, i64),
-        candidates: impl IntoIterator<Item = (StrikeTarget, Vec3i)>,
+        origin: Vector,
+        facing: (f64, f64),
+        candidates: impl IntoIterator<Item = (StrikeTarget, Vector)>,
     ) -> Result<Vec<(StrikeTarget, bool)>, GameError> {
-        let reach_sq = definition.reach * definition.reach;
         let mut inside = candidates
             .into_iter()
             .filter_map(|(target, position)| {
-                let dx = i64::from(position.x - origin.x);
-                let dz = i64::from(position.z - origin.z);
-                let distance_sq = dx * dx + dz * dz;
-                let in_arc =
-                    !definition.frontal || Self::target_is_in_front(facing.0, facing.1, dx, dz);
-                (distance_sq <= reach_sq && in_arc).then_some((distance_sq, target, position))
+                let distance_sq = xz_distance_sq(origin, position);
+                let in_arc = !definition.frontal
+                    || Self::target_is_in_front(facing, xz_delta(origin, position));
+                (within_range(distance_sq, definition.reach) && in_arc).then_some((
+                    distance_sq,
+                    target,
+                    position,
+                ))
             })
             .collect::<Vec<_>>();
-        inside.sort_unstable_by_key(|(distance_sq, target, _)| (*distance_sq, *target));
+        inside.sort_unstable_by(|(left, left_target, _), (right, right_target, _)| {
+            left.total_cmp(right).then(left_target.cmp(right_target))
+        });
 
         let mut contacts = Vec::new();
         let mut connected = 0;
@@ -3541,18 +3604,13 @@ impl ArpgGame {
     /// Whether fixed geometry (walls, pillars, closed doors) lies on the segment from the
     /// attacker to the target on the plane, using Rapier's ray query over the current world.
     /// Characters never block a strike.
-    fn strike_obstructed(&self, origin: Vec3i, target: Vec3i) -> Result<bool, GameError> {
-        let to = Vec3i::new(target.x, origin.y, target.z);
-        Ok(self.physics.segment_obstructed(vector(origin), vector(to)))
+    fn strike_obstructed(&self, origin: Vector, target: Vector) -> Result<bool, GameError> {
+        let to = Vector::new(target.x, origin.y, target.z);
+        Ok(self.physics.segment_obstructed(origin, to))
     }
 
-    /// Where gameplay rules see the player: its position in whole world units.
-    fn player_position(&self, player_id: PlayerId) -> Result<Vec3i, GameError> {
-        Ok(Vec3i::rounded(self.player_body_position(player_id)?))
-    }
-
-    /// The player's authoritative physical position.
-    fn player_body_position(&self, player_id: PlayerId) -> Result<Vector, GameError> {
+    /// The player's authoritative physical position, which gameplay rules read directly.
+    fn player_position(&self, player_id: PlayerId) -> Result<Vector, GameError> {
         self.players
             .get(&player_id)
             .map(|state| state.position)
@@ -3561,18 +3619,18 @@ impl ArpgGame {
 
     /// Whether a target lock may hold `monster` from `origin`: the monster is alive, its
     /// encounter is active and it is within `range` on the plane.
-    fn monster_lockable(&self, monster: &MonsterState, origin: Vec3i, range: i64) -> bool {
+    fn monster_lockable(&self, monster: &MonsterState, origin: Vector, range: i64) -> bool {
         monster.health > 0
             && self.rooms.iter().any(|room| {
                 room.id == monster.room_id && room.encounter_state == RoomEncounterState::Active
             })
-            && xz_distance_sq(origin, monster.at()) <= range * range
+            && within_range(xz_distance_sq(origin, monster.position), range)
     }
 
     /// Where a player's lock currently points, revalidated now: `None` when there is no
     /// lock, the player is defeated, or the target died, left its active encounter or moved
     /// beyond the break range. Line of sight is not required to keep a lock (stickiness).
-    fn locked_target_position(&self, player_id: PlayerId) -> Result<Option<Vec3i>, GameError> {
+    fn locked_target_position(&self, player_id: PlayerId) -> Result<Option<Vector>, GameError> {
         let Some(state) = self.players.get(&player_id) else {
             return Ok(None);
         };
@@ -3587,7 +3645,7 @@ impl ArpgGame {
             .filter(|monster| {
                 self.monster_lockable(monster, origin, self.content.targeting.break_range)
             })
-            .map(|monster| monster.at()))
+            .map(|monster| monster.position))
     }
 
     fn lock_holds(&self, player_id: PlayerId) -> Result<bool, GameError> {
@@ -3660,12 +3718,14 @@ impl ArpgGame {
         let mut candidates = Vec::new();
         for monster in &self.monsters {
             if self.monster_lockable(monster, origin, range)
-                && !self.strike_obstructed(origin, monster.at())?
+                && !self.strike_obstructed(origin, monster.position)?
             {
-                candidates.push((xz_distance_sq(origin, monster.at()), monster.id));
+                candidates.push((xz_distance_sq(origin, monster.position), monster.id));
             }
         }
-        candidates.sort_unstable();
+        candidates.sort_unstable_by(|(left, left_id), (right, right_id)| {
+            left.total_cmp(right).then(left_id.cmp(right_id))
+        });
         let current = self.players[&player_id].locked_monster_id;
         let next = match current.and_then(|id| candidates.iter().position(|&(_, c)| c == id)) {
             Some(index) => candidates.get((index + 1) % candidates.len()),
@@ -3753,10 +3813,10 @@ impl ArpgGame {
             .monsters
             .iter()
             .filter(|monster| monster.health > 0 && active_rooms.contains(&monster.room_id))
-            .map(|monster| (StrikeTarget::Monster(monster.id), monster.at()))
+            .map(|monster| (StrikeTarget::Monster(monster.id), monster.position))
             .collect::<Vec<_>>();
-        let direction = aim.map_or((i64::from(facing_x), i64::from(facing_z)), |aim| {
-            (i64::from(aim[0]), i64::from(aim[1]))
+        let direction = aim.map_or((f64::from(facing_x), f64::from(facing_z)), |aim| {
+            (f64::from(aim[0]), f64::from(aim[1]))
         });
         let contacts = self.strike_contacts(definition, player_position, direction, candidates)?;
         let strike = StrikeId {
@@ -3784,7 +3844,7 @@ impl ArpgGame {
                     .find(|monster| monster.id == monster_id)
                     .ok_or_else(|| GameError::new("strike references an unknown monster"))?;
                 // A shield monster's raised guard resolves first, exactly as a player's.
-                let at = monster.at();
+                let at = monster.position;
                 let guarded = match (monster.guard.as_mut(), guard_facing) {
                     (Some(guard), Some(facing)) => Self::guard_outcome(
                         &guard_tuning,
@@ -3820,7 +3880,7 @@ impl ArpgGame {
                 }
                 let defeated = previous_health > 0 && monster.health == 0;
                 if defeated {
-                    defeated_positions.push((monster.at(), monster.definition()));
+                    defeated_positions.push((monster.position, monster.definition()));
                 }
                 StrikeResult::Hit {
                     damage: previous_health - monster.health,
@@ -3948,12 +4008,12 @@ impl ArpgGame {
         self.next_arrow_id = id
             .checked_add(1)
             .ok_or_else(|| GameError::new("arrow id overflow"))?;
-        self.arrows.push(ArrowSnapshot {
+        self.arrows.push(ArrowState {
             id,
             source: StrikeSource::Player(player_id),
             launched_at_tick: self.tick,
-            position: vec_to_array(position),
-            velocity: [velocity_x, 0, velocity_z],
+            position,
+            velocity: vector(Vec3i::new(velocity_x, 0, velocity_z)),
             damage,
             ticks_remaining: self.tuning.bow.arrow_lifetime_ticks,
         });
@@ -4005,9 +4065,7 @@ impl ArpgGame {
                     })
                     .collect::<Vec<_>>(),
             };
-            let origin = array_to_vec(arrow.position);
-            let velocity = array_to_vec(arrow.velocity);
-            let (from, translation) = (vector(origin), vector(velocity));
+            let (from, translation) = (arrow.position, arrow.velocity);
             let wall = self.physics.first_fixed_hit(from, translation);
             let hurt = hurtboxes
                 .into_iter()
@@ -4022,11 +4080,8 @@ impl ArpgGame {
                 (None, Some((_, target))) => Some(target),
                 (Some(_), None) => None,
                 (None, None) => {
-                    arrow.position = vec_to_array(Vec3i::new(
-                        origin.x + velocity.x,
-                        origin.y,
-                        origin.z + velocity.z,
-                    ));
+                    arrow.position =
+                        Vector::new(from.x + translation.x, from.y, from.z + translation.z);
                     arrow.ticks_remaining -= 1;
                     if arrow.ticks_remaining > 0 {
                         remaining.push(arrow);
@@ -4050,11 +4105,7 @@ impl ArpgGame {
     }
 
     /// Routes a player's arrow impact through the shared strike outcome path.
-    fn resolve_arrow_hit(
-        &mut self,
-        arrow: ArrowSnapshot,
-        monster_id: u32,
-    ) -> Result<(), GameError> {
+    fn resolve_arrow_hit(&mut self, arrow: ArrowState, monster_id: u32) -> Result<(), GameError> {
         let StrikeSource::Player(owner_id) = arrow.source else {
             return Err(GameError::new("a monster's shot cannot hit a monster"));
         };
@@ -4077,7 +4128,7 @@ impl ArpgGame {
             }
         }
         let defeated = monster.health == 0;
-        let position = monster.at();
+        let position = monster.position;
         let reward = monster.definition().experience_reward;
         let damage = previous_health - monster.health;
         self.push_strike_outcome(StrikeOutcome {
@@ -4112,7 +4163,7 @@ impl ArpgGame {
             .monsters
             .iter()
             .find(|monster| monster.id == monster_id && monster.health > 0)
-            .map(|monster| (monster.at(), monster.definition()))
+            .map(|monster| (monster.position, monster.definition()))
         else {
             return Ok(());
         };
@@ -4123,15 +4174,12 @@ impl ArpgGame {
             .players
             .get(&target_player_id)
             .filter(|state| state.health > 0)
-            .map(|state| Vec3i::rounded(state.position));
+            .map(|state| state.position);
         let Some(target) = target else {
             return Ok(());
         };
-        let Some(velocity) = projectile_velocity(
-            i64::from(target.x - position.x),
-            i64::from(target.z - position.z),
-            projectile.speed,
-        ) else {
+        let Some(velocity) = projectile_velocity(xz_delta(position, target), projectile.speed)
+        else {
             return Ok(());
         };
         if self.arrows.len() >= usize::from(self.tuning.bow.max_live_arrows) {
@@ -4141,12 +4189,12 @@ impl ArpgGame {
         self.next_arrow_id = id
             .checked_add(1)
             .ok_or_else(|| GameError::new("arrow id overflow"))?;
-        self.arrows.push(ArrowSnapshot {
+        self.arrows.push(ArrowState {
             id,
             source: StrikeSource::Monster(monster_id),
             launched_at_tick: self.tick,
-            position: vec_to_array(position),
-            velocity: vec_to_array(velocity),
+            position,
+            velocity,
             damage: definition.damage,
             ticks_remaining: projectile.lifetime_ticks,
         });
@@ -4157,7 +4205,7 @@ impl ArpgGame {
     /// path: its strike definition decides block and guard cost, its damage the hurt.
     fn resolve_projectile_hit(
         &mut self,
-        arrow: ArrowSnapshot,
+        arrow: ArrowState,
         player_id: PlayerId,
     ) -> Result<(), GameError> {
         let StrikeSource::Monster(monster_id) = arrow.source else {
@@ -4180,7 +4228,7 @@ impl ArpgGame {
             player_id,
             defender,
             // The shot arrives from where it was at the start of this tick.
-            array_to_vec(arrow.position),
+            arrow.position,
         )
     }
 
@@ -4204,18 +4252,17 @@ impl ArpgGame {
     fn guard_outcome(
         tuning: &GuardData,
         guard: &mut GuardState,
-        facing: (i64, i64),
+        facing: (f64, f64),
         definition: StrikeDefinition,
-        defender: Vec3i,
-        attacker: Vec3i,
+        defender: Vector,
+        attacker: Vector,
     ) -> Option<StrikeResult> {
-        let dx = i64::from(attacker.x - defender.x);
-        let dz = i64::from(attacker.z - defender.z);
+        let incoming = xz_delta(defender, attacker);
         // A zero-direction (overlapping) contact has no incoming side to block.
         if !definition.blockable
             || !guard.is_raised()
-            || (dx == 0 && dz == 0)
-            || !Self::target_is_in_front(facing.0, facing.1, dx, dz)
+            || incoming == (0.0, 0.0)
+            || !Self::target_is_in_front(facing, incoming)
         {
             return None;
         }
@@ -4243,14 +4290,14 @@ impl ArpgGame {
             .monsters
             .iter()
             .find(|monster| monster.id == monster_id && monster.health > 0)
-            .map(|monster| (monster.at(), monster.definition().damage));
+            .map(|monster| (monster.position, monster.definition().damage));
         let Some((monster_position, monster_damage)) = monster else {
             return Ok(());
         };
         let target_position = self
             .players
             .get(&target_player_id)
-            .map(|state| Vec3i::rounded(state.position));
+            .map(|state| state.position);
         let Some(target_position) = target_position else {
             return Ok(());
         };
@@ -4265,7 +4312,7 @@ impl ArpgGame {
         let contacts = self.strike_contacts(
             definition,
             monster_position,
-            (0, 0),
+            (0.0, 0.0),
             [(StrikeTarget::Player(target_player_id), target_position)],
         )?;
         let strike = StrikeId {
@@ -4304,8 +4351,8 @@ impl ArpgGame {
         definition: StrikeDefinition,
         damage: u16,
         player_id: PlayerId,
-        defender: Vec3i,
-        attacker: Vec3i,
+        defender: Vector,
+        attacker: Vector,
     ) -> Result<(), GameError> {
         let StrikeSource::Monster(monster_id) = strike.source else {
             return Err(GameError::new("monster hit from a player source"));
@@ -4316,7 +4363,7 @@ impl ArpgGame {
             .players
             .get_mut(&player_id)
             .ok_or_else(|| GameError::new("monster attack references an unknown player"))?;
-        let facing = (i64::from(player.facing_x), i64::from(player.facing_z));
+        let facing = (f64::from(player.facing_x), f64::from(player.facing_z));
         let result = if let Some(result) = Self::guard_outcome(
             &tuning.guard,
             &mut player.guard,
@@ -4363,7 +4410,7 @@ impl ArpgGame {
     /// Gives monsters in running encounters a physics body and returns each body's intended
     /// per-tick motion from its behaviour: pursuers follow a room-grid path, everything else
     /// holds still.
-    fn steer_monsters(&mut self) -> Result<Vec<(usize, Vec3i)>, GameError> {
+    fn steer_monsters(&mut self) -> Result<Vec<(usize, Vector)>, GameError> {
         for monster in &mut self.monsters {
             monster.cornered = false;
         }
@@ -4416,7 +4463,7 @@ impl ArpgGame {
                 self.physics
                     .has_character(Self::monster_body_id(monster.id))
             })
-            .map(|monster| (monster.id, monster.room_id, monster.at()))
+            .map(|monster| (monster.id, monster.room_id, monster.position))
             .collect::<Vec<_>>();
         let mut cache = std::mem::take(&mut self.navigation);
         let mut work = NavigationWork::default();
@@ -4434,7 +4481,7 @@ impl ArpgGame {
             let definition = monster.definition();
             let (goal, goal_reach) = match steering {
                 Steering::Hold => {
-                    velocities.push((index, Vec3i::ZERO, steering));
+                    velocities.push((index, Vector::ZERO, steering));
                     continue;
                 }
                 // The band is checked against the threat itself; reach is unused.
@@ -4461,8 +4508,12 @@ impl ArpgGame {
                 work.grid_builds += 1;
                 self.room_grid(monster.room_id, &cache.obstacles)
             });
-            let start = (monster.at().x, monster.at().z);
+            let start = (monster.position.x, monster.position.z);
             let goal_xz = (goal.x, goal.z);
+            // The attack's own line test from a cell centre: the physics ray against fixed
+            // bodies.
+            let line_from =
+                |(x, z): (i32, i32)| Vector::new(x as f32, monster.position.y, z as f32);
             let path = if let Steering::Return { .. } = steering {
                 // Returning is rare and short-lived: the exact plan, without a line test.
                 work.exact_plans += 1;
@@ -4479,10 +4530,10 @@ impl ArpgGame {
                     retreat + i64::from(NAV_CELL_SIZE),
                     definition.strike.reach - i64::from(NAV_CELL_SIZE),
                 );
-                let clear_line = |(x, z): (i32, i32)| {
+                let clear_line = |centre: (i32, i32)| {
                     work.physics_queries += 1;
                     !self
-                        .strike_obstructed(Vec3i::new(x, monster.at().y, z), goal)
+                        .strike_obstructed(line_from(centre), goal)
                         .unwrap_or(true)
                 };
                 grid.find_retreat(start, goal_xz, band, clear_line, &mut work.expansions)
@@ -4510,11 +4561,10 @@ impl ArpgGame {
                     // what the field cannot.
                     None | Some(FieldRoute::AtGoal | FieldRoute::Unknown) => {
                         work.exact_plans += 1;
-                        // The attack's own line test: the physics ray against fixed bodies.
-                        let clear_line = |(x, z): (i32, i32)| {
+                        let clear_line = |centre: (i32, i32)| {
                             work.physics_queries += 1;
                             !self
-                                .strike_obstructed(Vec3i::new(x, monster.at().y, z), goal)
+                                .strike_obstructed(line_from(centre), goal)
                                 .unwrap_or(true)
                         };
                         grid.find_path(start, goal_xz, goal_reach, clear_line, &mut work.expansions)
@@ -4523,11 +4573,11 @@ impl ArpgGame {
             };
             let velocity = path
                 .as_deref()
-                .and_then(|path| Some((path_point(grid, monster.at(), path)?, path.last()?)))
-                .map_or(Vec3i::ZERO, |(point, &(end_x, end_z))| {
+                .and_then(|path| Some((path_point(grid, monster.position, path)?, path.last()?)))
+                .map_or(Vector::ZERO, |(point, &(end_x, end_z))| {
                     // A retreat crowds around its destination, a pursuit around its target.
                     let crowd_goal = if let Steering::Retreat { .. } = steering {
-                        Vec3i::new(end_x, goal.y, end_z)
+                        Vector::new(end_x as f32, goal.y, end_z as f32)
                     } else {
                         goal
                     };
@@ -4553,7 +4603,7 @@ impl ArpgGame {
         for (index, velocity, steering) in velocities {
             let monster = &mut self.monsters[index];
             let retreat = matches!(steering, Steering::Retreat { .. });
-            monster.steered = velocity != Vec3i::ZERO;
+            monster.steered = velocity != Vector::ZERO;
             monster.retreating = retreat && monster.steered;
             monster.cornered = retreat && !monster.steered;
             motions.push((index, velocity));
@@ -4562,12 +4612,12 @@ impl ArpgGame {
     }
 
     /// Living players and the room each stands in.
-    fn monster_targets(&self) -> Vec<(PlayerId, RoomId, Vec3i)> {
+    fn monster_targets(&self) -> Vec<(PlayerId, RoomId, Vector)> {
         self.players
             .iter()
             .filter(|(_, state)| state.health > 0)
             .filter_map(|(&player_id, state)| {
-                let position = Vec3i::rounded(state.position);
+                let position = state.position;
                 let room_id = self.room_at_position(position)?;
                 Some((player_id, room_id, position))
             })
@@ -4577,9 +4627,9 @@ impl ArpgGame {
     /// Where `target_player_id` stands if it is a living player in `monster`'s room.
     fn target_in_room(
         monster: &MonsterState,
-        targets: &[(PlayerId, RoomId, Vec3i)],
+        targets: &[(PlayerId, RoomId, Vector)],
         target_player_id: PlayerId,
-    ) -> Option<Vec3i> {
+    ) -> Option<Vector> {
         targets
             .iter()
             .find(|&&(player_id, room_id, _)| {
@@ -4590,19 +4640,21 @@ impl ArpgGame {
 
     /// Whether a monster that keeps spacing (#108) stands nearer to `target` than its
     /// retreat range.
-    fn inside_retreat_range(monster: &MonsterState, target: Vec3i) -> bool {
+    fn inside_retreat_range(monster: &MonsterState, target: Vector) -> bool {
         monster
             .definition()
             .retreat_range
-            .is_some_and(|range| xz_distance_sq(monster.at(), target) < range * range)
+            .is_some_and(|range| xz_distance_sq(monster.position, target) < range_sq(range))
     }
 
     /// Whether `monster` could start its attack on a player at `target` now: within strike
     /// reach with a clear strike line.
-    fn can_strike(&self, monster: &MonsterState, target: Vec3i) -> Result<bool, GameError> {
+    fn can_strike(&self, monster: &MonsterState, target: Vector) -> Result<bool, GameError> {
         let reach = monster.definition().strike.reach;
-        Ok(xz_distance_sq(monster.at(), target) <= reach * reach
-            && !self.strike_obstructed(monster.at(), target)?)
+        Ok(
+            within_range(xz_distance_sq(monster.position, target), reach)
+                && !self.strike_obstructed(monster.position, target)?,
+        )
     }
 
     /// How a monster with a body moves this tick, from its engagement (#109). Staggered,
@@ -4611,7 +4663,7 @@ impl ArpgGame {
     fn steering(
         &self,
         monster: &MonsterState,
-        targets: &[(PlayerId, RoomId, Vec3i)],
+        targets: &[(PlayerId, RoomId, Vector)],
     ) -> Result<Steering, GameError> {
         if monster.health == 0 || monster.stagger_ticks_remaining > 0 || monster.action.is_some() {
             return Ok(Steering::Hold);
@@ -4630,7 +4682,7 @@ impl ArpgGame {
                 }
             }
             Engagement::Returning => Steering::Return {
-                post: monster.post.unwrap_or(monster.at()),
+                post: monster.post.unwrap_or(monster.position),
             },
             Engagement::Idle | Engagement::Searching { .. } => Steering::Hold,
         })
@@ -4642,12 +4694,19 @@ impl ArpgGame {
     fn best_candidate(
         &self,
         monster: &MonsterState,
-        candidates: impl Iterator<Item = (PlayerId, Vec3i, i64)>,
-    ) -> Result<Option<(bool, i64, PlayerId)>, GameError> {
-        let mut best = None;
+        candidates: impl Iterator<Item = (PlayerId, Vector, f64)>,
+    ) -> Result<Option<(bool, f64, PlayerId)>, GameError> {
+        let mut best: Option<(bool, f64, PlayerId)> = None;
         for (player_id, position, distance_sq) in candidates {
             let key = (!self.can_strike(monster, position)?, distance_sq, player_id);
-            if best.is_none_or(|best| key < best) {
+            let better = best.is_none_or(|best| {
+                key.0
+                    .cmp(&best.0)
+                    .then(key.1.total_cmp(&best.1))
+                    .then(key.2.cmp(&best.2))
+                    .is_lt()
+            });
+            if better {
                 best = Some(key);
             }
         }
@@ -4660,11 +4719,10 @@ impl ArpgGame {
     fn next_engagement(
         &self,
         monster: &MonsterState,
-        post: Vec3i,
-        targets: &[(PlayerId, RoomId, Vec3i)],
+        post: Vector,
+        targets: &[(PlayerId, RoomId, Vector)],
     ) -> Result<Engagement, GameError> {
         let definition = monster.definition();
-        let aggro_sq = definition.aggro_range * definition.aggro_range;
         count(Counter::MonsterDecision, 1);
         let in_aggro_range = targets
             .iter()
@@ -4673,11 +4731,15 @@ impl ArpgGame {
                 room_id == monster.room_id
             })
             .map(|&(player_id, _, position)| {
-                (player_id, position, xz_distance_sq(monster.at(), position))
+                (
+                    player_id,
+                    position,
+                    xz_distance_sq(monster.position, position),
+                )
             })
-            .filter(|&(_, _, distance_sq)| distance_sq <= aggro_sq);
-        let from_post_sq = xz_distance_sq(monster.at(), post);
-        let away_from_post = from_post_sq > POST_ARRIVAL_DISTANCE * POST_ARRIVAL_DISTANCE;
+            .filter(|&(_, _, distance_sq)| within_range(distance_sq, definition.aggro_range));
+        let from_post_sq = xz_distance_sq(monster.position, post);
+        let away_from_post = !within_range(from_post_sq, POST_ARRIVAL_DISTANCE);
         match monster.engagement {
             Engagement::Engaged { target_player_id } => {
                 let Some(current) = Self::target_in_room(monster, targets, target_player_id) else {
@@ -4685,7 +4747,7 @@ impl ArpgGame {
                         ticks_remaining: definition.reacquire_ticks,
                     });
                 };
-                if from_post_sq > definition.leash_range * definition.leash_range {
+                if !within_range(from_post_sq, definition.leash_range) {
                     return Ok(Engagement::Returning);
                 }
                 let challenger = self.best_candidate(
@@ -4697,8 +4759,8 @@ impl ArpgGame {
                 };
                 let current_strikes = self.can_strike(monster, current)?;
                 let takes_over = if challenger_strikes == current_strikes {
-                    isqrt(challenger_sq) + definition.target_switch_margin
-                        < isqrt(xz_distance_sq(monster.at(), current))
+                    challenger_sq.sqrt() + (definition.target_switch_margin as f64)
+                        < xz_distance_sq(monster.position, current).sqrt()
                 } else {
                     challenger_strikes
                 };
@@ -4821,7 +4883,7 @@ impl ArpgGame {
                     }
                 }
             } else {
-                let post = *monster.post.get_or_insert(monster.at());
+                let post = *monster.post.get_or_insert(monster.position);
                 // Steering found no retreat from the target it was engaged on; a switch to
                 // another target makes that result stale.
                 let cornered_target = monster.engaged_target().filter(|_| monster.cornered);
@@ -4876,7 +4938,7 @@ impl ArpgGame {
             .filter_map(|&player_id| {
                 self.players
                     .get(&player_id)
-                    .and_then(|state| self.room_at_position(Vec3i::rounded(state.position)))
+                    .and_then(|state| self.room_at_position(state.position))
             })
             .collect::<BTreeSet<_>>();
         let rooms_with_living_monsters = self
@@ -4930,7 +4992,7 @@ impl ArpgGame {
     /// against the level and the characters already moved. A player keeps as velocity the
     /// part of its intended motion that physics allowed; corrections out of overlaps never
     /// become momentum.
-    fn resolve_motion(&mut self, monster_motions: &[(usize, Vec3i)]) -> Result<(), GameError> {
+    fn resolve_motion(&mut self, monster_motions: &[(usize, Vector)]) -> Result<(), GameError> {
         self.physics.rebuild();
         for (&player_id, state) in &mut self.players {
             let intended = Self::controlled_movement_velocity(state.velocity, *state);
@@ -4953,7 +5015,7 @@ impl ArpgGame {
             (monster.position, _) = self.physics.move_character(
                 Self::monster_body_id(monster.id),
                 monster.position,
-                vector(velocity),
+                velocity,
             )?;
         }
         self.physics_steps = self
@@ -4999,8 +5061,8 @@ impl ArpgGame {
 #[cfg(test)]
 impl ArpgGame {
     /// Puts a player at `position`, as a spawn or restore would: no contact resolution.
-    fn put_player(&mut self, player_id: PlayerId, position: Vec3i) {
-        let position = Vector::from(position);
+    fn put_player(&mut self, player_id: PlayerId, position: impl Into<Vector>) {
+        let position = position.into();
         self.players
             .get_mut(&player_id)
             .expect("placed player exists")
@@ -5290,11 +5352,10 @@ impl AuthoritativeGame for ArpgGame {
             .players
             .iter()
             .map(|(&id, state)| {
-                let position = Vec3i::rounded(state.position);
                 let level = Self::level_for_experience(&self.content, state.experience);
                 Ok(PlayerSnapshot {
                     id,
-                    position: vec_to_array(position),
+                    position: vec_to_array(Vec3i::rounded(state.position)),
                     health: state.health,
                     max_health: Self::max_health_for_level(&self.content, level),
                     level,
@@ -5319,7 +5380,7 @@ impl AuthoritativeGame for ArpgGame {
                             reason: InteractionRefusal::Busy,
                         }
                     } else {
-                        match self.interaction_choice(position)? {
+                        match self.interaction_choice(state.position)? {
                             Ok(target) => InteractionPrompt::Available { target },
                             Err(reason) => InteractionPrompt::Unavailable { reason },
                         }
@@ -5360,7 +5421,7 @@ impl AuthoritativeGame for ArpgGame {
                     id: monster.id,
                     definition: self.content.id(monster.definition().id).to_string(),
                     room_id: monster.room_id,
-                    position: vec_to_array(monster.at()),
+                    position: vec_to_array(Vec3i::rounded(monster.position)),
                     health: monster.health,
                     max_health: monster.definition().health,
                     alive: monster.health > 0,
@@ -5392,13 +5453,13 @@ impl AuthoritativeGame for ArpgGame {
                 .iter()
                 .map(|loot| GroundLootSnapshot {
                     id: loot.id,
-                    position: vec_to_array(loot.position),
+                    position: vec_to_array(Vec3i::rounded(loot.position)),
                     kind: loot.kind,
                     amount: loot.amount,
                 })
                 .collect(),
             static_colliders,
-            arrows: self.arrows.clone(),
+            arrows: self.arrows.iter().map(ArrowState::snapshot).collect(),
             scenario: self.scenario,
             content_revision: self.content.revision.clone(),
             chests: self
@@ -5813,7 +5874,7 @@ const fn array_to_vec(value: [i32; 3]) -> Vec3i {
 }
 
 /// The farthest path point in direct line from `position`.
-fn path_point(grid: &RoomGrid, position: Vec3i, path: &[(i32, i32)]) -> Option<(i32, i32)> {
+fn path_point(grid: &RoomGrid, position: Vector, path: &[(i32, i32)]) -> Option<(i32, i32)> {
     let from = (position.x, position.z);
     path.iter()
         .rev()
@@ -5825,71 +5886,56 @@ fn path_point(grid: &RoomGrid, position: Vec3i, path: &[(i32, i32)]) -> Option<(
 
 /// Velocity toward the farthest path point in direct line, at most `speed` per tick.
 #[cfg(test)]
-fn pursuit_velocity(grid: &RoomGrid, position: Vec3i, path: &[(i32, i32)], speed: i32) -> Vec3i {
-    path_point(grid, position, path).map_or(Vec3i::ZERO, |(x, z)| {
+fn pursuit_velocity(grid: &RoomGrid, position: Vector, path: &[(i32, i32)], speed: i32) -> Vector {
+    path_point(grid, position, path).map_or(Vector::ZERO, |point| {
         scaled_velocity(
-            i64::from(x - position.x),
-            i64::from(z - position.z),
-            i64::from(speed),
+            xz_delta(position, layout_point(point, position.y)),
+            f64::from(speed),
         )
     })
 }
 
 /// A velocity along (dx, dz) of at most `speed` and at most the vector's own length.
-fn scaled_velocity(dx: i64, dz: i64, speed: i64) -> Vec3i {
-    let length = isqrt(dx * dx + dz * dz);
-    if length == 0 {
-        return Vec3i::ZERO;
+fn scaled_velocity((dx, dz): (f64, f64), speed: f64) -> Vector {
+    let length = planar_length(dx, dz);
+    if length == 0.0 || !length.is_finite() {
+        return Vector::ZERO;
     }
-    let speed = speed.min(length);
-    let component = |delta: i64| i32::try_from(delta * speed / length).unwrap_or(0);
-    let velocity = Vec3i::new(component(dx), 0, component(dz));
-    if velocity != Vec3i::ZERO {
-        return velocity;
-    }
-    // Truncation dropped both components (a small speed on a diagonal): step along the
-    // dominant axis instead of standing still.
-    if dx.abs() >= dz.abs() {
-        Vec3i::new(dx.signum() as i32, 0, 0)
-    } else {
-        Vec3i::new(0, 0, dz.signum() as i32)
-    }
+    let scale = speed.min(length) / length;
+    Vector::new((dx * scale) as f32, 0.0, (dz * scale) as f32)
 }
 
-/// A monster shot's velocity along (dx, dz) at `speed` per tick, truncated toward zero, so
-/// its length is within two units below `speed` (#108). `None` for a zero direction.
-fn projectile_velocity(dx: i64, dz: i64, speed: i32) -> Option<Vec3i> {
-    // The length in 1/1024 units keeps the rounding of the direction far below a unit.
-    let length = isqrt((dx * dx + dz * dz) << 20);
-    if length == 0 {
+/// A monster shot's velocity along (dx, dz) at `speed` per tick (#108). `None` for a zero
+/// direction.
+fn projectile_velocity((dx, dz): (f64, f64), speed: i32) -> Option<Vector> {
+    let length = planar_length(dx, dz);
+    if length == 0.0 || !length.is_finite() {
         return None;
     }
-    let speed = i64::from(speed);
-    let component = |delta: i64| i32::try_from(delta * speed * 1_024 / length).unwrap_or(0);
-    let velocity = Vec3i::new(component(dx), 0, component(dz));
-    if velocity != Vec3i::ZERO {
-        return Some(velocity);
-    }
-    let speed = i32::try_from(speed).unwrap_or(0);
-    Some(if dx.abs() >= dz.abs() {
-        Vec3i::new(dx.signum() as i32 * speed, 0, 0)
-    } else {
-        Vec3i::new(0, 0, dz.signum() as i32 * speed)
-    })
+    let scale = f64::from(speed) / length;
+    Some(Vector::new((dx * scale) as f32, 0.0, (dz * scale) as f32))
 }
+
+/// Largest difference between a shot's planar speed and its definition's that `f32`
+/// rounding of the committed velocity can produce, with a wide margin.
+const PROJECTILE_SPEED_TOLERANCE: f64 = 1.0e-3;
 
 /// Whether `velocity` is one a shot at `speed` can have.
-fn projectile_velocity_is_possible(velocity: [i32; 3], speed: i32) -> bool {
-    let [x, y, z] = velocity.map(i64::from);
-    let length = isqrt(x * x + z * z);
-    let speed = i64::from(speed);
-    y == 0 && length <= speed && length >= (speed - 2).max(1)
+fn projectile_velocity_is_possible(velocity: Vector, speed: i32) -> bool {
+    velocity.is_finite()
+        && velocity.y == 0.0
+        && speed > 0
+        && (planar_length(f64::from(velocity.x), f64::from(velocity.z)) - f64::from(speed)).abs()
+            <= PROJECTILE_SPEED_TOLERANCE
 }
 
-/// Fixed-point unit for steering directions.
-const STEERING_UNIT: i64 = 1_024;
 /// How much harder a blocker ahead pushes sideways than straight away.
-const SIDESTEP_WEIGHT: i64 = 3;
+const SIDESTEP_WEIGHT: f64 = 3.0;
+
+/// The sign of `value` as -1, 0 or 1 (`f64::signum` has no zero).
+fn sign(value: f64) -> i64 {
+    i64::from(value > 0.0) - i64::from(value < 0.0)
+}
 
 /// Local separation (#109): the velocity toward `point`, bent away from other monster
 /// bodies of the same room within `range`. Each neighbour pushes straight away with a
@@ -5903,65 +5949,55 @@ const SIDESTEP_WEIGHT: i64 = 3;
 /// this is exactly the plain pursuit velocity.
 fn separated_velocity(
     monster: &MonsterState,
-    goal: Vec3i,
+    goal: Vector,
     point: (i32, i32),
     speed: i32,
-    bodies: &[(u32, RoomId, Vec3i)],
+    bodies: &[(u32, RoomId, Vector)],
     range: i64,
-) -> Vec3i {
-    let position = monster.at();
-    let to_point = (
-        i64::from(point.0 - position.x),
-        i64::from(point.1 - position.z),
-    );
-    // (id, unit vector away from the neighbour, strength), all in steering units.
+) -> Vector {
+    let position = monster.position;
+    let speed = f64::from(speed);
+    let to_point = xz_delta(position, layout_point(point, position.y));
+    let range_length = range as f64;
+    // (id, unit vector away from the neighbour, strength in 0..=1).
     let neighbours = bodies
         .iter()
         .filter(|&&(id, room_id, other)| {
             id != monster.id
                 && room_id == monster.room_id
-                && xz_distance_sq(position, other) < range * range
+                && xz_distance_sq(position, other) < range_sq(range)
         })
         .map(|&(other_id, _, other)| {
-            let away = (
-                i64::from(position.x - other.x),
-                i64::from(position.z - other.z),
-            );
-            let distance = isqrt(away.0 * away.0 + away.1 * away.1);
-            let away = if distance == 0 {
+            let away = xz_delta(other, position);
+            let distance = planar_length(away.0, away.1);
+            let away = if distance == 0.0 {
                 // Coincident centres: the lower id steps toward -x.
-                let sign = if monster.id < other_id { -1 } else { 1 };
-                (sign * STEERING_UNIT, 0)
+                let sign = if monster.id < other_id { -1.0 } else { 1.0 };
+                (sign, 0.0)
             } else {
-                (
-                    away.0 * STEERING_UNIT / distance,
-                    away.1 * STEERING_UNIT / distance,
-                )
+                (away.0 / distance, away.1 / distance)
             };
-            (other_id, away, (range - distance) * STEERING_UNIT / range)
+            (other_id, away, (range_length - distance) / range_length)
         })
         .collect::<Vec<_>>();
     if neighbours.is_empty() {
-        return scaled_velocity(to_point.0, to_point.1, i64::from(speed));
+        return scaled_velocity(to_point, speed);
     }
-    let length = isqrt(to_point.0 * to_point.0 + to_point.1 * to_point.1);
-    let direction = if length == 0 {
-        (0, 0)
+    let length = planar_length(to_point.0, to_point.1);
+    let direction = if length == 0.0 {
+        (0.0, 0.0)
     } else {
-        (
-            to_point.0 * STEERING_UNIT / length,
-            to_point.1 * STEERING_UNIT / length,
-        )
+        (to_point.0 / length, to_point.1 / length)
     };
     let left = (-direction.1, direction.0);
-    let lateral = |away: (i64, i64)| left.0 * away.0 + left.1 * away.1;
+    let lateral = |away: (f64, f64)| left.0 * away.0 + left.1 * away.1;
     let lean = neighbours
         .iter()
         .map(|&(_, away, strength)| lateral(away) * strength)
-        .sum::<i64>();
+        .sum::<f64>();
     let blockers = neighbours
         .iter()
-        .filter(|&&(_, away, _)| direction.0 * away.0 + direction.1 * away.1 < 0)
+        .filter(|&&(_, away, _)| direction.0 * away.0 + direction.1 * away.1 < 0.0)
         .collect::<Vec<_>>();
     // Monsters nearer the goal on the mover's left minus those on its right.
     let goal_distance_sq = xz_distance_sq(position, goal);
@@ -5972,38 +6008,68 @@ fn separated_velocity(
                 && room_id == monster.room_id
                 && xz_distance_sq(other, goal) < goal_distance_sq
         })
-        .map(|&(_, _, other)| {
-            -lateral((
-                i64::from(position.x - other.x),
-                i64::from(position.z - other.z),
-            ))
-            .signum()
-        })
+        .map(|&(_, _, other)| -sign(lateral(xz_delta(other, position))))
         .sum::<i64>();
-    let side = match (-crowding.signum(), lean.signum(), blockers.first()) {
-        (0, 0, Some(&&(other_id, away, _))) => match lateral(away).signum() {
+    let side = match (-crowding.signum(), sign(lean), blockers.first()) {
+        (0, 0, Some(&&(other_id, away, _))) => match sign(lateral(away)) {
             0 if monster.id < other_id => 1,
             0 => -1,
             sign => sign,
         },
         (0, sign, _) | (sign, _, _) => sign,
-    };
+    } as f64;
     let mut steer = direction;
     for &(_, away, strength) in &neighbours {
-        steer.0 += away.0 * strength / STEERING_UNIT;
-        steer.1 += away.1 * strength / STEERING_UNIT;
+        steer.0 += away.0 * strength;
+        steer.1 += away.1 * strength;
     }
     for &&(_, _, strength) in &blockers {
-        steer.0 += SIDESTEP_WEIGHT * side * left.0 * strength / STEERING_UNIT;
-        steer.1 += SIDESTEP_WEIGHT * side * left.1 * strength / STEERING_UNIT;
+        steer.0 += SIDESTEP_WEIGHT * side * left.0 * strength;
+        steer.1 += SIDESTEP_WEIGHT * side * left.1 * strength;
     }
-    scaled_velocity(steer.0, steer.1, i64::from(speed))
+    // The steer is a direction: the mover walks it at full speed.
+    let length = planar_length(steer.0, steer.1);
+    if length == 0.0 || !length.is_finite() {
+        return Vector::ZERO;
+    }
+    let scale = speed / length;
+    Vector::new((steer.0 * scale) as f32, 0.0, (steer.1 * scale) as f32)
 }
 
-fn xz_distance_sq(a: Vec3i, b: Vec3i) -> i64 {
-    let dx = i64::from(a.x - b.x);
-    let dz = i64::from(a.z - b.z);
+/// A whole-unit layout point (a navigation cell centre) on the plane at height `y`.
+fn layout_point((x, z): (i32, i32), y: f32) -> Vector {
+    Vector::new(x as f32, y, z as f32)
+}
+
+/// The length of a planar vector, from correctly rounded operations only (unlike
+/// `f64::hypot`, whose platform library may differ), so every build agrees.
+fn planar_length(x: f64, z: f64) -> f64 {
+    (x * x + z * z).sqrt()
+}
+
+/// The planar offset from `from` to `to`, in `f64`: exact for `f32` positions.
+fn xz_delta(from: Vector, to: Vector) -> (f64, f64) {
+    (
+        f64::from(to.x) - f64::from(from.x),
+        f64::from(to.z) - f64::from(from.z),
+    )
+}
+
+/// The squared planar distance between two positions.
+fn xz_distance_sq(a: Vector, b: Vector) -> f64 {
+    let (dx, dz) = xz_delta(a, b);
     dx * dx + dz * dz
+}
+
+/// A whole-unit range, squared, for comparison with [`xz_distance_sq`].
+fn range_sq(range: i64) -> f64 {
+    let range = range as f64;
+    range * range
+}
+
+/// Whether a squared planar distance lies within `range` (inclusive).
+fn within_range(distance_sq: f64, range: i64) -> bool {
+    distance_sq <= range_sq(range)
 }
 
 #[cfg(test)]
@@ -6031,6 +6097,17 @@ mod tests {
 
     fn monster_claw() -> StrikeDefinition {
         brute().strike
+    }
+
+    /// The components of a value the rules keep in whole world units (a player's arrow
+    /// launched from a whole-unit position), as integers.
+    fn whole(value: Vector) -> [i32; 3] {
+        let components = value.to_array();
+        assert!(
+            components.iter().all(|component| component.fract() == 0.0),
+            "{components:?} has whole components"
+        );
+        components.map(|component| component as i32)
     }
 
     #[test]
@@ -6614,12 +6691,12 @@ mod tests {
     fn interaction_respects_pickup_range() {
         let mut game = ArpgGame::new_with_seed(42).unwrap();
         game.add_player(1).unwrap();
-        let player_position = Vec3i::rounded(game.players[&1].position);
+        let player_position = game.players[&1].position;
         game.ground_loot.push(GroundLootState {
             id: GROUND_LOOT_ID_BASE,
-            position: Vec3i::new(
-                player_position.x + i32::try_from(INTERACT_RANGE).unwrap() + 1,
-                PLAYER_Y,
+            position: Vector::new(
+                player_position.x + INTERACT_RANGE as f32 + 1.0,
+                PLAYER_Y as f32,
                 player_position.z,
             ),
             kind: LootKind::Gold,
@@ -6896,6 +6973,8 @@ mod tests {
     #[test]
     fn strike_reach_and_arc_boundaries_are_inclusive() {
         let (mut game, x, z) = strike_arena();
+        // The targets stay exactly where they are placed: no pursuit, no depenetration.
+        game.monsters_without_bodies = true;
         // Reach is centre-to-centre; 60 degrees either side holds when 3·dx² ≥ dz².
         place_monster(&mut game, 1, x + 220, z);
         place_monster(&mut game, 2, x + 100, z + 173);
@@ -6918,6 +6997,120 @@ mod tests {
             [1, 2, 3, 6].map(StrikeTarget::Monster),
             "overlapping, reach-edge and arc-edge targets are hit; just outside is not"
         );
+    }
+
+    /// Rules read the authoritative `f32` positions (#182): a fraction of a unit beyond
+    /// reach or outside the arc misses, where a rounded view would have hit.
+    #[test]
+    fn sub_unit_offsets_decide_strike_reach_and_arc() {
+        let (mut game, x, z) = strike_arena();
+        game.monsters_without_bodies = true;
+        let reach = ATTACK_RANGE as f32;
+        let (x, z) = (x as f32, z as f32);
+        let arranged = [
+            // Exactly at reach, and 0.4 inside it: hit.
+            (1, x + reach, z),
+            (2, x + reach - 0.4, z + 0.0),
+            // 0.4 beyond reach (rounds to reach): miss.
+            (3, x + reach + 0.4, z),
+            // On the 60° edge 3·dx² ≥ dz²: 173.2 is inside, 173.3 (rounds to 173) is not.
+            (4, x + 100.0, z + 173.2),
+            (5, x + 100.0, z - 173.3),
+        ];
+        for (id, mx, mz) in arranged {
+            place_monster(&mut game, id, 0, 0);
+            game.monsters.last_mut().unwrap().position = Vector::new(mx, PLAYER_Y as f32, mz);
+        }
+        let mut hit = targets(&strike(
+            &mut game,
+            1,
+            ArpgCommand::PrimaryAttack { aim: None },
+        ))
+        .into_iter()
+        .map(|(target, _)| target)
+        .collect::<Vec<_>>();
+        hit.sort();
+        assert_eq!(hit, [1, 2, 4].map(StrikeTarget::Monster));
+
+        // A player a fraction of a unit off the whole-unit grid is still measured exactly.
+        let (mut game, gx, gz) = strike_arena();
+        game.monsters_without_bodies = true;
+        game.put_player(1, Vector::new(gx as f32 - 0.4, PLAYER_Y as f32, gz as f32));
+        place_monster(&mut game, 1, gx + 220, gz);
+        assert!(strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None }).is_empty());
+    }
+
+    /// Monster reach, target-lock range and the interaction range compare exact `f32`
+    /// distances (#182): 0.4 units beyond each no longer counts as inside.
+    #[test]
+    fn sub_unit_offsets_decide_monster_reach_lock_range_and_interaction_range() {
+        let (mut game, x, z) = strike_arena();
+        let player = Vector::new(x as f32, PLAYER_Y as f32, z as f32);
+        game.put_player(1, player);
+        place_monster(&mut game, 1, x, z);
+        let monster_at = |offset: f32| {
+            let mut monster = game.monsters[0];
+            monster.position = player + Vector::X * offset;
+            monster
+        };
+        let reach = brute().strike.reach as f32;
+        assert!(game.can_strike(&monster_at(reach), player).unwrap());
+        assert!(!game.can_strike(&monster_at(reach + 0.4), player).unwrap());
+        let lock_range = content().targeting.lock_range;
+        let lock = lock_range as f32;
+        assert!(game.monster_lockable(&monster_at(-lock), player, lock_range));
+        assert!(!game.monster_lockable(&monster_at(-lock - 0.4), player, lock_range));
+
+        // End to end: a brute that cannot move winds up only from within its reach.
+        for (offset, winds_up) in [(reach, true), (reach + 0.4, false)] {
+            let (mut game, x, z) = strike_arena();
+            game.monsters_without_bodies = true;
+            place_monster(&mut game, 1, x, z);
+            game.monsters[0].position = Vector::new(x as f32 + offset, PLAYER_Y as f32, z as f32);
+            game.advance_tick().unwrap();
+            assert_eq!(
+                game.monsters[0].action.is_some(),
+                winds_up,
+                "offset {offset}"
+            );
+        }
+
+        let mut game = ArpgGame::new_with_seed(42).unwrap();
+        game.add_player(1).unwrap();
+        let player = game.players[&1].position;
+        let mut prompt = |offset: f32| {
+            game.ground_loot = vec![GroundLootState {
+                id: GROUND_LOOT_ID_BASE,
+                position: player + Vector::X * offset,
+                kind: LootKind::Gold,
+                amount: GROUND_LOOT_GOLD_AMOUNT,
+            }];
+            game.snapshot().unwrap().players[0].interaction
+        };
+        assert_eq!(
+            prompt(INTERACT_RANGE as f32),
+            InteractionPrompt::Available {
+                target: InteractionTarget::Loot(GROUND_LOOT_ID_BASE)
+            }
+        );
+        assert_eq!(
+            prompt(INTERACT_RANGE as f32 + 0.4),
+            InteractionPrompt::Unavailable {
+                reason: InteractionRefusal::NothingInRange
+            }
+        );
+    }
+
+    /// A lock's direction follows the exact offset: 0.4 units across 100 still turns it.
+    #[test]
+    fn lock_directions_keep_sub_unit_offsets() {
+        let origin = Vector::new(0.0, PLAYER_Y as f32, 0.0);
+        let target = Vector::new(0.4, PLAYER_Y as f32, 100.0);
+        assert_eq!(
+            ArpgGame::direction_between(origin, target),
+            Some([4, AIM_COMPONENT_LIMIT])
+        );
+        assert_eq!(ArpgGame::direction_between(origin, origin), None);
     }
 
     #[test]
@@ -7142,7 +7335,7 @@ mod tests {
         place_blocker(
             &mut game,
             0,
-            (x + striking_from.x) / 2,
+            (x + striking_from.x as i32) / 2,
             z,
             Vec3i::new(10, WALL_HALF_HEIGHT, 15),
         );
@@ -8119,10 +8312,10 @@ mod tests {
         let arrow = game.arrows[0];
         assert_eq!(arrow.source, StrikeSource::Player(1));
         assert_eq!(arrow.damage, ARROW_FULL_DAMAGE);
-        assert_eq!(arrow.velocity, [ARROW_FULL_SPEED, 0, 0]);
+        assert_eq!(whole(arrow.velocity), [ARROW_FULL_SPEED, 0, 0]);
         // Launched from the body centre during the action step, then moved by the same
         // tick's arrow step.
-        assert_eq!(arrow.position, [x + ARROW_FULL_SPEED, PLAYER_Y, z]);
+        assert_eq!(whole(arrow.position), [x + ARROW_FULL_SPEED, PLAYER_Y, z]);
         while current_action(&game).is_some() {
             game.advance_tick().unwrap();
         }
@@ -8205,12 +8398,12 @@ mod tests {
 
         // In open space an arrow despawns when its lifetime runs out.
         let (mut game, x, z) = bow_arena();
-        game.arrows.push(ArrowSnapshot {
+        game.arrows.push(ArrowState {
             id: game.next_arrow_id,
             source: StrikeSource::Player(1),
             launched_at_tick: game.tick,
-            position: [x, PLAYER_Y, z],
-            velocity: [0, 0, 1],
+            position: Vec3i::new(x, PLAYER_Y, z).into(),
+            velocity: Vector::Z,
             damage: ARROW_MIN_DAMAGE,
             ticks_remaining: 3,
         });
@@ -8274,7 +8467,7 @@ mod tests {
             game.advance_tick().unwrap();
         }
         let diagonal = ARROW_FULL_SPEED * ARROW_DIAGONAL_NUMERATOR / ARROW_DIAGONAL_DENOMINATOR;
-        assert_eq!(game.arrows[0].velocity, [diagonal, 0, -diagonal]);
+        assert_eq!(whole(game.arrows[0].velocity), [diagonal, 0, -diagonal]);
     }
 
     #[test]
@@ -8492,28 +8685,45 @@ mod tests {
         assert_eq!(drawn.players[&1].draw_ticks, Some(13));
 
         for corrupt in [
-            ArrowSnapshot {
-                velocity: [0, 0, 0],
+            ArrowSaveState {
+                velocity: [0.0; 3],
                 ..mid_flight.arrows[0]
             },
-            ArrowSnapshot {
+            ArrowSaveState {
                 id: mid_flight.next_arrow_id,
                 ..mid_flight.arrows[0]
             },
-            ArrowSnapshot {
+            ArrowSaveState {
                 damage: ARROW_FULL_DAMAGE + 1,
                 ..mid_flight.arrows[0]
             },
-            ArrowSnapshot {
-                velocity: [1, 0, 0],
+            ArrowSaveState {
+                velocity: [1.0, 0.0, 0.0],
                 ..mid_flight.arrows[0]
             },
-            ArrowSnapshot {
+            // A launch commits whole-unit components.
+            ArrowSaveState {
+                velocity: [
+                    f32::from(i16::try_from(ARROW_FULL_SPEED).unwrap()) - 0.5,
+                    0.0,
+                    0.0,
+                ],
+                ..mid_flight.arrows[0]
+            },
+            ArrowSaveState {
+                velocity: [f32::NAN, 0.0, 0.0],
+                ..mid_flight.arrows[0]
+            },
+            ArrowSaveState {
+                position: [f32::INFINITY, PLAYER_Y as f32, 0.0],
+                ..mid_flight.arrows[0]
+            },
+            ArrowSaveState {
                 launched_at_tick: 0,
                 ticks_remaining: ARROW_LIFETIME_TICKS,
                 ..mid_flight.arrows[0]
             },
-            ArrowSnapshot {
+            ArrowSaveState {
                 damage: ARROW_FULL_DAMAGE,
                 ..mid_flight.arrows[0]
             },
@@ -8679,18 +8889,18 @@ mod tests {
             game.advance_tick().unwrap();
         }
         // 60 units per tick along (2, 1), each component rounded toward zero.
-        assert_eq!(game.arrows[0].velocity, [53, 0, 26]);
+        assert_eq!(whole(game.arrows[0].velocity), [53, 0, 26]);
         let launched = game.arrows[0];
         game.advance_tick().unwrap();
         assert_eq!(game.arrows[0].velocity, launched.velocity);
-        assert_eq!(game.arrows[0].position[0], launched.position[0] + 53);
+        assert_eq!(game.arrows[0].position.x, launched.position.x + 53.0);
         assert!(ArpgGame::arrow_launch_is_possible(
             &content().bow,
-            &game.arrows[0]
+            &game.arrows[0].save()
         ));
         // No aim or facing launches faster than the draw speed.
-        let mut fast = game.arrows[0];
-        fast.velocity = [ARROW_FULL_SPEED + 1, 0, 0];
+        let mut fast = game.arrows[0].save();
+        fast.velocity = [(ARROW_FULL_SPEED + 1) as f32, 0.0, 0.0];
         assert!(!ArpgGame::arrow_launch_is_possible(&content().bow, &fast));
         // Every exact aim stays within the draw speed after rounding.
         for x in (-1_000..=1_000).step_by(37) {
@@ -8795,7 +9005,8 @@ mod tests {
         command(&mut game, ArpgCommand::CycleTarget);
         command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         let action = current_action(&game).unwrap();
-        assert_eq!(action.aim, Some([0, -150]));
+        // The lock's direction, at full aim resolution (its length carries no meaning).
+        assert_eq!(action.aim, Some([0, -AIM_COMPONENT_LIMIT]));
         assert_eq!((action.facing_x, action.facing_z), (0, -1));
         let mut outcomes = Vec::new();
         while current_action(&game).is_some() {
@@ -8853,7 +9064,7 @@ mod tests {
         game.monsters[0].health = 0;
         let mut went_active = false;
         while let Some(action) = current_action(&game) {
-            assert_eq!(action.aim, Some([0, -150]));
+            assert_eq!(action.aim, Some([0, -AIM_COMPONENT_LIMIT]));
             went_active |= action.phase == ActionPhase::Active;
             game.advance_tick().unwrap();
             assert!(game.strike_outcomes().is_empty());
@@ -8875,12 +9086,12 @@ mod tests {
         while game.arrows.is_empty() {
             game.advance_tick().unwrap();
         }
-        assert_eq!(game.arrows[0].velocity, [0, 0, ARROW_FULL_SPEED]);
+        assert_eq!(whole(game.arrows[0].velocity), [0, 0, ARROW_FULL_SPEED]);
         // Nor does the target moving or dying in flight.
         game.monsters[1].position = Vec3i::new(x + 300, PLAYER_Y, z).into();
         game.monsters[1].health = 0;
         game.advance_tick().unwrap();
-        assert_eq!(game.arrows[0].velocity, [0, 0, ARROW_FULL_SPEED]);
+        assert_eq!(whole(game.arrows[0].velocity), [0, 0, ARROW_FULL_SPEED]);
     }
 
     #[test]
@@ -9581,13 +9792,13 @@ mod tests {
         let (mut game, x, z) = strike_arena();
         game.ground_loot.push(GroundLootState {
             id: GROUND_LOOT_ID_BASE + 7,
-            position: Vec3i::new(x + 100, PLAYER_Y, z),
+            position: Vec3i::new(x + 100, PLAYER_Y, z).into(),
             kind: LootKind::Gold,
             amount: GROUND_LOOT_GOLD_AMOUNT,
         });
         game.ground_loot.push(GroundLootState {
             id: GROUND_LOOT_ID_BASE + 3,
-            position: Vec3i::new(x - 100, PLAYER_Y, z),
+            position: Vec3i::new(x - 100, PLAYER_Y, z).into(),
             kind: LootKind::Gold,
             amount: GROUND_LOOT_GOLD_AMOUNT,
         });
@@ -9621,7 +9832,7 @@ mod tests {
         let (mut game, x, z) = strike_arena();
         game.ground_loot.push(GroundLootState {
             id: GROUND_LOOT_ID_BASE,
-            position: Vec3i::new(x + 120, PLAYER_Y, z),
+            position: Vec3i::new(x + 120, PLAYER_Y, z).into(),
             kind: LootKind::Gold,
             amount: GROUND_LOOT_GOLD_AMOUNT,
         });
@@ -9634,7 +9845,7 @@ mod tests {
         );
         game.ground_loot.push(GroundLootState {
             id: GROUND_LOOT_ID_BASE + 1,
-            position: Vec3i::new(x - 140, PLAYER_Y, z),
+            position: Vec3i::new(x - 140, PLAYER_Y, z).into(),
             kind: LootKind::Gold,
             amount: GROUND_LOOT_GOLD_AMOUNT,
         });
@@ -9655,7 +9866,7 @@ mod tests {
         move_player(&mut game, 2, x, z + 40);
         game.ground_loot.push(GroundLootState {
             id: GROUND_LOOT_ID_BASE,
-            position: Vec3i::new(x + 50, PLAYER_Y, z + 20),
+            position: Vec3i::new(x + 50, PLAYER_Y, z + 20).into(),
             kind: LootKind::Gold,
             amount: GROUND_LOOT_GOLD_AMOUNT,
         });
@@ -9697,7 +9908,7 @@ mod tests {
         place_monster(&mut game, 1, x + 100, z);
         game.ground_loot.push(GroundLootState {
             id: GROUND_LOOT_ID_BASE,
-            position: Vec3i::new(x, PLAYER_Y, z + 340),
+            position: Vec3i::new(x, PLAYER_Y, z + 340).into(),
             kind: LootKind::Gold,
             amount: GROUND_LOOT_GOLD_AMOUNT,
         });
@@ -9738,7 +9949,7 @@ mod tests {
         game.players.get_mut(&1).unwrap().gold = u32::MAX - 3;
         game.ground_loot.push(GroundLootState {
             id: GROUND_LOOT_ID_BASE,
-            position: Vec3i::new(x + 50, PLAYER_Y, z),
+            position: Vec3i::new(x + 50, PLAYER_Y, z).into(),
             kind: LootKind::Gold,
             amount: GROUND_LOOT_GOLD_AMOUNT,
         });
@@ -10170,21 +10381,25 @@ mod tests {
         place_monster_of(&mut game, 1, SKIRMISHER, x + 700, z + 200);
         let start = monster_position(&game, 1);
         let mut previous = start;
-        let mut fastest = 0;
+        let mut fastest = 0.0_f64;
         let arrived = (1..=400)
             .find(|_| {
                 game.advance_tick().unwrap();
                 let position = monster_position(&game, 1);
-                fastest = fastest.max(isqrt(xz_distance_sq(previous, position)));
+                fastest = fastest.max(xz_distance_sq(previous, position).sqrt());
                 previous = position;
                 game.monsters[0].action.is_some()
             })
             .expect("the skirmisher reaches its target");
         let reach = skirmisher().strike.reach;
-        assert!(xz_distance_sq(previous, player_position(&game)) <= reach * reach);
-        assert!(fastest <= i64::from(skirmisher().pursuit_speed));
+        assert!(within_range(
+            xz_distance_sq(previous, player_position(&game)),
+            reach
+        ));
+        // Speeds are exact up to `f32` rounding of the per-tick motion.
+        assert!(fastest <= f64::from(skirmisher().pursuit_speed) + 1.0e-3);
         assert!(
-            fastest > i64::from(brute().pursuit_speed),
+            fastest > f64::from(brute().pursuit_speed),
             "fastest step {fastest} after {arrived} ticks"
         );
     }
@@ -10202,7 +10417,7 @@ mod tests {
                 if monster.action.is_some() {
                     started
                         .entry(monster.id)
-                        .or_insert(xz_distance_sq(monster.at(), player));
+                        .or_insert(xz_distance_sq(monster.position, player));
                 }
             }
             if started.len() == 2 {
@@ -10211,11 +10426,8 @@ mod tests {
         }
         let brute_reach = brute().strike.reach;
         let skirmisher_reach = skirmisher().strike.reach;
-        assert!(started[&1] <= brute_reach * brute_reach, "{started:?}");
-        assert!(
-            started[&2] <= skirmisher_reach * skirmisher_reach,
-            "{started:?}"
-        );
+        assert!(within_range(started[&1], brute_reach), "{started:?}");
+        assert!(within_range(started[&2], skirmisher_reach), "{started:?}");
     }
 
     #[test]
@@ -10437,7 +10649,7 @@ mod tests {
             .find(|room| room.kind == RoomKind::Start)
             .unwrap();
         for spawn in dungeon.player_spawns {
-            assert!(start_room.contains_xz_with_margin(spawn, 0));
+            assert!(start_room.contains_xz(spawn.into()));
         }
         for monster in &dungeon.monsters {
             let room = dungeon
@@ -10446,7 +10658,7 @@ mod tests {
                 .find(|room| room.id == monster.room_id)
                 .unwrap();
             assert_eq!(room.kind, RoomKind::Combat);
-            assert!(room.contains_xz_with_margin(monster.at(), 0));
+            assert!(room.contains_xz_with_margin(monster.position, 0));
         }
     }
 
@@ -10657,7 +10869,13 @@ mod tests {
     fn monster_layout(monsters: &[MonsterState]) -> Vec<(u32, RoomId, [i32; 3])> {
         monsters
             .iter()
-            .map(|monster| (monster.id, monster.room_id, vec_to_array(monster.at())))
+            .map(|monster| {
+                (
+                    monster.id,
+                    monster.room_id,
+                    vec_to_array(Vec3i::rounded(monster.position)),
+                )
+            })
             .collect()
     }
     #[test]
@@ -10800,9 +11018,9 @@ mod tests {
 
         let mut loot = save;
         loot.next_ground_loot_id = GROUND_LOOT_ID_BASE + 1;
-        loot.ground_loot.push(GroundLootSnapshot {
+        loot.ground_loot.push(GroundLootSaveState {
             id: GROUND_LOOT_ID_BASE,
-            position: [0, i32::MAX, 0],
+            position: [0.0, f32::MAX, 0.0],
             kind: LootKind::Gold,
             amount: GROUND_LOOT_GOLD_AMOUNT,
         });
@@ -10843,7 +11061,22 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 13"
+            "unsupported ARPG save schema version 12; expected 14"
+        );
+    }
+
+    #[test]
+    fn saves_from_the_whole_unit_rules_schema_are_refused() {
+        let mut game = ArpgGame::new_with_seed(91).unwrap();
+        game.add_player(1).unwrap();
+        // A schema 13 save: whole-unit arrows, ground loot and monster posts.
+        let mut json = serde_json::to_value(game.save_state().unwrap()).unwrap();
+        json["schemaVersion"] = 13.into();
+        json["monsters"][0]["post"] = serde_json::json!([0, 50, 0]);
+        let save: ArpgSaveState = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            ArpgGame::from_save_state(save).unwrap_err().message(),
+            "unsupported ARPG save schema version 13; expected 14"
         );
     }
 
@@ -10888,16 +11121,16 @@ mod tests {
         );
     }
 
-    fn monster_position(game: &ArpgGame, id: u32) -> Vec3i {
+    fn monster_position(game: &ArpgGame, id: u32) -> Vector {
         game.monsters
             .iter()
             .find(|monster| monster.id == id)
             .unwrap()
-            .at()
+            .position
     }
 
-    fn player_position(game: &ArpgGame) -> Vec3i {
-        Vec3i::rounded(game.players[&1].position)
+    fn player_position(game: &ArpgGame) -> Vector {
+        game.players[&1].position
     }
 
     fn overlaps_xz(center: Vec3i, half: Vec3i, other: Vec3i, other_half: Vec3i) -> bool {
@@ -10955,10 +11188,13 @@ mod tests {
             ticks_until_windup(&mut game, 1, 400).expect("the monster reaches its target");
 
         let position = monster_position(&game, 1);
-        assert!(xz_distance_sq(position, player_position(&game)) <= reach * reach);
-        let travelled = isqrt(xz_distance_sq(start, position));
+        assert!(within_range(
+            xz_distance_sq(position, player_position(&game)),
+            reach
+        ));
+        let travelled = xz_distance_sq(start, position).sqrt();
         // Never faster than its content speed.
-        assert!(travelled <= i64::from(brute().pursuit_speed) * arrived as i64);
+        assert!(travelled <= f64::from(brute().pursuit_speed) * arrived as f64 + 1.0e-3);
         assert!(game.navigation_expansions() > 0);
     }
 
@@ -10981,7 +11217,7 @@ mod tests {
                 wall,
                 wall_half
             ));
-            rounded_the_wall |= (position.z - z).abs() > wall_half.z;
+            rounded_the_wall |= (position.z - z as f32).abs() > wall_half.z as f32;
             game.monsters[0].action.is_some()
         });
 
@@ -11023,9 +11259,21 @@ mod tests {
         );
         let path = [(310, 310)];
 
-        let velocity = pursuit_velocity(&grid, Vec3i::new(100, PLAYER_Y, 120), &path, 1);
+        let velocity = pursuit_velocity(&grid, Vec3i::new(100, PLAYER_Y, 120).into(), &path, 1);
 
-        assert_eq!(velocity, Vec3i::new(1, 0, 0));
+        // Exactly toward the point at its full speed of one unit per tick (integer
+        // velocities once truncated this to a single axis step).
+        let (dx, dz) = (210.0_f64, 190.0_f64);
+        let length = planar_length(dx, dz);
+        assert!(
+            (f64::from(velocity.x) - dx / length).abs() < 1.0e-6,
+            "{velocity:?}"
+        );
+        assert!(
+            (f64::from(velocity.z) - dz / length).abs() < 1.0e-6,
+            "{velocity:?}"
+        );
+        assert_eq!(velocity.y, 0.0);
     }
 
     #[test]
@@ -11197,9 +11445,10 @@ mod tests {
         // A second player arrives nearer than the target, but by less than the margin.
         let margin = brute().target_switch_margin;
         let monster = monster_position(&game, 1);
-        let current = isqrt(xz_distance_sq(monster, player_position(&game)));
-        let offset = i32::try_from(current - margin + 30).unwrap();
-        add_player_at(&mut game, 2, monster.x, monster.z + offset);
+        let current = xz_distance_sq(monster, player_position(&game)).sqrt();
+        let offset = (current - margin as f64 + 30.0) as f32;
+        game.add_player(2).unwrap();
+        game.put_player(2, monster + Vector::Z * offset);
         for _ in 0..20 {
             game.advance_tick().unwrap();
             assert_eq!(published(&game, 1), (MonsterBehavior::Pursuing, Some(1)));
@@ -11207,15 +11456,15 @@ mod tests {
 
         // Now clearly nearer: it takes over.
         let monster = monster_position(&game, 1);
-        let current = isqrt(xz_distance_sq(monster, player_position(&game)));
-        let offset = i32::try_from(current - margin - 30).unwrap();
-        place_player(&mut game, 2, monster.x, monster.z + offset);
+        let current = xz_distance_sq(monster, player_position(&game)).sqrt();
+        let offset = (current - margin as f64 - 30.0) as f32;
+        game.put_player(2, monster + Vector::Z * offset);
         game.advance_tick().unwrap();
         assert_eq!(monster_state(&game, 1).engaged_target(), Some(2));
 
         // Player 1 coming back to an equal distance does not take it back.
         let monster = monster_position(&game, 1);
-        place_player(&mut game, 1, monster.x, monster.z - offset);
+        game.put_player(1, monster - Vector::Z * offset);
         for _ in 0..10 {
             game.advance_tick().unwrap();
             assert_eq!(monster_state(&game, 1).engaged_target(), Some(2));
@@ -11223,7 +11472,7 @@ mod tests {
 
         // A competitor it can strike at once beats a target it cannot.
         let monster = monster_position(&game, 1);
-        place_player(&mut game, 1, monster.x - 120, monster.z);
+        game.put_player(1, monster - Vector::X * 120.0);
         game.advance_tick().unwrap();
         let state = monster_state(&game, 1);
         assert_eq!(state.engaged_target(), Some(1));
@@ -11314,7 +11563,8 @@ mod tests {
         game.advance_tick().unwrap();
         assert_eq!(published(&game, 1), (MonsterBehavior::Searching, None));
         let monster = monster_position(&game, 1);
-        add_player_at(&mut game, 2, monster.x - 500, monster.z);
+        game.add_player(2).unwrap();
+        game.put_player(2, monster - Vector::X * 500.0);
         for _ in 1..reacquire {
             game.advance_tick().unwrap();
             assert_eq!(published(&game, 1).0, MonsterBehavior::Searching);
@@ -11401,10 +11651,10 @@ mod tests {
             .find(|room| room.id == STRIKE_ROOM)
             .unwrap()
             .clone();
-        let post = Vec3i::new(room.min_x + 150, PLAYER_Y, room.min_z + 150);
+        let post = Vector::from(Vec3i::new(room.min_x + 150, PLAYER_Y, room.min_z + 150));
         let start = Vec3i::new(room.max_x - 150, PLAYER_Y, room.max_z - 150);
         let leash = brute().leash_range;
-        assert!(xz_distance_sq(post, start) > leash * leash);
+        assert!(!within_range(xz_distance_sq(post, start.into()), leash));
         place_monster(&mut game, 1, start.x, start.z);
         game.monsters[0].post = Some(post);
         game.monsters[0].engagement = Engagement::Engaged {
@@ -11417,7 +11667,7 @@ mod tests {
         // On the way home it walks past a player in reach without attacking.
         for _ in 0..40 {
             let monster = monster_position(&game, 1);
-            place_player(&mut game, 1, monster.x + 100, monster.z + 100);
+            game.put_player(1, monster + Vector::new(100.0, 0.0, 100.0));
             let before = xz_distance_sq(monster_position(&game, 1), post);
             game.advance_tick().unwrap();
             assert_eq!(published(&game, 1), (MonsterBehavior::Returning, None));
@@ -11428,7 +11678,10 @@ mod tests {
         // Home again with nobody in aggro range, it rests; then re-engages a player.
         place_player(&mut game, 1, x + 600, room.max_z - 150);
         let aggro = brute().aggro_range;
-        assert!(xz_distance_sq(post, player_position(&game)) > aggro * aggro);
+        assert!(!within_range(
+            xz_distance_sq(post, player_position(&game)),
+            aggro
+        ));
         let home = (1..=600)
             .find(|_| {
                 game.advance_tick().unwrap();
@@ -11436,13 +11689,13 @@ mod tests {
             })
             .expect("it gets home");
         assert!(home > 1);
-        assert!(
-            xz_distance_sq(monster_position(&game, 1), post)
-                <= POST_ARRIVAL_DISTANCE * POST_ARRIVAL_DISTANCE
-        );
+        assert!(within_range(
+            xz_distance_sq(monster_position(&game, 1), post),
+            POST_ARRIVAL_DISTANCE
+        ));
         game.advance_tick().unwrap();
         assert_eq!(published(&game, 1).0, MonsterBehavior::Idle);
-        place_player(&mut game, 1, post.x + 400, post.z + 300);
+        game.put_player(1, post + Vector::new(400.0, 0.0, 300.0));
         game.advance_tick().unwrap();
         assert_eq!(published(&game, 1), (MonsterBehavior::Holding, Some(1)));
     }
@@ -11455,8 +11708,11 @@ mod tests {
             game.advance_tick().unwrap();
         }
         let post = monster_state(&game, 1).post.unwrap();
-        assert_eq!(post, Vec3i::new(x + 500, PLAYER_Y, z));
-        assert!(xz_distance_sq(monster_position(&game, 1), post) > 200 * 200);
+        assert_eq!(post, Vec3i::new(x + 500, PLAYER_Y, z).into());
+        assert!(!within_range(
+            xz_distance_sq(monster_position(&game, 1), post),
+            200
+        ));
         assert!(game.remove_player(1));
         for _ in 0..=brute().reacquire_ticks {
             game.advance_tick().unwrap();
@@ -11515,11 +11771,11 @@ mod tests {
         }
         assert_eq!(published(&game, 1), (MonsterBehavior::Pursuing, Some(1)));
         let from = monster_position(&game, 1);
-        let landed = Vec3i::new(from.x + 150, from.y, from.z + 200);
+        let landed = from + Vector::new(150.0, 0.0, 200.0);
         game.physics
-            .place_character(ArpgGame::monster_body_id(1), landed.into())
+            .place_character(ArpgGame::monster_body_id(1), landed)
             .unwrap();
-        game.monsters[0].position = landed.into();
+        game.monsters[0].position = landed;
         let before = xz_distance_sq(landed, player_position(&game));
         game.advance_tick().unwrap();
         assert_eq!(published(&game, 1), (MonsterBehavior::Pursuing, Some(1)));
@@ -11629,7 +11885,7 @@ mod tests {
             })
             .is_err()
         );
-        assert!(tamper(&|monster| monster.post = Some([0, PLAYER_Y, 99_999])).is_err());
+        assert!(tamper(&|monster| monster.post = Some([0.0, PLAYER_Y as f32, 99_999.0])).is_err());
     }
 
     #[test]
@@ -11914,11 +12170,12 @@ mod tests {
                 ];
                 for (gx, gz) in goals {
                     for (tx, tz) in samples {
-                        let from = Vec3i::new(gx, PLAYER_Y, gz);
-                        let to = Vec3i::new(tx, PLAYER_Y, tz);
-                        assert!(
-                            xz_distance_sq(from, to) <= (reach - i64::from(NAV_CELL_SIZE)).pow(2)
-                        );
+                        let from = Vec3i::new(gx, PLAYER_Y, gz).into();
+                        let to = Vec3i::new(tx, PLAYER_Y, tz).into();
+                        assert!(within_range(
+                            xz_distance_sq(from, to),
+                            reach - i64::from(NAV_CELL_SIZE)
+                        ));
                         assert!(
                             !game.strike_obstructed(from, to).unwrap(),
                             "seed {seed}: goal ({gx}, {gz}) to ({tx}, {tz})"
@@ -12007,7 +12264,11 @@ mod tests {
             for _ in 0..30 {
                 game.advance_tick().unwrap();
             }
-            assert_ne!(monster_position(&game, chaser.id), chaser.at(), "mid-chase");
+            assert_ne!(
+                monster_position(&game, chaser.id),
+                chaser.position,
+                "mid-chase"
+            );
             game
         };
         let mut game = run();
@@ -12037,7 +12298,7 @@ mod tests {
         let monster = game.monsters.iter().find(|m| m.id == id).unwrap();
         let room = game.rooms.iter().find(|r| r.id == monster.room_id).unwrap();
         assert!(
-            room.contains_xz_with_margin(monster.at(), MONSTER_BODY_HALF_EXTENTS.x),
+            room.contains_xz_with_margin(monster.position, MONSTER_BODY_HALF_EXTENTS.x),
             "tick {tick}: {:?} left room {}",
             monster.position,
             room.id
@@ -12075,26 +12336,23 @@ mod tests {
                 .expect("every role attacks");
             let snapshot = game.snapshot().unwrap();
             let action = snapshot.monsters[0].action.unwrap();
-            let distance = isqrt(xz_distance_sq(
-                game.monsters[0].at(),
-                player_position(&game),
-            ));
+            let distance = xz_distance_sq(game.monsters[0].position, player_position(&game)).sqrt();
             first_windups.insert(definition, (start, distance, action));
         }
         let (brute_start, brute_distance, brute_action) = first_windups[BRUTE];
         let (archer_start, archer_distance, archer_action) = first_windups[ARCHER];
         let (bruiser_start, bruiser_distance, bruiser_action) = first_windups[BRUISER];
         // Melee closes in and attacks at claw reach.
-        assert!(brute_distance <= brute().strike.reach);
+        assert!(brute_distance <= brute().strike.reach as f64);
         assert_eq!(brute_action.delivery, AttackDelivery::Strike);
         // Ranged attacks at once from its band, far outside any melee reach.
         assert_eq!(archer_start, 1);
-        assert!(archer_distance >= archer().retreat_range.unwrap());
-        assert!(archer_distance > 2 * brute().strike.reach);
+        assert!(archer_distance >= archer().retreat_range.unwrap() as f64);
+        assert!(archer_distance > (2 * brute().strike.reach) as f64);
         assert_eq!(archer_action.delivery, AttackDelivery::Projectile);
         // Heavy arrives last and telegraphs far longer than melee.
         assert!(bruiser_start > brute_start, "{first_windups:?}");
-        assert!(bruiser_distance <= bruiser().strike.reach);
+        assert!(bruiser_distance <= bruiser().strike.reach as f64);
         assert_eq!(bruiser_action.delivery, AttackDelivery::Strike);
         assert_eq!(bruiser_action.ticks_remaining, bruiser().windup_ticks);
         assert!(bruiser().windup_ticks >= 2 * brute().windup_ticks);
@@ -12129,8 +12387,8 @@ mod tests {
                 assert_eq!(monster.target_player_id, Some(1));
             }
             if was_free && game.monsters[0].action.is_some() {
-                let distance_sq = xz_distance_sq(game.monsters[0].at(), player_position(&game));
-                attacked_inside_range |= distance_sq < retreat * retreat;
+                let distance_sq = xz_distance_sq(game.monsters[0].position, player_position(&game));
+                attacked_inside_range |= distance_sq < range_sq(retreat);
             }
             shots += monster_shots(&snapshot, 1).len();
         }
@@ -12140,12 +12398,9 @@ mod tests {
             "an archer with room to back off never fires up close"
         );
         assert!(shots >= 3, "{shots}");
-        let distance = isqrt(xz_distance_sq(
-            game.monsters[0].at(),
-            player_position(&game),
-        ));
+        let distance = xz_distance_sq(game.monsters[0].position, player_position(&game)).sqrt();
         assert!(
-            (retreat..=reach).contains(&distance),
+            (retreat as f64..=reach as f64).contains(&distance),
             "ends in its band: {distance}"
         );
     }
@@ -12169,7 +12424,8 @@ mod tests {
             game.arrows
                 .iter()
                 .any(|arrow| arrow.source == StrikeSource::Monster(1))
-                && xz_distance_sq(game.monsters[0].at(), player_position(&game)) < retreat * retreat
+                && xz_distance_sq(game.monsters[0].position, player_position(&game))
+                    < range_sq(retreat)
         });
         assert!(fired_up_close);
     }
@@ -12181,7 +12437,7 @@ mod tests {
     }
 
     /// Advances until a monster shot is in flight; returns it.
-    fn advance_until_shot(game: &mut ArpgGame) -> ArrowSnapshot {
+    fn advance_until_shot(game: &mut ArpgGame) -> ArrowState {
         (0..120)
             .find_map(|_| {
                 game.advance_tick().unwrap();
@@ -12209,7 +12465,10 @@ mod tests {
         // Engaged and winding up at the end of tick 0, it launches as the active phase
         // opens, from the archer toward the player (-x).
         assert_eq!(shot.launched_at_tick, u64::from(definition.windup_ticks));
-        assert_eq!(shot.velocity, [-projectile.speed, 0, 0]);
+        assert_eq!(
+            shot.velocity,
+            Vector::new(-projectile.speed as f32, 0.0, 0.0)
+        );
         assert_eq!(shot.damage, definition.damage);
         assert_eq!(shot.ticks_remaining, projectile.lifetime_ticks);
         let hit = (0..40)
@@ -12271,8 +12530,8 @@ mod tests {
         place_blocker(
             &mut walled,
             0,
-            (shot.position[0] + player.x) / 2,
-            player.z,
+            ((shot.position.x + player.x) / 2.0) as i32,
+            player.z as i32,
             Vec3i::new(20, 50, 80),
         );
         for _ in 0..40 {
@@ -12295,7 +12554,7 @@ mod tests {
     }
 
     /// Advances until the archer's shot `shot` resolves against a player; returns that event.
-    fn land_shot(game: &mut ArpgGame, id: u32, shot: ArrowSnapshot) -> StrikeEventSnapshot {
+    fn land_shot(game: &mut ArpgGame, id: u32, shot: ArrowState) -> StrikeEventSnapshot {
         let event = (0..40)
             .find_map(|_| {
                 game.advance_tick().unwrap();
@@ -12367,7 +12626,7 @@ mod tests {
         command_as(&mut game, 1, ArpgCommand::SetGuard { raised: true });
         let shot = advance_until_shot(&mut game);
         // The shot flies -x from the archer; the shield faces -x, away from it.
-        assert!(shot.velocity[0] < 0 && shot.velocity[2] == 0);
+        assert!(shot.velocity.x < 0.0 && shot.velocity.z == 0.0);
         face_x(&mut game, -1);
         assert!(game.players[&1].guard.is_raised());
         let event = land_shot(&mut game, id, shot);
@@ -12401,24 +12660,21 @@ mod tests {
             command_as(&mut game, 1, ArpgCommand::SetGuard { raised: true });
             let shot = advance_until_shot(&mut game);
             let player = player_position(&game);
-            assert!(
-                shot.position[0] > player.x,
-                "the shot starts on the +x side"
-            );
-            assert!(shot.velocity[0] < 0 && shot.velocity[2] == 0);
-            let moved = Vec3i::new(player.x - 300, PLAYER_Y, player.z);
+            assert!(shot.position.x > player.x, "the shot starts on the +x side");
+            assert!(shot.velocity.x < 0.0 && shot.velocity.z == 0.0);
+            let moved = player - Vector::X * 300.0;
             game.physics
-                .place_character(ArpgGame::monster_body_id(id), moved.into())
+                .place_character(ArpgGame::monster_body_id(id), moved)
                 .unwrap();
             game.monsters
                 .iter_mut()
                 .find(|m| m.id == id)
                 .unwrap()
-                .position = moved.into();
+                .position = moved;
             face_x(&mut game, facing_x);
             let event = land_shot(&mut game, id, shot);
             // The archer really stands on the other side when the shot lands.
-            let archer_at = game.monsters.iter().find(|m| m.id == id).unwrap().at();
+            let archer_at = game.monsters.iter().find(|m| m.id == id).unwrap().position;
             assert!(
                 archer_at.x < player_position(&game).x,
                 "facing {facing_x}: archer at {archer_at:?}"
@@ -12605,7 +12861,7 @@ mod tests {
             ArpgGame::from_save_state(save).is_err()
         };
         assert!(invalid(&|save| save.arrows[0].damage += 1));
-        assert!(invalid(&|save| save.arrows[0].velocity[0] *= 2));
+        assert!(invalid(&|save| save.arrows[0].velocity[0] *= 2.0));
         assert!(invalid(&|save| save.arrows[0].ticks_remaining -= 1));
         assert!(invalid(
             &|save| save.arrows[0].source = StrikeSource::Monster(1)

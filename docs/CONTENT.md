@@ -96,8 +96,9 @@ is no per-role AI.
 | Heavy | `monster.bruiser` | Long `windupTicks`, slow `pursuitSpeed`, high `damage` and a `guardCost` that breaks a full guard. The wind-up holds still and lands at the strike's reach around it, so the answer is to step out of it or interrupt it: any player hit staggers the monster and cancels the wind-up. |
 
 Validation: `retreatRange` is at least the minimum monster reach and stays three navigation
-cells inside the strike reach (room for the band); a projectile's speed is `16..=200` (slower integer velocities cannot hold a diagonal aim) and it
-must fly at least the strike reach within its lifetime.
+cells inside the strike reach (room for the band); a projectile's speed is `16..=200` and it
+must fly at least the strike reach, less two units per tick, within its lifetime (bounds kept from
+whole-unit shot velocities; shots now fly their exact speed, #182).
 
 ## Adding a definition
 

@@ -844,9 +844,9 @@ impl ContentBundle {
                 }
             }
             if let Some(projectile) = monster.projectile {
-                // Shots move in whole units per tick: below this speed the integer direction
-                // can no longer hold a diagonal aim (speed 1 at 45 degrees truncates to one
-                // axis); at 16 the aim stays within about 5 degrees of the target.
+                // Bounds from whole-unit shot velocities, kept as authored limits: below 16 an
+                // integer direction could not hold a diagonal aim. Shots now fly their exact
+                // `f32` direction and speed (#182).
                 if !(MIN_PROJECTILE_SPEED..=200).contains(&projectile.speed)
                     || projectile.lifetime_ticks == 0
                 {
@@ -855,8 +855,8 @@ impl ContentBundle {
                         "projectile speed must be within 16..=200 and its lifetime positive",
                     );
                 }
-                // Whole-unit velocity components can lose up to two units of speed on a
-                // diagonal, so the reach check uses the slowest speed a shot can have.
+                // Kept from whole-unit velocities, which could lose up to two units of speed on
+                // a diagonal: the reach check still allows for that margin.
                 if (i64::from(projectile.speed) - 2) * i64::from(projectile.lifetime_ticks) < reach
                 {
                     fail(
