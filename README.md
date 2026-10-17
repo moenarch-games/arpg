@@ -10,7 +10,7 @@ The browser slice currently proves:
 
 - WASD top-down movement with diagonal normalization;
 - a procedurally partitioned, seeded dungeon whose walls and doorways are resolved by Rapier physics inside the Rust simulation;
-- an isometric follow camera and simple 3D scene rendered through `3d-lab`;
+- an isometric follow camera and 3D scene rendered through `3d-lab`, with players shown as the released asset-tooling Ranger humanoid (unpacked by `bun run setup`);
 - nearby primary attacks against deterministic monster state;
 - deterministic character progression exposed through authoritative snapshots;
 - a deterministic combat training arena available through the character screen or `?scenario=training&seed=<u32>`, with pause, single-step, explicit simulation speed, seed restart, and live combat diagnostics;
@@ -138,7 +138,7 @@ The dedicated host defaults to UDP port `4433` and session path `/arpg`. Optiona
 ## Pinned foundations
 
 - `rapier3d` (crates.io): `0.36.1`
-- `3d-lab`: `f484db8a3d2a7a555fa463eddf9c28790b240ce0`
+- `3d-lab`: `356bcc7b58e3739eccced9d03aeaec919fe42640`
 - `input-bindings`: `b3b7204faa47d3b0af56eebc55cdfd4ced127ddc`
 - `multiplayer-setup-service`: `cc5c20fabdac0fc9da4329a5be04d0f4e8eae383`
 - `game-server`: `ebd6aaee156c8e12a1444d1dd55a305eae13df86`

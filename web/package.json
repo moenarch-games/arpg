@@ -11,15 +11,16 @@
     "wasm": "wasm-pack build ../crates/arpg-web-wasm --target web --out-dir ../../web/src/wasm --out-name arpg_web_wasm -- --locked",
     "test": "bun test src scripts",
     "test:browser": "playwright test",
-    "setup": "bun run vendor && bun run wasm",
+    "setup": "bun run vendor && bun run characters && bun run wasm",
+    "characters": "bun scripts/fetch-character-assets.mjs",
     "build": "vite build",
     "dev": "vite"
   },
   "dependencies": {
-    "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#f484db8a3d2a7a555fa463eddf9c28790b240ce0",
+    "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#356bcc7b58e3739eccced9d03aeaec919fe42640",
     "react": "19.1.1",
     "react-dom": "19.1.1",
-    "three": "0.186.1"
+    "three": "0.185.1"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

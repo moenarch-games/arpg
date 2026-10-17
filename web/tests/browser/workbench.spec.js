@@ -68,6 +68,8 @@ test("a block opens a counter window that expires and a counter honours reach", 
   page,
   appUrl,
 }) => {
+  // Three scenario loads, each with the real character bundle (#55), and ~200 steps.
+  test.slow();
   const arena = await openScenario(page, appUrl, "enemy");
   await page.keyboard.down("f");
   await arena.stepUntil(arena.timeline, "monster.claw · monster 1 → player 1 · blocked");

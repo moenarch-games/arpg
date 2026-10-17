@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { defineConfig } from "vite";
@@ -5,8 +6,15 @@ import { defineConfig } from "vite";
 const here = dirname(fileURLToPath(import.meta.url));
 const vendor = (...parts) => resolve(here, "src", "vendor", "input-bindings", ...parts);
 
+// Bun links git dependencies from its global cache: let the dev server serve the renderer
+// package's own files (the imported-character WASM bridge) from there.
+const renderer = realpathSync(resolve(here, "node_modules", "@moritzbrantner", "three-d-renderer"));
+
 export default defineConfig({
   base: "/arpg/",
+  server: {
+    fs: { allow: [here, renderer] },
+  },
   oxc: {
     jsx: { runtime: "automatic" },
   },

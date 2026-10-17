@@ -10,6 +10,10 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { createThreeSceneRenderer } from "@moritzbrantner/three-d-renderer";
+import { adaptImportedCharacterBundle } from "@moritzbrantner/three-d-renderer/imported-character";
+import { createCharacterAssets } from "./character-assets.ts";
+import { RANGER_BUNDLE } from "./character-bundles.js";
+import { createCharacterLayer } from "./character-layer.ts";
 import { applyProfile, validateRegistry } from "@moritzbrantner/input-bindings";
 import { keyLabelForAction } from "./binding-labels.js";
 import { createSnapshotStore } from "./snapshot-store.js";
@@ -169,6 +173,17 @@ function requestedRunSeed() {
   return parseRunSeed(new URLSearchParams(location.search).get("seed"));
 }
 
+// The Ranger character bundle (#55), unpacked into the static `characters/` directory by
+// setup. Loaded once per page with the game core and shared by every session.
+const characterAssets = createCharacterAssets({
+  bundle: RANGER_BUNDLE,
+  baseUrl: `${import.meta.env.BASE_URL}characters/`,
+  fetch: (url) => fetch(url),
+  adapt: adaptImportedCharacterBundle,
+});
+
+const megabytes = (bytes) => (bytes / 1_000_000).toFixed(1);
+
 // The game world canvas. One frame presenter owns its renderer, projection and resize
 // observer for as long as the canvas is mounted; view changes reconfigure it in place.
 // The keyboard owner for the focused element, highest capture priority first (#176): the
@@ -199,6 +214,11 @@ function GameCanvas({ snapshots, playerId, accent, graphics, effects, onPointerM
       },
       requestFrame: (callback) => requestAnimationFrame(callback),
       cancelFrame: (handle) => cancelAnimationFrame(handle),
+      characters: createCharacterLayer({
+        getAsset: characterAssets.get,
+        idleClip: RANGER_BUNDLE.idleClip,
+        now: () => performance.now(),
+      }),
       view: viewRef.current,
     });
     presenterRef.current = presenter;
@@ -247,7 +267,8 @@ function App() {
   const [runtime] = useState(() =>
     createGameClientRuntime({
       snapshots: snapshotStore,
-      loadCore: () => initWasm(),
+      // The game starts once both the Rust/Wasm core and the character assets are ready.
+      loadCore: () => Promise.all([initWasm(), characterAssets.load()]),
       // Training sessions (including the default dungeon scenario) are scenario games,
       // which record their session for reproduction export; ordinary play does not.
       createGame: (seed, scenario) =>
@@ -265,9 +286,18 @@ function App() {
   const { mode, playerId, lobbyCode } = client;
   const ready = client.core === "ready";
   const coreFailed = client.core === "failed";
-  // An honest load state: no progress is known, only loading, failed (with the runtime's
-  // failure message in `status`) or ready.
-  const shownStatus = ready || coreFailed ? status : "Loading game…";
+  // An honest load state: character byte progress while it loads, failed (with the
+  // runtime's failure message in `status`) or ready.
+  const characterProgress = useSyncExternalStore(
+    characterAssets.subscribe,
+    characterAssets.getProgress,
+  );
+  const shownStatus =
+    ready || coreFailed
+      ? status
+      : characterProgress?.totalBytes
+        ? `Loading game… ${megabytes(characterProgress.loadedBytes)} / ${megabytes(characterProgress.totalBytes)} MB`
+        : "Loading game…";
   const scenario = client.training ? "training" : "adventure";
   const trainingPaused = client.training?.paused ?? false;
   const trainingSpeed = client.training?.speed ?? 1;
