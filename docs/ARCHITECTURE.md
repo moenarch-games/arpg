@@ -5,7 +5,7 @@
 ## Authority map
 
 - `arpg-core` owns deterministic gameplay state and rules: characters, monsters, stats, skills, damage, cooldowns, inventory, loot, AI decisions, progression, quests, dungeon state, and seeded game randomness.
-- `physics-engine` owns collision, movement constraints, spatial queries, CCD, contacts, and other physical truth. ARPG-specific character-controller requirements should be implemented upstream there rather than approximated in the renderer.
+- Rapier (`rapier3d`) is the authoritative physics backend until `physics-engine` is finished ([Atlas 2.3.1](decisions/atlas.md)): it resolves collision, contacts, sliding and spatial queries inside the Rust/WASM simulation ([`physics.rs`](../crates/arpg-core/src/physics.rs)), while `arpg-core` keeps movement intent and every gameplay outcome. Concrete Rapier gaps and lessons become physics-engine issues. Physical correction is never approximated in the renderer.
 - `3d-lab` owns reusable 3D geometry/camera/animation/asset models and browser rendering primitives. `arpg` owns scene composition and game presentation policy.
 - `asset-tooling` owns reproducible asset acquisition/generation/processing evidence. Runtime code consumes accepted artifacts rather than generation machinery.
 - `MOEL` is the preferred data format for schema-validated game content once the first content slice lands.
@@ -17,7 +17,7 @@ Neither renderer nor network transport may become an alternate source of gamepla
 ## Height and traversal topology
 
 Real physical height and semantic walkable topology are separate but coordinated
-authorities. `physics-engine` owns continuous physical truth; `arpg-core`
+authorities. The physics backend (Rapier for now) owns continuous physical truth; `arpg-core`
 owns stable walkable regions, typed traversal connections, actor region/transit
 state, and ability-specific cross-region rules.
 
@@ -55,7 +55,7 @@ The moment-to-moment ARPG loop is a game-specific foundation, not a late present
 - item/drop spawn and pickup interaction;
 - typed gameplay events/cues that presentation layers can consume.
 
-This layer sits **above** reusable foundations such as `physics-engine`, `input-bindings`, and `3d-lab`. It should not be generalized into those repositories merely because multiple ARPG features use it. Weapons, skills, monsters, bosses, loot, and dungeon rules should compose the ARPG game-loop contracts rather than each introducing private movement, timing, targeting, hit-reaction, or pickup systems.
+This layer sits **above** reusable foundations such as the physics backend, `input-bindings`, and `3d-lab`. It should not be generalized into those repositories merely because multiple ARPG features use it. Weapons, skills, monsters, bosses, loot, and dungeon rules should compose the ARPG game-loop contracts rather than each introducing private movement, timing, targeting, hit-reaction, or pickup systems.
 
 The presentation boundary is intentionally one-way: animation, rendering, camera, audio, HUD, particles, and local visual emphasis may react to authoritative state/events, interpolate them, and decorate them. They may not decide that an attack hit, a target was valid, an action completed, a character was displaced, or an item was picked up.
 
@@ -146,7 +146,7 @@ browser / desktop shell
         |
         +--> arpg-core <-------------------------+
         |       |                                |
-        |       +--> physics-engine              |
+        |       +--> rapier3d (physics)          |
         |                                        |
         +--> arpg-protocol                       |
         |                                        |

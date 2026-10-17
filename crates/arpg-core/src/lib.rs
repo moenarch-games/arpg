@@ -5,9 +5,8 @@ use std::error::Error;
 use std::fmt;
 use std::sync::{Arc, LazyLock};
 
-use physics_engine::{
-    BodyId, BodyKind, Ray, RigidBody, SUBTICKS_PER_TICK, Vec3i, World, WorldConfig, ray_cast_first,
-};
+use physics::{BodyKey, Physics, box_hit, vector};
+use rapier3d::math::Vector;
 use serde::{Deserialize, Serialize};
 
 use content::{
@@ -27,14 +26,47 @@ use workbench::{Tuning, Workbench};
 mod content;
 mod navigation;
 mod operation_work;
+mod physics;
 #[cfg(test)]
-mod physics_work;
-#[cfg(test)]
-mod physics_workloads;
+mod seeded_workloads;
 mod workbench;
 use operation_work::{Counter, count};
 #[cfg(feature = "operation-work")]
 pub use operation_work::{OperationWork, WorkFixture, contract::check_work_contract};
+
+/// A position, extent or per-tick velocity in whole world units: level layout, gameplay
+/// rule geometry and snapshots. Physical positions are `f32` ([`Vector`]); rules read them
+/// through [`Vec3i::rounded`].
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct Vec3i {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
+
+impl Vec3i {
+    pub const ZERO: Self = Self::new(0, 0, 0);
+
+    pub const fn new(x: i32, y: i32, z: i32) -> Self {
+        Self { x, y, z }
+    }
+
+    /// The nearest whole world-unit point to a physical position.
+    pub(crate) fn rounded(position: Vector) -> Self {
+        // Positions lie within the dungeon, far inside `i32`.
+        Self::new(
+            position.x.round() as i32,
+            position.y.round() as i32,
+            position.z.round() as i32,
+        )
+    }
+}
+
+impl From<Vec3i> for Vector {
+    fn from(value: Vec3i) -> Self {
+        vector(value)
+    }
+}
 
 pub type DoorId = u64;
 pub type GroundLootId = u64;
@@ -42,13 +74,13 @@ pub type PlayerId = u32;
 pub type RoomId = u32;
 pub type RunSeed = u32;
 pub const TICK_HZ: u16 = 60;
-const PHYSICS_TICKS_PER_GAME_TICK: i32 = 1;
 pub const MAX_PLAYERS: usize = 4;
 pub const WORLD_UNITS_PER_METER: i32 = 100;
 /// Largest magnitude of either component of an aim direction. Aim is a direction only: its
 /// length carries no meaning, so `[1, 0]` and `[1000, 0]` aim the same way.
 pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 12;
+/// 13: Rapier physics (#175): `f32` positions and velocities; schema 12 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 13;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -60,14 +92,12 @@ pub const SAVE_STATE_SCHEMA_VERSION: u16 = 12;
 // 10: ranged spacing and monster projectiles on the shared arrow path (#108).
 // 11: shield monsters guard on the shared guard path (#92).
 pub const SAVE_STATE_RULES_VERSION: u16 = 11;
-// physics-engine::World::step(1) integrates velocity as world units per simulation tick.
-// At 60 Hz and 100 world units per meter, 7 units/tick is 4.2 m/s rather than
-// the previous 260 units/tick (156 m/s).
+// Velocities are world units per simulation tick. At 60 Hz and 100 world units per
+// meter, 7 units/tick is 4.2 m/s.
 const PLAYER_SPEED: i32 = 7;
 const PLAYER_DIAGONAL_SPEED: i32 = 5;
-// Control converges on player intent over a few 60 Hz ticks instead of replacing
-// collision-resolved velocity every frame. This keeps movement responsive while
-// preserving physics-engine as the velocity authority.
+// Control converges on player intent over a few 60 Hz ticks, starting from the
+// velocity physics resolved in the previous tick rather than replacing it.
 const PLAYER_ACCELERATION_PER_TICK: i32 = 3;
 const PLAYER_BRAKING_PER_TICK: i32 = 5;
 const PLAYER_REVERSAL_PER_TICK: i32 = 5;
@@ -217,17 +247,13 @@ const ARROW_STAGGER_TICKS: u8 = 4;
 #[cfg(test)]
 const MAX_LIVE_ARROWS: usize = 32;
 const ARROW_ID_BASE: u64 = 1;
-/// Query-only hurt boxes for monsters, which are game-owned rather than physics bodies.
-const MONSTER_HURTBOX_BASE: u64 = 40_000;
 /// Monster bodies exist while their monster is alive in an Active room (#65). They sit
 /// above every player body (`PLAYER_BODY_BASE + u32`), so no player ID can alias one.
 const MONSTER_BODY_BASE: u64 = 1 << 33;
 const _: () = assert!(MONSTER_BODY_BASE > PLAYER_BODY_BASE + u32::MAX as u64);
 const MONSTER_BODY_HALF_EXTENTS: Vec3i = Vec3i::new(30, 50, 30);
+/// Query-only hurt boxes for arrows and shots: gameplay volumes, never physics bodies.
 const MONSTER_HURTBOX_HALF_EXTENTS: Vec3i = Vec3i::new(40, 50, 40);
-/// Player hurt boxes exist only for monster shots' ray queries, never in the world.
-const PLAYER_HURTBOX_BASE: u64 = 1 << 34;
-const _: () = assert!(PLAYER_HURTBOX_BASE > MONSTER_BODY_BASE + u32::MAX as u64);
 const PLAYER_HURTBOX_HALF_EXTENTS: Vec3i = Vec3i::new(40, 50, 40);
 #[cfg(test)]
 const PRIMARY_STAGGER_TICKS: u8 = 4;
@@ -1155,6 +1181,14 @@ pub struct RoomSnapshot {
 }
 
 impl RoomSnapshot {
+    /// Whether a physical position lies inside the room on the plane.
+    fn contains_xz(&self, position: Vector) -> bool {
+        position.x >= self.min_x as f32
+            && position.x <= self.max_x as f32
+            && position.z >= self.min_z as f32
+            && position.z <= self.max_z as f32
+    }
+
     fn contains_xz_with_margin(&self, position: Vec3i, margin: i32) -> bool {
         position.x >= self.min_x + margin
             && position.x <= self.max_x - margin
@@ -1387,7 +1421,10 @@ pub struct GroundLootSnapshot {
     pub amount: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Saved game state. Physical positions and velocities are the authoritative `f32` values;
+/// Rapier's own state is never saved: a load rebuilds the physical world from the seed and
+/// this state.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArpgSaveState {
     pub schema_version: u16,
@@ -1408,13 +1445,15 @@ pub struct ArpgSaveState {
     pub content_revision: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlayerSaveState {
     pub id: PlayerId,
-    pub position: [i32; 3],
-    /// Physical velocity carried into the next tick by controlled acceleration.
-    pub velocity: [i32; 3],
+    /// Physical position in world units.
+    pub position: [f32; 3],
+    /// Physical velocity (world units per tick) carried into the next tick by controlled
+    /// acceleration: the part of last tick's intended motion that physics allowed.
+    pub velocity: [f32; 3],
     pub movement: [i8; 2],
     pub facing: [i8; 2],
     pub action: Option<PlayerActionSnapshot>,
@@ -1451,12 +1490,13 @@ pub struct MonsterActionSaveState {
     pub target_player_id: PlayerId,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MonsterSaveState {
     pub id: u32,
     pub room_id: RoomId,
-    pub position: [i32; 3],
+    /// Physical position in world units.
+    pub position: [f32; 3],
     pub health: u16,
     pub action: Option<MonsterActionSaveState>,
     pub stagger_ticks_remaining: u8,
@@ -1606,6 +1646,10 @@ pub struct StrikeOutcome {
 
 #[derive(Clone, Copy, Debug)]
 struct PlayerState {
+    /// Authoritative physical position in world units, mirrored by its Rapier body.
+    position: Vector,
+    /// The motion physics allowed last tick, in world units per tick.
+    velocity: Vector,
     movement_x: i8,
     movement_z: i8,
     facing_x: i8,
@@ -1630,7 +1674,9 @@ struct MonsterState {
     /// that content).
     definition: MonsterDefinition,
     room_id: RoomId,
-    position: Vec3i,
+    /// Authoritative physical position in world units, mirrored by its Rapier body while
+    /// it has one.
+    position: Vector,
     health: u16,
     action: Option<MonsterActionState>,
     stagger_ticks_remaining: u8,
@@ -1659,7 +1705,7 @@ impl MonsterState {
             id,
             definition,
             room_id,
-            position,
+            position: vector(position),
             health: definition.health,
             action: None,
             stagger_ticks_remaining: 0,
@@ -1676,6 +1722,11 @@ impl MonsterState {
 
     fn definition(&self) -> MonsterDefinition {
         self.definition
+    }
+
+    /// Where gameplay rules see the monster: its position in whole world units.
+    fn at(&self) -> Vec3i {
+        Vec3i::rounded(self.position)
     }
 
     /// The published behaviour: a function of authoritative state and whether the body
@@ -1894,7 +1945,7 @@ pub struct ArpgGame {
     content: Arc<Content>,
     run_seed: RunSeed,
     tick: u64,
-    world: World,
+    physics: Physics,
     physics_steps: u64,
     navigation_work: NavigationWork,
     navigation: NavigationCache,
@@ -1975,10 +2026,7 @@ impl ArpgGame {
     }
 
     fn generated(content: Arc<Content>, run_seed: RunSeed) -> Result<Self, GameError> {
-        let mut world = World::new(WorldConfig {
-            gravity: Vec3i::ZERO,
-            ..WorldConfig::default()
-        });
+        let mut physics = Physics::new();
         let GeneratedDungeon {
             rooms,
             doors,
@@ -2002,13 +2050,11 @@ impl ArpgGame {
             })
             .collect::<Vec<_>>();
         for collider in &static_colliders {
-            world
-                .add_body(RigidBody::fixed(
-                    BodyId(collider.id),
-                    array_to_vec(collider.position),
-                    array_to_vec(collider.half_extents),
-                ))
-                .map_err(physics_error)?;
+            physics.add_fixed(
+                collider.id,
+                array_to_vec(collider.position),
+                array_to_vec(collider.half_extents),
+            )?;
         }
 
         let tuning = Tuning::from_content(&content);
@@ -2016,7 +2062,7 @@ impl ArpgGame {
             content,
             run_seed,
             tick: 0,
-            world,
+            physics,
             physics_steps: 0,
             navigation_work: NavigationWork::default(),
             navigation: NavigationCache::default(),
@@ -2077,7 +2123,8 @@ impl ArpgGame {
                 Vec3i::new(center_x + target_offset, PLAYER_Y, center_z)
             } else {
                 Vec3i::new(center_x - 600, PLAYER_Y, center_z + 300 - 120 * placed)
-            };
+            }
+            .into();
             placed += 1;
         }
         if placed == 0 {
@@ -2118,13 +2165,11 @@ impl ArpgGame {
                 half_extents: vec_to_array(SCENARIO_PILLAR_HALF_EXTENTS),
                 kind: StaticColliderKind::Pillar,
             };
-            game.world
-                .add_body(RigidBody::fixed(
-                    BodyId(pillar.id),
-                    array_to_vec(pillar.position),
-                    SCENARIO_PILLAR_HALF_EXTENTS,
-                ))
-                .map_err(physics_error)?;
+            game.physics.add_fixed(
+                pillar.id,
+                array_to_vec(pillar.position),
+                SCENARIO_PILLAR_HALF_EXTENTS,
+            )?;
             game.static_colliders.push(pillar);
         }
         Ok(game)
@@ -2148,14 +2193,10 @@ impl ArpgGame {
             .players
             .iter()
             .map(|(&id, state)| {
-                let body = self
-                    .world
-                    .body(Self::player_body_id(id))
-                    .ok_or_else(|| GameError::new("player physics body is missing"))?;
                 Ok(PlayerSaveState {
                     id,
-                    position: vec_to_array(body.position()),
-                    velocity: vec_to_array(body.velocity()),
+                    position: state.position.to_array(),
+                    velocity: state.velocity.to_array(),
                     movement: [state.movement_x, state.movement_z],
                     facing: [state.facing_x, state.facing_z],
                     action: state.action.map(ActionState::snapshot),
@@ -2199,7 +2240,7 @@ impl ArpgGame {
                 .map(|monster| MonsterSaveState {
                     id: monster.id,
                     room_id: monster.room_id,
-                    position: vec_to_array(monster.position),
+                    position: monster.position.to_array(),
                     health: monster.health,
                     action: monster.action.map(|action| MonsterActionSaveState {
                         phase: action.phase,
@@ -2372,10 +2413,18 @@ impl ArpgGame {
                     "saved command sequence leaves no valid next command",
                 ));
             }
-            if !game.dungeon_contains(player.position, PLAYER_HALF_EXTENTS) {
+            if !game.character_fits(player.position, PLAYER_HALF_EXTENTS) {
                 return Err(GameError::new(
                     "saved player position is outside the dungeon",
                 ));
+            }
+            let [velocity_x, velocity_y, velocity_z] = player.velocity;
+            let speed = PLAYER_SPEED as f32;
+            if velocity_y != 0.0
+                || !(-speed..=speed).contains(&velocity_x)
+                || !(-speed..=speed).contains(&velocity_z)
+            {
+                return Err(GameError::new("saved player velocity is out of range"));
             }
         }
 
@@ -2469,10 +2518,12 @@ impl ArpgGame {
                     "saved monster room does not match generated dungeon",
                 ));
             }
+            let position = Vector::from_array(saved.position);
             let room_contains_monster = game.rooms.iter().any(|room| {
                 room.id == saved.room_id
-                    && saved.position[1] == PLAYER_Y
-                    && room.contains_xz_with_margin(array_to_vec(saved.position), 0)
+                    && position.is_finite()
+                    && position.y == PLAYER_Y as f32
+                    && room.contains_xz(position)
             });
             let post_in_room = saved.post.is_none_or(|post| {
                 game.rooms.iter().any(|room| {
@@ -2484,7 +2535,7 @@ impl ArpgGame {
             if !room_contains_monster || !post_in_room {
                 return Err(GameError::new("saved monster position is outside its room"));
             }
-            monster.position = array_to_vec(saved.position);
+            monster.position = position;
             monster.health = saved.health;
             monster.action = saved.action.map(|action| MonsterActionState {
                 phase: action.phase,
@@ -2604,17 +2655,16 @@ impl ArpgGame {
 
         for player in save.players {
             game.add_player(player.id)?;
-            game.world
-                .set_position(
-                    Self::player_body_id(player.id),
-                    array_to_vec(player.position),
-                )
-                .map_err(physics_error)?;
+            let position = Vector::from_array(player.position);
+            game.physics
+                .place_character(Self::player_body_id(player.id), position)?;
             let state = game
                 .players
                 .get_mut(&player.id)
                 .expect("saved player was just added");
             *state = PlayerState {
+                position,
+                velocity: Vector::from_array(player.velocity),
                 movement_x: player.movement[0],
                 movement_z: player.movement[1],
                 facing_x: player.facing[0],
@@ -2644,18 +2694,6 @@ impl ArpgGame {
             game.last_sequences.insert(player.id, player.last_sequence);
             game.last_reliable_sequences
                 .insert(player.id, player.last_reliable_sequence);
-            let [velocity_x, velocity_y, velocity_z] = player.velocity;
-            let speed_range = -PLAYER_SPEED..=PLAYER_SPEED;
-            if velocity_y != 0
-                || !speed_range.contains(&velocity_x)
-                || !speed_range.contains(&velocity_z)
-            {
-                return Err(GameError::new("saved player velocity is out of range"));
-            }
-            let velocity = array_to_vec(player.velocity);
-            game.world
-                .set_velocity(Self::player_body_id(player.id), velocity)
-                .map_err(physics_error)?;
         }
 
         for room in &game.rooms {
@@ -2697,6 +2735,26 @@ impl ArpgGame {
             }
         }
         Ok(game)
+    }
+
+    /// Whether a saved character with `half_extents` stands on the gameplay plane inside the
+    /// generated dungeon without penetrating its walls or pillars. Touching is allowed.
+    fn character_fits(&self, position: [f32; 3], half_extents: Vec3i) -> bool {
+        let position = Vector::from_array(position);
+        let extent = |select: fn(&RoomSnapshot) -> i32, pick: fn(i32, i32) -> i32| {
+            self.rooms
+                .iter()
+                .map(select)
+                .reduce(pick)
+                .map(|value| value as f32)
+        };
+        position.is_finite()
+            && position.y == PLAYER_Y as f32
+            && extent(|room| room.min_x, i32::min).is_some_and(|min| position.x >= min)
+            && extent(|room| room.max_x, i32::max).is_some_and(|max| position.x <= max)
+            && extent(|room| room.min_z, i32::min).is_some_and(|min| position.z >= min)
+            && extent(|room| room.max_z, i32::max).is_some_and(|max| position.z <= max)
+            && !self.physics.penetrates_fixed(position, half_extents)
     }
 
     /// Whether a saved entity with `half_extents` lies on the gameplay plane
@@ -2963,7 +3021,8 @@ impl ArpgGame {
         &self.strike_outcomes
     }
 
-    /// Number of physics-engine ticks stepped by this game since construction.
+    /// Number of physics passes (one Rapier resolution of every character's motion) run by
+    /// this game since construction.
     ///
     /// Performance evidence uses this operation count to detect regressions
     /// where one gameplay tick begins stepping physics more than once.
@@ -2981,12 +3040,12 @@ impl ArpgGame {
         self.navigation_work
     }
 
-    fn monster_body_id(monster_id: u32) -> BodyId {
-        BodyId(MONSTER_BODY_BASE + u64::from(monster_id))
+    fn monster_body_id(monster_id: u32) -> BodyKey {
+        MONSTER_BODY_BASE + u64::from(monster_id)
     }
 
-    fn player_body_id(player_id: PlayerId) -> BodyId {
-        BodyId(PLAYER_BODY_BASE + u64::from(player_id))
+    fn player_body_id(player_id: PlayerId) -> BodyKey {
+        PLAYER_BODY_BASE + u64::from(player_id)
     }
 
     fn level_for_experience(content: &Content, experience: u32) -> u16 {
@@ -3010,13 +3069,13 @@ impl ArpgGame {
         )
     }
 
-    fn movement_target_velocity(state: PlayerState) -> Vec3i {
+    fn movement_target_velocity(state: PlayerState) -> Vector {
         let x = i32::from(state.movement_x.clamp(-1, 1));
         let z = i32::from(state.movement_z.clamp(-1, 1));
         if x != 0 && z != 0 {
-            Vec3i::new(x * PLAYER_DIAGONAL_SPEED, 0, z * PLAYER_DIAGONAL_SPEED)
+            Vec3i::new(x * PLAYER_DIAGONAL_SPEED, 0, z * PLAYER_DIAGONAL_SPEED).into()
         } else {
-            Vec3i::new(x * PLAYER_SPEED, 0, z * PLAYER_SPEED)
+            Vec3i::new(x * PLAYER_SPEED, 0, z * PLAYER_SPEED).into()
         }
     }
 
@@ -3072,41 +3131,42 @@ impl ArpgGame {
     /// it is engaged with nobody it can face, so no strike meets its shield.
     fn monster_guard_facing(&self, monster: &MonsterState) -> Option<(i64, i64)> {
         let target = monster.engaged_target()?;
-        let position = self.world.body(Self::player_body_id(target))?.position();
-        Some((
-            i64::from(position.x - monster.position.x),
-            i64::from(position.z - monster.position.z),
-        ))
+        let position = Vec3i::rounded(self.players.get(&target)?.position);
+        let at = monster.at();
+        Some((i64::from(position.x - at.x), i64::from(position.z - at.z)))
     }
 
-    fn controlled_movement_velocity(current: Vec3i, state: PlayerState) -> Vec3i {
+    /// The velocity a player intends this tick: last tick's resolved velocity converging on
+    /// the movement target by the bounded acceleration, braking and reversal steps.
+    fn controlled_movement_velocity(current: Vector, state: PlayerState) -> Vector {
         if state.health == 0 || state.action.is_some() {
-            return Vec3i::ZERO;
+            return Vector::ZERO;
         }
         let target = Self::movement_target_velocity(state);
         let changing_x = current.x != target.x;
         let changing_z = current.z != target.z;
         let changing_two_axes = changing_x && changing_z;
-        Vec3i::new(
+        Vector::new(
             Self::approach_controlled_axis(current.x, target.x, changing_two_axes),
-            0,
+            0.0,
             Self::approach_controlled_axis(current.z, target.z, changing_two_axes),
         )
     }
 
-    fn approach_controlled_axis(current: i32, target: i32, changing_two_axes: bool) -> i32 {
-        let maximum_delta = if target == 0 {
+    fn approach_controlled_axis(current: f32, target: f32, changing_two_axes: bool) -> f32 {
+        let maximum_delta = if target == 0.0 {
             PLAYER_BRAKING_PER_TICK
-        } else if current != 0 && current.signum() != target.signum() {
+        } else if current != 0.0 && current.signum() != target.signum() {
             PLAYER_REVERSAL_PER_TICK
         } else {
             PLAYER_ACCELERATION_PER_TICK
         };
-        let maximum_delta = Self::normalized_axis_control_delta(maximum_delta, changing_two_axes);
+        let maximum_delta =
+            Self::normalized_axis_control_delta(maximum_delta, changing_two_axes) as f32;
         if current < target {
-            current.saturating_add(maximum_delta).min(target)
+            (current + maximum_delta).min(target)
         } else if current > target {
-            current.saturating_sub(maximum_delta).max(target)
+            (current - maximum_delta).max(target)
         } else {
             current
         }
@@ -3387,11 +3447,7 @@ impl ArpgGame {
     }
 
     fn resolve_interaction(&mut self, player_id: PlayerId) -> Result<(), GameError> {
-        let player_position = self
-            .world
-            .body(Self::player_body_id(player_id))
-            .ok_or_else(|| GameError::new("player physics body is missing"))?
-            .position();
+        let player_position = self.player_position(player_id)?;
         let result = match self.interaction_choice(player_position)? {
             Err(reason) => InteractionResult::Refused { reason },
             Ok(target @ InteractionTarget::Loot(id)) => {
@@ -3483,32 +3539,24 @@ impl ArpgGame {
     }
 
     /// Whether fixed geometry (walls, pillars, closed doors) lies on the segment from the
-    /// attacker to the target, using the physics-engine ray query over the current world.
+    /// attacker to the target on the plane, using Rapier's ray query over the current world.
+    /// Characters never block a strike.
     fn strike_obstructed(&self, origin: Vec3i, target: Vec3i) -> Result<bool, GameError> {
-        let direction = Vec3i::new(target.x - origin.x, 0, target.z - origin.z);
-        if direction == Vec3i::ZERO {
-            return Ok(false);
-        }
-        let hits = self
-            .world
-            .ray_cast(Ray::new(origin, direction), 1)
-            .map_err(physics_error)?;
-        // Players are dynamic bodies; only fixed geometry blocks a strike.
-        Ok(hits.iter().any(|hit| {
-            hit.time.subticks() < SUBTICKS_PER_TICK
-                && self
-                    .world
-                    .body(hit.body)
-                    .is_some_and(|body| body.kind() == BodyKind::Fixed)
-        }))
+        let to = Vec3i::new(target.x, origin.y, target.z);
+        Ok(self.physics.segment_obstructed(vector(origin), vector(to)))
     }
 
+    /// Where gameplay rules see the player: its position in whole world units.
     fn player_position(&self, player_id: PlayerId) -> Result<Vec3i, GameError> {
-        Ok(self
-            .world
-            .body(Self::player_body_id(player_id))
-            .ok_or_else(|| GameError::new("player physics body is missing"))?
-            .position())
+        Ok(Vec3i::rounded(self.player_body_position(player_id)?))
+    }
+
+    /// The player's authoritative physical position.
+    fn player_body_position(&self, player_id: PlayerId) -> Result<Vector, GameError> {
+        self.players
+            .get(&player_id)
+            .map(|state| state.position)
+            .ok_or_else(|| GameError::new("unknown player"))
     }
 
     /// Whether a target lock may hold `monster` from `origin`: the monster is alive, its
@@ -3518,7 +3566,7 @@ impl ArpgGame {
             && self.rooms.iter().any(|room| {
                 room.id == monster.room_id && room.encounter_state == RoomEncounterState::Active
             })
-            && xz_distance_sq(origin, monster.position) <= range * range
+            && xz_distance_sq(origin, monster.at()) <= range * range
     }
 
     /// Where a player's lock currently points, revalidated now: `None` when there is no
@@ -3539,7 +3587,7 @@ impl ArpgGame {
             .filter(|monster| {
                 self.monster_lockable(monster, origin, self.content.targeting.break_range)
             })
-            .map(|monster| monster.position))
+            .map(|monster| monster.at()))
     }
 
     fn lock_holds(&self, player_id: PlayerId) -> Result<bool, GameError> {
@@ -3612,9 +3660,9 @@ impl ArpgGame {
         let mut candidates = Vec::new();
         for monster in &self.monsters {
             if self.monster_lockable(monster, origin, range)
-                && !self.strike_obstructed(origin, monster.position)?
+                && !self.strike_obstructed(origin, monster.at())?
             {
-                candidates.push((xz_distance_sq(origin, monster.position), monster.id));
+                candidates.push((xz_distance_sq(origin, monster.at()), monster.id));
             }
         }
         candidates.sort_unstable();
@@ -3675,11 +3723,7 @@ impl ArpgGame {
         facing_z: i8,
         aim: Option<[i16; 2]>,
     ) -> Result<(), GameError> {
-        let player_position = self
-            .world
-            .body(Self::player_body_id(player_id))
-            .ok_or_else(|| GameError::new("player physics body is missing"))?
-            .position();
+        let player_position = self.player_position(player_id)?;
         let player_level = Self::level_for_experience(
             &self.content,
             self.players
@@ -3709,7 +3753,7 @@ impl ArpgGame {
             .monsters
             .iter()
             .filter(|monster| monster.health > 0 && active_rooms.contains(&monster.room_id))
-            .map(|monster| (StrikeTarget::Monster(monster.id), monster.position))
+            .map(|monster| (StrikeTarget::Monster(monster.id), monster.at()))
             .collect::<Vec<_>>();
         let direction = aim.map_or((i64::from(facing_x), i64::from(facing_z)), |aim| {
             (i64::from(aim[0]), i64::from(aim[1]))
@@ -3740,13 +3784,14 @@ impl ArpgGame {
                     .find(|monster| monster.id == monster_id)
                     .ok_or_else(|| GameError::new("strike references an unknown monster"))?;
                 // A shield monster's raised guard resolves first, exactly as a player's.
+                let at = monster.at();
                 let guarded = match (monster.guard.as_mut(), guard_facing) {
                     (Some(guard), Some(facing)) => Self::guard_outcome(
                         &guard_tuning,
                         guard,
                         facing,
                         definition,
-                        monster.position,
+                        at,
                         player_position,
                     ),
                     _ => None,
@@ -3775,7 +3820,7 @@ impl ArpgGame {
                 }
                 let defeated = previous_health > 0 && monster.health == 0;
                 if defeated {
-                    defeated_positions.push((monster.position, monster.definition()));
+                    defeated_positions.push((monster.at(), monster.definition()));
                 }
                 StrikeResult::Hit {
                     damage: previous_health - monster.health,
@@ -3876,11 +3921,7 @@ impl ArpgGame {
         facing_z: i8,
         aim: Option<[i16; 2]>,
     ) -> Result<(), GameError> {
-        let position = self
-            .world
-            .body(Self::player_body_id(player_id))
-            .ok_or_else(|| GameError::new("player physics body is missing"))?
-            .position();
+        let position = self.player_position(player_id)?;
         let charge = self
             .players
             .get(&player_id)
@@ -3919,12 +3960,11 @@ impl ArpgGame {
         Ok(())
     }
 
-    /// Moves every projectile along its committed segment for one tick. The physics-engine
-    /// ray query over fixed geometry and the opposing side's hurt boxes chooses the first
-    /// contact: a player's arrow meets monster hurt boxes, a monster's shot player hurt
-    /// boxes. Equal contact times prefer the lower body id, so walls (10 000+) win ties
-    /// against hurt boxes (monsters 40 000+, players 2^34+). A projectile stops at its
-    /// first contact.
+    /// Moves every projectile along its committed segment for one tick. Rapier's ray query
+    /// over fixed geometry and ray casts against the opposing side's hurt boxes choose the
+    /// first contact: a player's arrow meets monster hurt boxes, a monster's shot player hurt
+    /// boxes. Fixed geometry wins a tie with a hurt box, and equal hurt-box contacts prefer
+    /// the lower id. A projectile stops at its first contact.
     fn advance_arrows(&mut self) -> Result<(), GameError> {
         if self.arrows.is_empty() {
             return Ok(());
@@ -3945,8 +3985,8 @@ impl ArpgGame {
                     .iter()
                     .filter(|monster| monster.health > 0 && active_rooms.contains(&monster.room_id))
                     .map(|monster| {
-                        RigidBody::fixed(
-                            BodyId(MONSTER_HURTBOX_BASE + u64::from(monster.id)),
+                        (
+                            StrikeTarget::Monster(monster.id),
                             monster.position,
                             MONSTER_HURTBOX_HALF_EXTENTS,
                         )
@@ -3956,37 +3996,32 @@ impl ArpgGame {
                     .players
                     .iter()
                     .filter(|(_, state)| state.health > 0)
-                    .filter_map(|(&player_id, _)| {
-                        let body = self.world.body(Self::player_body_id(player_id))?;
-                        Some(RigidBody::fixed(
-                            BodyId(PLAYER_HURTBOX_BASE + u64::from(player_id)),
-                            body.position(),
+                    .map(|(&player_id, state)| {
+                        (
+                            StrikeTarget::Player(player_id),
+                            state.position,
                             PLAYER_HURTBOX_HALF_EXTENTS,
-                        ))
+                        )
                     })
                     .collect::<Vec<_>>(),
             };
             let origin = array_to_vec(arrow.position);
             let velocity = array_to_vec(arrow.velocity);
-            let fixed = self
-                .world
-                .bodies()
-                .filter(|body| body.kind() == BodyKind::Fixed);
-            let hit = ray_cast_first(fixed.chain(hurtboxes.iter()), Ray::new(origin, velocity), 1)
-                .map_err(physics_error)?;
-            match hit {
-                Some(hit) if hit.body.0 >= PLAYER_HURTBOX_BASE => {
-                    let player_id = PlayerId::try_from(hit.body.0 - PLAYER_HURTBOX_BASE)
-                        .expect("hurt box ids come from player ids");
-                    self.resolve_projectile_hit(arrow, player_id)?;
-                }
-                Some(hit) if hit.body.0 >= MONSTER_HURTBOX_BASE => {
-                    let monster_id = u32::try_from(hit.body.0 - MONSTER_HURTBOX_BASE)
-                        .expect("hurt box ids come from monster ids");
-                    self.resolve_arrow_hit(arrow, monster_id)?;
-                }
-                Some(_) => {}
-                None => {
+            let (from, translation) = (vector(origin), vector(velocity));
+            let wall = self.physics.first_fixed_hit(from, translation);
+            let hurt = hurtboxes
+                .into_iter()
+                .filter_map(|(target, center, half_extents)| {
+                    Some((box_hit(center, half_extents, from, translation)?, target))
+                })
+                .min_by(|(left, left_target), (right, right_target)| {
+                    left.total_cmp(right).then(left_target.cmp(right_target))
+                });
+            let hit = match (wall, hurt) {
+                (Some(wall), Some((time, target))) => (time < wall).then_some(target),
+                (None, Some((_, target))) => Some(target),
+                (Some(_), None) => None,
+                (None, None) => {
                     arrow.position = vec_to_array(Vec3i::new(
                         origin.x + velocity.x,
                         origin.y,
@@ -3996,7 +4031,18 @@ impl ArpgGame {
                     if arrow.ticks_remaining > 0 {
                         remaining.push(arrow);
                     }
+                    continue;
                 }
+            };
+            // Fixed geometry stops a projectile it reaches first; it is gone either way.
+            match hit {
+                Some(StrikeTarget::Player(player_id)) => {
+                    self.resolve_projectile_hit(arrow, player_id)?;
+                }
+                Some(StrikeTarget::Monster(monster_id)) => {
+                    self.resolve_arrow_hit(arrow, monster_id)?;
+                }
+                None => {}
             }
         }
         self.arrows = remaining;
@@ -4031,7 +4077,7 @@ impl ArpgGame {
             }
         }
         let defeated = monster.health == 0;
-        let position = monster.position;
+        let position = monster.at();
         let reward = monster.definition().experience_reward;
         let damage = previous_health - monster.health;
         self.push_strike_outcome(StrikeOutcome {
@@ -4066,7 +4112,7 @@ impl ArpgGame {
             .monsters
             .iter()
             .find(|monster| monster.id == monster_id && monster.health > 0)
-            .map(|monster| (monster.position, monster.definition()))
+            .map(|monster| (monster.at(), monster.definition()))
         else {
             return Ok(());
         };
@@ -4077,8 +4123,7 @@ impl ArpgGame {
             .players
             .get(&target_player_id)
             .filter(|state| state.health > 0)
-            .and_then(|_| self.world.body(Self::player_body_id(target_player_id)))
-            .map(RigidBody::position);
+            .map(|state| Vec3i::rounded(state.position));
         let Some(target) = target else {
             return Ok(());
         };
@@ -4124,11 +4169,7 @@ impl ArpgGame {
             .find(|monster| monster.id == monster_id)
             .ok_or_else(|| GameError::new("shot from an unknown monster"))?
             .definition();
-        let defender = self
-            .world
-            .body(Self::player_body_id(player_id))
-            .ok_or_else(|| GameError::new("player physics body is missing"))?
-            .position();
+        let defender = self.player_position(player_id)?;
         self.land_monster_hit(
             StrikeId {
                 source: arrow.source,
@@ -4202,14 +4243,14 @@ impl ArpgGame {
             .monsters
             .iter()
             .find(|monster| monster.id == monster_id && monster.health > 0)
-            .map(|monster| (monster.position, monster.definition().damage));
+            .map(|monster| (monster.at(), monster.definition().damage));
         let Some((monster_position, monster_damage)) = monster else {
             return Ok(());
         };
         let target_position = self
-            .world
-            .body(Self::player_body_id(target_player_id))
-            .map(|body| body.position());
+            .players
+            .get(&target_player_id)
+            .map(|state| Vec3i::rounded(state.position));
         let Some(target_position) = target_position else {
             return Ok(());
         };
@@ -4319,15 +4360,16 @@ impl ArpgGame {
         Ok(())
     }
 
-    /// Gives monsters in running encounters a physics body and sets each body's velocity
-    /// from its behaviour: pursuers follow a room-grid path, everything else holds still.
-    fn steer_monsters(&mut self) -> Result<(), GameError> {
+    /// Gives monsters in running encounters a physics body and returns each body's intended
+    /// per-tick motion from its behaviour: pursuers follow a room-grid path, everything else
+    /// holds still.
+    fn steer_monsters(&mut self) -> Result<Vec<(usize, Vec3i)>, GameError> {
         for monster in &mut self.monsters {
             monster.cornered = false;
         }
         #[cfg(test)]
         if self.monsters_without_bodies {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let active_rooms = self
             .rooms
@@ -4338,26 +4380,18 @@ impl ArpgGame {
         for monster in &self.monsters {
             let body_id = Self::monster_body_id(monster.id);
             let wants_body = monster.health > 0 && active_rooms.contains(&monster.room_id);
-            match (
-                wants_body,
-                self.world.body(body_id).map(RigidBody::position),
-            ) {
-                (true, None) => self
-                    .world
-                    .add_body(RigidBody::dynamic(
-                        body_id,
-                        monster.position,
-                        Vec3i::ZERO,
-                        MONSTER_BODY_HALF_EXTENTS,
-                    ))
-                    .map_err(physics_error)?,
+            match (wants_body, self.physics.character_position(body_id)) {
+                (true, None) => self.physics.add_character(
+                    body_id,
+                    monster.position,
+                    MONSTER_BODY_HALF_EXTENTS,
+                )?,
                 // Placed outside physics (scenario setup, tests): the body follows.
-                (true, Some(position)) if position != monster.position => self
-                    .world
-                    .set_position(body_id, monster.position)
-                    .map_err(physics_error)?,
+                (true, Some(position)) if position != monster.position => {
+                    self.physics.place_character(body_id, monster.position)?;
+                }
                 (false, Some(_)) => {
-                    self.world.remove_body(body_id);
+                    self.physics.remove_character(body_id);
                 }
                 _ => {}
             }
@@ -4378,8 +4412,11 @@ impl ArpgGame {
         let bodies = self
             .monsters
             .iter()
-            .filter(|monster| self.world.body(Self::monster_body_id(monster.id)).is_some())
-            .map(|monster| (monster.id, monster.room_id, monster.position))
+            .filter(|monster| {
+                self.physics
+                    .has_character(Self::monster_body_id(monster.id))
+            })
+            .map(|monster| (monster.id, monster.room_id, monster.at()))
             .collect::<Vec<_>>();
         let mut cache = std::mem::take(&mut self.navigation);
         let mut work = NavigationWork::default();
@@ -4387,15 +4424,17 @@ impl ArpgGame {
         let mut chased_fields = BTreeSet::new();
         let mut velocities = Vec::new();
         for (index, monster) in self.monsters.iter().enumerate() {
-            let body_id = Self::monster_body_id(monster.id);
-            if self.world.body(body_id).is_none() {
+            if !self
+                .physics
+                .has_character(Self::monster_body_id(monster.id))
+            {
                 continue;
             }
             let steering = self.steering(monster, &targets)?;
             let definition = monster.definition();
             let (goal, goal_reach) = match steering {
                 Steering::Hold => {
-                    velocities.push((index, body_id, Vec3i::ZERO, steering));
+                    velocities.push((index, Vec3i::ZERO, steering));
                     continue;
                 }
                 // The band is checked against the threat itself; reach is unused.
@@ -4422,7 +4461,7 @@ impl ArpgGame {
                 work.grid_builds += 1;
                 self.room_grid(monster.room_id, &cache.obstacles)
             });
-            let start = (monster.position.x, monster.position.z);
+            let start = (monster.at().x, monster.at().z);
             let goal_xz = (goal.x, goal.z);
             let path = if let Steering::Return { .. } = steering {
                 // Returning is rare and short-lived: the exact plan, without a line test.
@@ -4443,7 +4482,7 @@ impl ArpgGame {
                 let clear_line = |(x, z): (i32, i32)| {
                     work.physics_queries += 1;
                     !self
-                        .strike_obstructed(Vec3i::new(x, monster.position.y, z), goal)
+                        .strike_obstructed(Vec3i::new(x, monster.at().y, z), goal)
                         .unwrap_or(true)
                 };
                 grid.find_retreat(start, goal_xz, band, clear_line, &mut work.expansions)
@@ -4475,7 +4514,7 @@ impl ArpgGame {
                         let clear_line = |(x, z): (i32, i32)| {
                             work.physics_queries += 1;
                             !self
-                                .strike_obstructed(Vec3i::new(x, monster.position.y, z), goal)
+                                .strike_obstructed(Vec3i::new(x, monster.at().y, z), goal)
                                 .unwrap_or(true)
                         };
                         grid.find_path(start, goal_xz, goal_reach, clear_line, &mut work.expansions)
@@ -4484,7 +4523,7 @@ impl ArpgGame {
             };
             let velocity = path
                 .as_deref()
-                .and_then(|path| Some((path_point(grid, monster.position, path)?, path.last()?)))
+                .and_then(|path| Some((path_point(grid, monster.at(), path)?, path.last()?)))
                 .map_or(Vec3i::ZERO, |(point, &(end_x, end_z))| {
                     // A retreat crowds around its destination, a pursuit around its target.
                     let crowd_goal = if let Steering::Retreat { .. } = steering {
@@ -4501,7 +4540,7 @@ impl ArpgGame {
                         definition.separation_range,
                     )
                 });
-            velocities.push((index, body_id, velocity, steering));
+            velocities.push((index, velocity, steering));
         }
         cache.fields.retain(|key, _| chased_fields.contains(key));
         self.navigation = cache;
@@ -4510,17 +4549,16 @@ impl ArpgGame {
             monster.steered = false;
             monster.retreating = false;
         }
-        for (index, body_id, velocity, steering) in velocities {
+        let mut motions = Vec::with_capacity(velocities.len());
+        for (index, velocity, steering) in velocities {
             let monster = &mut self.monsters[index];
             let retreat = matches!(steering, Steering::Retreat { .. });
             monster.steered = velocity != Vec3i::ZERO;
             monster.retreating = retreat && monster.steered;
             monster.cornered = retreat && !monster.steered;
-            self.world
-                .set_velocity(body_id, velocity)
-                .map_err(physics_error)?;
+            motions.push((index, velocity));
         }
-        Ok(())
+        Ok(motions)
     }
 
     /// Living players and the room each stands in.
@@ -4528,8 +4566,8 @@ impl ArpgGame {
         self.players
             .iter()
             .filter(|(_, state)| state.health > 0)
-            .filter_map(|(&player_id, _)| {
-                let position = self.world.body(Self::player_body_id(player_id))?.position();
+            .filter_map(|(&player_id, state)| {
+                let position = Vec3i::rounded(state.position);
                 let room_id = self.room_at_position(position)?;
                 Some((player_id, room_id, position))
             })
@@ -4556,15 +4594,15 @@ impl ArpgGame {
         monster
             .definition()
             .retreat_range
-            .is_some_and(|range| xz_distance_sq(monster.position, target) < range * range)
+            .is_some_and(|range| xz_distance_sq(monster.at(), target) < range * range)
     }
 
     /// Whether `monster` could start its attack on a player at `target` now: within strike
     /// reach with a clear strike line.
     fn can_strike(&self, monster: &MonsterState, target: Vec3i) -> Result<bool, GameError> {
         let reach = monster.definition().strike.reach;
-        Ok(xz_distance_sq(monster.position, target) <= reach * reach
-            && !self.strike_obstructed(monster.position, target)?)
+        Ok(xz_distance_sq(monster.at(), target) <= reach * reach
+            && !self.strike_obstructed(monster.at(), target)?)
     }
 
     /// How a monster with a body moves this tick, from its engagement (#109). Staggered,
@@ -4592,7 +4630,7 @@ impl ArpgGame {
                 }
             }
             Engagement::Returning => Steering::Return {
-                post: monster.post.unwrap_or(monster.position),
+                post: monster.post.unwrap_or(monster.at()),
             },
             Engagement::Idle | Engagement::Searching { .. } => Steering::Hold,
         })
@@ -4635,14 +4673,10 @@ impl ArpgGame {
                 room_id == monster.room_id
             })
             .map(|&(player_id, _, position)| {
-                (
-                    player_id,
-                    position,
-                    xz_distance_sq(monster.position, position),
-                )
+                (player_id, position, xz_distance_sq(monster.at(), position))
             })
             .filter(|&(_, _, distance_sq)| distance_sq <= aggro_sq);
-        let from_post_sq = xz_distance_sq(monster.position, post);
+        let from_post_sq = xz_distance_sq(monster.at(), post);
         let away_from_post = from_post_sq > POST_ARRIVAL_DISTANCE * POST_ARRIVAL_DISTANCE;
         match monster.engagement {
             Engagement::Engaged { target_player_id } => {
@@ -4664,7 +4698,7 @@ impl ArpgGame {
                 let current_strikes = self.can_strike(monster, current)?;
                 let takes_over = if challenger_strikes == current_strikes {
                     isqrt(challenger_sq) + definition.target_switch_margin
-                        < isqrt(xz_distance_sq(monster.position, current))
+                        < isqrt(xz_distance_sq(monster.at(), current))
                 } else {
                     challenger_strikes
                 };
@@ -4708,14 +4742,9 @@ impl ArpgGame {
     /// XZ footprints of the world's fixed bodies (walls, pillars, locked doors), in body
     /// order: the navigation topology.
     fn fixed_footprints(&self) -> Vec<Rect> {
-        self.world
-            .bodies()
-            .filter(|body| body.kind() == BodyKind::Fixed)
-            .map(|body| {
-                let position = body.position();
-                let half = body.half_extents();
-                Rect::centered(position.x, position.z, half.x, half.z)
-            })
+        self.physics
+            .fixed_boxes()
+            .map(|(position, half)| Rect::centered(position.x, position.z, half.x, half.z))
             .collect()
     }
 
@@ -4792,7 +4821,7 @@ impl ArpgGame {
                     }
                 }
             } else {
-                let post = *monster.post.get_or_insert(monster.position);
+                let post = *monster.post.get_or_insert(monster.at());
                 // Steering found no retreat from the target it was engaged on; a switch to
                 // another target makes that result stale.
                 let cornered_target = monster.engaged_target().filter(|_| monster.cornered);
@@ -4845,9 +4874,9 @@ impl ArpgGame {
             .players
             .keys()
             .filter_map(|&player_id| {
-                self.world
-                    .body(Self::player_body_id(player_id))
-                    .and_then(|body| self.room_at_position(body.position()))
+                self.players
+                    .get(&player_id)
+                    .and_then(|state| self.room_at_position(Vec3i::rounded(state.position)))
             })
             .collect::<BTreeSet<_>>();
         let rooms_with_living_monsters = self
@@ -4896,6 +4925,44 @@ impl ArpgGame {
         self.sync_door_locks()
     }
 
+    /// The tick's physics pass: Rapier's character controller moves every player by its
+    /// controlled velocity, then every monster with a body by its steering, each in turn
+    /// against the level and the characters already moved. A player keeps as velocity the
+    /// part of its intended motion that physics allowed; corrections out of overlaps never
+    /// become momentum.
+    fn resolve_motion(&mut self, monster_motions: &[(usize, Vec3i)]) -> Result<(), GameError> {
+        self.physics.rebuild();
+        for (&player_id, state) in &mut self.players {
+            let intended = Self::controlled_movement_velocity(state.velocity, *state);
+            let (to, moved) = self.physics.move_character(
+                Self::player_body_id(player_id),
+                state.position,
+                intended,
+            )?;
+            let allowed =
+                |moved: f32, intended: f32| moved.clamp(intended.min(0.0), intended.max(0.0));
+            state.velocity = Vector::new(
+                allowed(moved.x, intended.x),
+                0.0,
+                allowed(moved.z, intended.z),
+            );
+            state.position = to;
+        }
+        for &(index, velocity) in monster_motions {
+            let monster = &mut self.monsters[index];
+            (monster.position, _) = self.physics.move_character(
+                Self::monster_body_id(monster.id),
+                monster.position,
+                vector(velocity),
+            )?;
+        }
+        self.physics_steps = self
+            .physics_steps
+            .checked_add(1)
+            .ok_or_else(|| GameError::new("physics step counter overflow"))?;
+        Ok(())
+    }
+
     fn sync_door_locks(&mut self) -> Result<(), GameError> {
         let active_rooms = self
             .rooms
@@ -4915,19 +4982,32 @@ impl ArpgGame {
             }
             let door = &self.doors[index];
             if desired_locked {
-                self.world
-                    .add_body(RigidBody::fixed(
-                        BodyId(door.id),
-                        array_to_vec(door.position),
-                        array_to_vec(door.half_extents),
-                    ))
-                    .map_err(physics_error)?;
+                self.physics.add_fixed(
+                    door.id,
+                    array_to_vec(door.position),
+                    array_to_vec(door.half_extents),
+                )?;
             } else {
-                self.world.remove_body(BodyId(door.id));
+                self.physics.remove_fixed(door.id);
             }
             self.doors[index].locked = desired_locked;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl ArpgGame {
+    /// Puts a player at `position`, as a spawn or restore would: no contact resolution.
+    fn put_player(&mut self, player_id: PlayerId, position: Vec3i) {
+        let position = Vector::from(position);
+        self.players
+            .get_mut(&player_id)
+            .expect("placed player exists")
+            .position = position;
+        self.physics
+            .place_character(Self::player_body_id(player_id), position)
+            .expect("placed player has a body");
     }
 }
 
@@ -4958,18 +5038,14 @@ impl AuthoritativeGame for ArpgGame {
             return Err(GameError::new("ARPG MVP player capacity reached"));
         }
 
-        let spawn = self.player_spawns[self.players.len()];
-        self.world
-            .add_body(RigidBody::dynamic(
-                Self::player_body_id(player_id),
-                spawn,
-                Vec3i::ZERO,
-                PLAYER_HALF_EXTENTS,
-            ))
-            .map_err(physics_error)?;
+        let spawn = vector(self.player_spawns[self.players.len()]);
+        self.physics
+            .add_character(Self::player_body_id(player_id), spawn, PLAYER_HALF_EXTENTS)?;
         self.players.insert(
             player_id,
             PlayerState {
+                position: spawn,
+                velocity: Vector::ZERO,
                 movement_x: 0,
                 movement_z: 0,
                 facing_x: 1,
@@ -4997,7 +5073,8 @@ impl AuthoritativeGame for ArpgGame {
         self.last_sequences.remove(&player_id);
         self.last_reliable_sequences.remove(&player_id);
         if removed {
-            self.world.remove_body(Self::player_body_id(player_id));
+            self.physics
+                .remove_character(Self::player_body_id(player_id));
         }
         removed
     }
@@ -5180,40 +5257,8 @@ impl AuthoritativeGame for ArpgGame {
             let active = active_rooms.contains(&monster.room_id);
             Self::advance_monster_guard(&tuning.guard, monster, active);
         }
-        for (&player_id, &state) in &self.players {
-            let body_id = Self::player_body_id(player_id);
-            let current_velocity = self
-                .world
-                .body(body_id)
-                .ok_or_else(|| GameError::new("player physics body is missing"))?
-                .velocity();
-            self.world
-                .set_velocity(
-                    body_id,
-                    Self::controlled_movement_velocity(current_velocity, state),
-                )
-                .map_err(physics_error)?;
-        }
-        self.steer_monsters()?;
-        {
-            #[cfg(test)]
-            let measurement = physics_workloads::start_physics();
-            let _report = self
-                .world
-                .step(PHYSICS_TICKS_PER_GAME_TICK)
-                .map_err(physics_error)?;
-            self.physics_steps = self
-                .physics_steps
-                .checked_add(u64::from(PHYSICS_TICKS_PER_GAME_TICK.unsigned_abs()))
-                .ok_or_else(|| GameError::new("physics step counter overflow"))?;
-            #[cfg(test)]
-            physics_workloads::finish_physics(measurement, &_report);
-        }
-        for monster in &mut self.monsters {
-            if let Some(body) = self.world.body(Self::monster_body_id(monster.id)) {
-                monster.position = body.position();
-            }
-        }
+        let monster_motions = self.steer_monsters()?;
+        self.resolve_motion(&monster_motions)?;
         self.reconcile_encounters()?;
         self.advance_actions()?;
         self.advance_arrows()?;
@@ -5245,14 +5290,11 @@ impl AuthoritativeGame for ArpgGame {
             .players
             .iter()
             .map(|(&id, state)| {
-                let body = self
-                    .world
-                    .body(Self::player_body_id(id))
-                    .ok_or_else(|| GameError::new("player physics body is missing"))?;
+                let position = Vec3i::rounded(state.position);
                 let level = Self::level_for_experience(&self.content, state.experience);
                 Ok(PlayerSnapshot {
                     id,
-                    position: vec_to_array(body.position()),
+                    position: vec_to_array(position),
                     health: state.health,
                     max_health: Self::max_health_for_level(&self.content, level),
                     level,
@@ -5277,7 +5319,7 @@ impl AuthoritativeGame for ArpgGame {
                             reason: InteractionRefusal::Busy,
                         }
                     } else {
-                        match self.interaction_choice(body.position())? {
+                        match self.interaction_choice(position)? {
                             Ok(target) => InteractionPrompt::Available { target },
                             Err(reason) => InteractionPrompt::Unavailable { reason },
                         }
@@ -5318,7 +5360,7 @@ impl AuthoritativeGame for ArpgGame {
                     id: monster.id,
                     definition: self.content.id(monster.definition().id).to_string(),
                     room_id: monster.room_id,
-                    position: vec_to_array(monster.position),
+                    position: vec_to_array(monster.at()),
                     health: monster.health,
                     max_health: monster.definition().health,
                     alive: monster.health > 0,
@@ -5762,10 +5804,6 @@ fn push_wall(
     });
 }
 
-fn physics_error(error: impl fmt::Display) -> GameError {
-    GameError::new(format!("physics-engine: {error}"))
-}
-
 const fn vec_to_array(value: Vec3i) -> [i32; 3] {
     [value.x, value.y, value.z]
 }
@@ -5871,7 +5909,7 @@ fn separated_velocity(
     bodies: &[(u32, RoomId, Vec3i)],
     range: i64,
 ) -> Vec3i {
-    let position = monster.position;
+    let position = monster.at();
     let to_point = (
         i64::from(point.0 - position.x),
         i64::from(point.1 - position.z),
@@ -6005,6 +6043,8 @@ mod tests {
 
     fn movement_state(x: i8, z: i8) -> PlayerState {
         PlayerState {
+            position: Vector::ZERO,
+            velocity: Vector::ZERO,
             movement_x: x,
             movement_z: z,
             facing_x: if x == 0 { 1 } else { x },
@@ -6038,8 +6078,8 @@ mod tests {
     fn movement_speed_is_tuned_for_precise_room_navigation() {
         let cardinal = ArpgGame::movement_target_velocity(movement_state(1, 0));
         let diagonal = ArpgGame::movement_target_velocity(movement_state(1, 1));
-        assert_eq!(cardinal, Vec3i::new(7, 0, 0));
-        assert_eq!(diagonal, Vec3i::new(5, 0, 5));
+        assert_eq!(cardinal, Vector::from(Vec3i::new(7, 0, 0)));
+        assert_eq!(diagonal, Vector::from(Vec3i::new(5, 0, 5)));
     }
 
     #[test]
@@ -6048,26 +6088,26 @@ mod tests {
         let idle = movement_state(0, 0);
         let reverse = movement_state(-1, 0);
 
-        let first = ArpgGame::controlled_movement_velocity(Vec3i::ZERO, forward);
+        let first = ArpgGame::controlled_movement_velocity(Vector::ZERO, forward);
         let second = ArpgGame::controlled_movement_velocity(first, forward);
         let full = ArpgGame::controlled_movement_velocity(second, forward);
-        assert_eq!(first, Vec3i::new(3, 0, 0));
-        assert_eq!(second, Vec3i::new(6, 0, 0));
-        assert_eq!(full, Vec3i::new(7, 0, 0));
+        assert_eq!(first, Vector::from(Vec3i::new(3, 0, 0)));
+        assert_eq!(second, Vector::from(Vec3i::new(6, 0, 0)));
+        assert_eq!(full, Vector::from(Vec3i::new(7, 0, 0)));
 
         let braking = ArpgGame::controlled_movement_velocity(full, idle);
         let stopped = ArpgGame::controlled_movement_velocity(braking, idle);
-        assert_eq!(braking, Vec3i::new(2, 0, 0));
-        assert_eq!(stopped, Vec3i::ZERO);
+        assert_eq!(braking, Vector::from(Vec3i::new(2, 0, 0)));
+        assert_eq!(stopped, Vector::ZERO);
 
         let turning = ArpgGame::controlled_movement_velocity(full, reverse);
         let crossed_zero = ArpgGame::controlled_movement_velocity(turning, reverse);
         let accelerating_reverse = ArpgGame::controlled_movement_velocity(crossed_zero, reverse);
         let reversed = ArpgGame::controlled_movement_velocity(accelerating_reverse, reverse);
-        assert_eq!(turning, Vec3i::new(2, 0, 0));
-        assert_eq!(crossed_zero, Vec3i::new(-3, 0, 0));
-        assert_eq!(accelerating_reverse, Vec3i::new(-6, 0, 0));
-        assert_eq!(reversed, Vec3i::new(-7, 0, 0));
+        assert_eq!(turning, Vector::from(Vec3i::new(2, 0, 0)));
+        assert_eq!(crossed_zero, Vector::from(Vec3i::new(-3, 0, 0)));
+        assert_eq!(accelerating_reverse, Vector::from(Vec3i::new(-6, 0, 0)));
+        assert_eq!(reversed, Vector::from(Vec3i::new(-7, 0, 0)));
     }
 
     #[test]
@@ -6076,27 +6116,29 @@ mod tests {
         let idle = movement_state(0, 0);
         let reverse = movement_state(-1, -1);
 
-        let first = ArpgGame::controlled_movement_velocity(Vec3i::ZERO, forward);
+        let first = ArpgGame::controlled_movement_velocity(Vector::ZERO, forward);
         let second = ArpgGame::controlled_movement_velocity(first, forward);
         let full = ArpgGame::controlled_movement_velocity(second, forward);
-        assert_eq!(first, Vec3i::new(2, 0, 2));
-        assert_eq!(second, Vec3i::new(4, 0, 4));
-        assert_eq!(full, Vec3i::new(5, 0, 5));
-        assert!(first.x * first.x + first.z * first.z <= PLAYER_ACCELERATION_PER_TICK.pow(2));
+        assert_eq!(first, Vector::from(Vec3i::new(2, 0, 2)));
+        assert_eq!(second, Vector::from(Vec3i::new(4, 0, 4)));
+        assert_eq!(full, Vector::from(Vec3i::new(5, 0, 5)));
+        assert!(
+            first.x * first.x + first.z * first.z <= PLAYER_ACCELERATION_PER_TICK.pow(2) as f32
+        );
 
         let braking = ArpgGame::controlled_movement_velocity(full, idle);
         let stopped = ArpgGame::controlled_movement_velocity(braking, idle);
-        assert_eq!(braking, Vec3i::new(2, 0, 2));
-        assert_eq!(stopped, Vec3i::ZERO);
+        assert_eq!(braking, Vector::from(Vec3i::new(2, 0, 2)));
+        assert_eq!(stopped, Vector::ZERO);
 
         let turning = ArpgGame::controlled_movement_velocity(full, reverse);
         let crossed_zero = ArpgGame::controlled_movement_velocity(turning, reverse);
         let accelerating_reverse = ArpgGame::controlled_movement_velocity(crossed_zero, reverse);
         let reversed = ArpgGame::controlled_movement_velocity(accelerating_reverse, reverse);
-        assert_eq!(turning, Vec3i::new(2, 0, 2));
-        assert_eq!(crossed_zero, Vec3i::new(-1, 0, -1));
-        assert_eq!(accelerating_reverse, Vec3i::new(-3, 0, -3));
-        assert_eq!(reversed, Vec3i::new(-5, 0, -5));
+        assert_eq!(turning, Vector::from(Vec3i::new(2, 0, 2)));
+        assert_eq!(crossed_zero, Vector::from(Vec3i::new(-1, 0, -1)));
+        assert_eq!(accelerating_reverse, Vector::from(Vec3i::new(-3, 0, -3)));
+        assert_eq!(reversed, Vector::from(Vec3i::new(-5, 0, -5)));
     }
 
     #[test]
@@ -6110,13 +6152,7 @@ mod tests {
         for _ in 0..3 {
             game.advance_tick().unwrap();
         }
-        assert_eq!(
-            game.world
-                .body(ArpgGame::player_body_id(1))
-                .unwrap()
-                .velocity(),
-            Vec3i::new(7, 0, 0)
-        );
+        assert_eq!(player_velocity(&game, 1), Vec3i::new(7, 0, 0).into());
 
         game.apply_command(
             PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
@@ -6124,25 +6160,16 @@ mod tests {
         .unwrap();
         game.advance_tick().unwrap();
 
-        assert_eq!(
-            game.world
-                .body(ArpgGame::player_body_id(1))
-                .unwrap()
-                .velocity(),
-            Vec3i::ZERO
-        );
+        assert_eq!(player_velocity(&game, 1), Vector::ZERO);
     }
 
     #[test]
     fn diagonal_control_slides_along_outer_wall() {
         let mut game = ArpgGame::new_with_seed(42).unwrap();
         game.add_player(1).unwrap();
-        let body_id = ArpgGame::player_body_id(1);
         let contact_x = ARENA_HALF_WIDTH - WALL_HALF_THICKNESS - PLAYER_HALF_EXTENTS.x;
         let start_z = -1_000;
-        game.world
-            .set_position(body_id, Vec3i::new(contact_x, PLAYER_Y, start_z))
-            .unwrap();
+        game.put_player(1, Vec3i::new(contact_x, PLAYER_Y, start_z));
         game.apply_command(
             PlayerCommand::new(1, 1, ArpgCommand::SetMovement { x: 1, z: 1 }).unwrap(),
         )
@@ -6152,9 +6179,21 @@ mod tests {
             game.advance_tick().unwrap();
         }
 
-        let position = game.world.body(body_id).unwrap().position();
-        assert_eq!(position.x, contact_x);
-        assert!(position.z > start_z + 30);
+        // Pressed against the wall, short only of Rapier's contact offset, and sliding.
+        let position = game.players[&1].position;
+        assert!(
+            (contact_x as f32 - position.x).abs() <= CONTACT_TOLERANCE,
+            "{position:?}"
+        );
+        assert!(position.z > (start_z + 30) as f32);
+    }
+
+    /// How far from an exact touching position a character resting against geometry may
+    /// stand: Rapier's controller keeps a 0.25 unit contact offset.
+    const CONTACT_TOLERANCE: f32 = 0.5;
+
+    fn player_velocity(game: &ArpgGame, player_id: PlayerId) -> Vector {
+        game.players[&player_id].velocity
     }
 
     fn run_action(game: &mut ArpgGame, player_id: PlayerId, sequence: u32, command: ArpgCommand) {
@@ -6201,7 +6240,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == room_id)
             .unwrap();
-        monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
+        monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z).into();
 
         for sequence in 1..=3 {
             run_action(
@@ -6260,7 +6299,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == room_id)
             .unwrap();
-        monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
+        monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z).into();
         monster.health = 30;
 
         run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack { aim: None });
@@ -6297,7 +6336,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == room_id)
             .unwrap();
-        monster.position = Vec3i::new(center_x + 180, PLAYER_Y, center_z);
+        monster.position = Vec3i::new(center_x + 180, PLAYER_Y, center_z).into();
         monster.health = 100;
 
         run_action(&mut game, 1, 1, ArpgCommand::SecondaryAttack { aim: None });
@@ -6324,7 +6363,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == room_id)
             .unwrap()
-            .position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
+            .position = Vec3i::new(center_x + 100, PLAYER_Y, center_z).into();
         run_action(&mut game, 1, 3, ArpgCommand::SecondaryAttack { aim: None });
         assert_eq!(
             game.monsters
@@ -6354,7 +6393,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == room_id)
             .unwrap();
-        monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
+        monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z).into();
 
         game.advance_tick().unwrap();
 
@@ -6418,7 +6457,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == room_id)
             .unwrap()
-            .position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
+            .position = Vec3i::new(center_x + 100, PLAYER_Y, center_z).into();
 
         game.advance_tick().unwrap();
         game.apply_command(
@@ -6455,7 +6494,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == room_id)
             .unwrap()
-            .position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
+            .position = Vec3i::new(center_x + 100, PLAYER_Y, center_z).into();
 
         game.advance_tick().unwrap();
         for _ in 0..MONSTER_ATTACK_WINDUP_TICKS {
@@ -6502,7 +6541,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == room_id)
             .unwrap()
-            .position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
+            .position = Vec3i::new(center_x + 100, PLAYER_Y, center_z).into();
 
         game.advance_tick().unwrap();
         game.apply_command(
@@ -6543,7 +6582,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == room_id)
             .unwrap();
-        monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
+        monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z).into();
         monster.health = BASE_ATTACK_DAMAGE;
 
         run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack { aim: None });
@@ -6575,11 +6614,7 @@ mod tests {
     fn interaction_respects_pickup_range() {
         let mut game = ArpgGame::new_with_seed(42).unwrap();
         game.add_player(1).unwrap();
-        let player_position = game
-            .world
-            .body(ArpgGame::player_body_id(1))
-            .unwrap()
-            .position();
+        let player_position = Vec3i::rounded(game.players[&1].position);
         game.ground_loot.push(GroundLootState {
             id: GROUND_LOOT_ID_BASE,
             position: Vec3i::new(
@@ -6615,7 +6650,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == room_id)
             .unwrap();
-        monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
+        monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z).into();
 
         game.apply_command(
             PlayerCommand::new(1, 1, ArpgCommand::SetMovement { x: 1, z: 0 }).unwrap(),
@@ -6691,7 +6726,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == room_id)
             .unwrap();
-        monster.position = Vec3i::new(center_x - 100, PLAYER_Y, center_z);
+        monster.position = Vec3i::new(center_x - 100, PLAYER_Y, center_z).into();
         monster.health = 100;
 
         run_action(&mut game, 1, 1, ArpgCommand::PrimaryAttack { aim: None });
@@ -6761,12 +6796,12 @@ mod tests {
     }
 
     fn place_blocker(game: &mut ArpgGame, index: u64, x: i32, z: i32, half_extents: Vec3i) {
-        game.world
-            .add_body(RigidBody::fixed(
-                BodyId(STATIC_BODY_BASE + 900 + index),
+        game.physics
+            .add_fixed(
+                STATIC_BODY_BASE + 900 + index,
                 Vec3i::new(x, PLAYER_Y, z),
                 half_extents,
-            ))
+            )
             .unwrap();
     }
 
@@ -6935,20 +6970,20 @@ mod tests {
         place_monster(&mut game, 1, x - 250, z);
         assert!(strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None }).is_empty());
 
-        game.monsters[0].position.x = x + 100;
+        game.monsters[0].position.x = (x + 100) as f32;
         game.apply_command(
             PlayerCommand::new(1, 2, ArpgCommand::PrimaryAttack { aim: None }).unwrap(),
         )
         .unwrap();
         game.advance_tick().unwrap();
-        game.monsters[0].position.x = x + 300;
+        game.monsters[0].position.x = (x + 300) as f32;
         while game.players.get(&1).unwrap().action.is_some() {
             game.advance_tick().unwrap();
             assert!(game.strike_outcomes().is_empty());
         }
         assert_eq!(monster_health(&game, 1), 100);
 
-        game.monsters[0].position.x = x + 100;
+        game.monsters[0].position.x = (x + 100) as f32;
         assert_eq!(
             strike(&mut game, 3, ArpgCommand::PrimaryAttack { aim: None }).len(),
             1
@@ -6964,7 +6999,7 @@ mod tests {
         )
         .unwrap();
         game.advance_tick().unwrap();
-        game.monsters[0].position.x = x + 100;
+        game.monsters[0].position.x = (x + 100) as f32;
         let mut outcomes = Vec::new();
         while game.players.get(&1).unwrap().action.is_some() {
             game.advance_tick().unwrap();
@@ -7070,9 +7105,7 @@ mod tests {
             (0, (room_z - door_z).signum())
         };
         let player = Vec3i::new(door_x + step_x * 80, PLAYER_Y, door_z + step_z * 80);
-        game.world
-            .set_position(ArpgGame::player_body_id(1), player)
-            .unwrap();
+        game.put_player(1, player);
         let state = game.players.get_mut(&1).unwrap();
         state.facing_x = i8::try_from(-step_x).unwrap();
         state.facing_z = i8::try_from(-step_z).unwrap();
@@ -7345,7 +7378,7 @@ mod tests {
         while game.monsters[0].action.map(|action| action.phase) != Some(ActionPhase::Windup) {
             game.advance_tick().unwrap();
         }
-        game.monsters[0].position.x = x - 120;
+        game.monsters[0].position.x = (x - 120) as f32;
         while game.monsters[0].action.map(|action| action.phase) == Some(ActionPhase::Windup) {
             game.advance_tick().unwrap();
             outcomes.extend_from_slice(game.strike_outcomes());
@@ -7543,7 +7576,7 @@ mod tests {
         ] {
             let (mut game, x, z) = blocked_once(120);
             // Keep the monster out of the way while time passes.
-            game.monsters[0].position = Vec3i::new(x - 600, PLAYER_Y, z);
+            game.monsters[0].position = Vec3i::new(x - 600, PLAYER_Y, z).into();
             for _ in 0..delay {
                 game.advance_tick().unwrap();
             }
@@ -7599,7 +7632,7 @@ mod tests {
     fn the_counter_can_miss_a_retreating_attacker() {
         let (mut game, x, z) = blocked_once(120);
         command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
-        game.monsters[0].position = Vec3i::new(x + 400, PLAYER_Y, z);
+        game.monsters[0].position = Vec3i::new(x + 400, PLAYER_Y, z).into();
         while game.players.get(&1).unwrap().action.is_some() {
             game.advance_tick().unwrap();
             assert!(
@@ -7659,7 +7692,7 @@ mod tests {
             .iter()
             .position(|monster| monster.room_id == STRIKE_ROOM)
             .unwrap();
-        game.monsters[index].position = Vec3i::new(x + 120, PLAYER_Y, z);
+        game.monsters[index].position = Vec3i::new(x + 120, PLAYER_Y, z).into();
         let monster_id = game.monsters[index].id;
         raise_guard_fully(&mut game);
         assert_eq!(claw(&mut game, monster_id), CLAW_BLOCKED);
@@ -7961,14 +7994,10 @@ mod tests {
         command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
         place_monster(&mut game, 2, 0, 0);
         let (x, z) = {
-            let position = game
-                .world
-                .body(ArpgGame::player_body_id(1))
-                .unwrap()
-                .position();
+            let position = Vec3i::rounded(game.players[&1].position);
             (position.x, position.z)
         };
-        game.monsters[1].position = Vec3i::new(x - 100, PLAYER_Y, z);
+        game.monsters[1].position = Vec3i::new(x - 100, PLAYER_Y, z).into();
         game.monsters[1].room_id = STRIKE_ROOM;
         assert_eq!(claw(&mut game, 2), CLAW_HIT);
         assert_eq!(current_action(&game).map(|action| action.kind), None);
@@ -8167,7 +8196,7 @@ mod tests {
             .find(|monster| monster.id == 1)
             .unwrap()
             .position
-            .z = z + 300;
+            .z = (z + 300) as f32;
         while !game.arrows.is_empty() {
             game.advance_tick().unwrap();
             assert!(game.strike_outcomes().is_empty());
@@ -8727,7 +8756,7 @@ mod tests {
 
         // Beyond the lock range but within the break range, behind a wall: still held.
         let far = i32::try_from(targeting.break_range).unwrap();
-        game.monsters[0].position = Vec3i::new(x, PLAYER_Y, z + far);
+        game.monsters[0].position = Vec3i::new(x, PLAYER_Y, z + far).into();
         place_blocker(
             &mut game,
             1,
@@ -8743,13 +8772,13 @@ mod tests {
         game.advance_tick().unwrap();
         assert_eq!(facing(&game), [-1, 0]);
         // One unit past the break range drops the lock.
-        game.monsters[1].position = Vec3i::new(x - far - 1, PLAYER_Y, z);
+        game.monsters[1].position = Vec3i::new(x - far - 1, PLAYER_Y, z).into();
         game.advance_tick().unwrap();
         assert_eq!(locked(&game), None);
         // Facing keeps its last direction when nothing owns it.
         assert_eq!(facing(&game), [-1, 0]);
 
-        game.monsters[1].position = Vec3i::new(x - 300, PLAYER_Y, z);
+        game.monsters[1].position = Vec3i::new(x - 300, PLAYER_Y, z).into();
         command(&mut game, ArpgCommand::CycleTarget);
         assert_eq!(locked(&game), Some(2));
         game.monsters[1].health = 0;
@@ -8790,12 +8819,7 @@ mod tests {
         assert_eq!((state.facing_x, state.facing_z), (0, -1));
 
         // The player ends a physics step east of the target.
-        game.world
-            .set_position(
-                ArpgGame::player_body_id(1),
-                Vec3i::new(x + 150, PLAYER_Y, z - 150),
-            )
-            .unwrap();
+        game.put_player(1, Vec3i::new(x + 150, PLAYER_Y, z - 150));
         game.face_held_locks().unwrap();
         let state = &game.players[&1];
         assert_eq!((state.facing_x, state.facing_z), (-1, 0));
@@ -8853,7 +8877,7 @@ mod tests {
         }
         assert_eq!(game.arrows[0].velocity, [0, 0, ARROW_FULL_SPEED]);
         // Nor does the target moving or dying in flight.
-        game.monsters[1].position = Vec3i::new(x + 300, PLAYER_Y, z);
+        game.monsters[1].position = Vec3i::new(x + 300, PLAYER_Y, z).into();
         game.monsters[1].health = 0;
         game.advance_tick().unwrap();
         assert_eq!(game.arrows[0].velocity, [0, 0, ARROW_FULL_SPEED]);
@@ -9480,12 +9504,7 @@ mod tests {
     }
 
     fn move_player(game: &mut ArpgGame, player_id: PlayerId, x: i32, z: i32) {
-        game.world
-            .set_position(
-                ArpgGame::player_body_id(player_id),
-                Vec3i::new(x, PLAYER_Y, z),
-            )
-            .unwrap();
+        game.put_player(player_id, Vec3i::new(x, PLAYER_Y, z));
     }
 
     /// Interacts and returns the interaction events resolved for that action.
@@ -10026,7 +10045,7 @@ mod tests {
             .find(|monster| monster.room_id == SKIRMISHER_ROOM)
             .unwrap();
         assert_eq!(content().id(monster.definition().id), SKIRMISHER);
-        monster.position = Vec3i::new(center_x + offset, PLAYER_Y, center_z);
+        monster.position = Vec3i::new(center_x + offset, PLAYER_Y, center_z).into();
         let id = monster.id;
         (game, id)
     }
@@ -10183,7 +10202,7 @@ mod tests {
                 if monster.action.is_some() {
                     started
                         .entry(monster.id)
-                        .or_insert(xz_distance_sq(monster.position, player));
+                        .or_insert(xz_distance_sq(monster.at(), player));
                 }
             }
             if started.len() == 2 {
@@ -10427,7 +10446,7 @@ mod tests {
                 .find(|room| room.id == monster.room_id)
                 .unwrap();
             assert_eq!(room.kind, RoomKind::Combat);
-            assert!(room.contains_xz_with_margin(monster.position, 0));
+            assert!(room.contains_xz_with_margin(monster.at(), 0));
         }
     }
 
@@ -10476,7 +10495,7 @@ mod tests {
         for door_id in &connected_door_ids {
             let door = game.doors.iter().find(|door| door.id == *door_id).unwrap();
             assert!(door.locked);
-            assert!(game.world.body(BodyId(*door_id)).is_some());
+            assert!(game.physics.has_fixed(*door_id));
         }
 
         let monster = game
@@ -10484,7 +10503,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.room_id == room_id)
             .unwrap();
-        monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z);
+        monster.position = Vec3i::new(center_x + 100, PLAYER_Y, center_z).into();
         for sequence in 1..=4 {
             run_action(
                 &mut game,
@@ -10498,7 +10517,7 @@ mod tests {
         for door_id in connected_door_ids {
             let door = game.doors.iter().find(|door| door.id == door_id).unwrap();
             assert!(!door.locked);
-            assert!(game.world.body(BodyId(door_id)).is_none());
+            assert!(!game.physics.has_fixed(door_id));
         }
         assert_eq!(
             game.players.get(&1).unwrap().experience,
@@ -10517,17 +10536,13 @@ mod tests {
     fn dormant_room_monsters_cannot_be_attacked_before_entry() {
         let mut game = ArpgGame::new_with_seed(42).unwrap();
         game.add_player(1).unwrap();
-        let player_position = game
-            .world
-            .body(ArpgGame::player_body_id(1))
-            .unwrap()
-            .position();
+        let player_position = Vec3i::rounded(game.players[&1].position);
         let monster = game
             .monsters
             .iter_mut()
             .find(|monster| monster.room_id == 2)
             .unwrap();
-        monster.position = Vec3i::new(player_position.x + 100, PLAYER_Y, player_position.z);
+        monster.position = Vec3i::new(player_position.x + 100, PLAYER_Y, player_position.z).into();
 
         for sequence in 1..=4 {
             run_action(
@@ -10584,7 +10599,7 @@ mod tests {
     }
 
     #[test]
-    fn wasd_style_movement_is_driven_through_physics_engine() {
+    fn wasd_style_movement_is_driven_through_physics() {
         let mut game = ArpgGame::new().unwrap();
         game.add_player(1).unwrap();
         let before = game.snapshot().unwrap().players[0].position;
@@ -10642,7 +10657,7 @@ mod tests {
     fn monster_layout(monsters: &[MonsterState]) -> Vec<(u32, RoomId, [i32; 3])> {
         monsters
             .iter()
-            .map(|monster| (monster.id, monster.room_id, vec_to_array(monster.position)))
+            .map(|monster| (monster.id, monster.room_id, vec_to_array(monster.at())))
             .collect()
     }
     #[test]
@@ -10689,8 +10704,8 @@ mod tests {
         game.advance_tick().unwrap();
 
         let save = game.save_state().unwrap();
-        assert_ne!(save.players[0].velocity, [0, 0, 0]);
-        assert_ne!(save.players[0].velocity, [PLAYER_SPEED, 0, 0]);
+        assert_ne!(save.players[0].velocity, [0.0; 3]);
+        assert_ne!(save.players[0].velocity, [PLAYER_SPEED as f32, 0.0, 0.0]);
         let mut restored = ArpgGame::from_save_state(save.clone()).unwrap();
         for _ in 0..4 {
             game.advance_tick().unwrap();
@@ -10699,17 +10714,19 @@ mod tests {
         }
 
         let mut tampered = save;
-        tampered.players[0].velocity = [PLAYER_SPEED + 1, 0, 0];
+        tampered.players[0].velocity = [PLAYER_SPEED as f32 + 1.0, 0.0, 0.0];
         assert_eq!(
             ArpgGame::from_save_state(tampered).unwrap_err().message(),
             "saved player velocity is out of range"
         );
-        let mut minimum = game.save_state().unwrap();
-        minimum.players[0].velocity = [i32::MIN, 0, 0];
-        assert_eq!(
-            ArpgGame::from_save_state(minimum).unwrap_err().message(),
-            "saved player velocity is out of range"
-        );
+        for velocity in [f32::MIN, f32::NAN, f32::INFINITY] {
+            let mut minimum = game.save_state().unwrap();
+            minimum.players[0].velocity = [velocity, 0.0, 0.0];
+            assert_eq!(
+                ArpgGame::from_save_state(minimum).unwrap_err().message(),
+                "saved player velocity is out of range"
+            );
+        }
     }
 
     #[test]
@@ -10719,14 +10736,28 @@ mod tests {
         let save = game.save_state().unwrap();
 
         let mut player = save.clone();
-        player.players[0].position = [i32::MAX, PLAYER_Y, 0];
+        player.players[0].position = [i32::MAX as f32, PLAYER_Y as f32, 0.0];
         assert_eq!(
             ArpgGame::from_save_state(player).unwrap_err().message(),
             "saved player position is outside the dungeon"
         );
+        for invalid in [f32::NAN, f32::INFINITY] {
+            let mut player = save.clone();
+            player.players[0].position[0] = invalid;
+            assert_eq!(
+                ArpgGame::from_save_state(player).unwrap_err().message(),
+                "saved player position is outside the dungeon"
+            );
+            let mut monster = save.clone();
+            monster.monsters[0].position[2] = invalid;
+            assert_eq!(
+                ArpgGame::from_save_state(monster).unwrap_err().message(),
+                "saved monster position is outside its room"
+            );
+        }
 
         let mut monster = save.clone();
-        monster.monsters[0].position = [i32::MIN, PLAYER_Y, i32::MIN];
+        monster.monsters[0].position = [i32::MIN as f32, PLAYER_Y as f32, i32::MIN as f32];
         assert_eq!(
             ArpgGame::from_save_state(monster).unwrap_err().message(),
             "saved monster position is outside its room"
@@ -10739,7 +10770,7 @@ mod tests {
             .unwrap()
             .position;
         let mut inside_wall = save.clone();
-        inside_wall.players[0].position = [wall[0], PLAYER_Y, wall[2]];
+        inside_wall.players[0].position = [wall[0] as f32, PLAYER_Y as f32, wall[2] as f32];
         assert_eq!(
             ArpgGame::from_save_state(inside_wall)
                 .unwrap_err()
@@ -10801,6 +10832,22 @@ mod tests {
     }
 
     #[test]
+    fn saves_from_the_integer_physics_schema_are_refused() {
+        let mut game = ArpgGame::new_with_seed(91).unwrap();
+        game.add_player(1).unwrap();
+        // A schema 12 save: integer positions and velocities, as the old physics wrote them.
+        let mut json = serde_json::to_value(game.save_state().unwrap()).unwrap();
+        json["schemaVersion"] = 12.into();
+        json["players"][0]["position"] = serde_json::json!([-2000, 50, -1000]);
+        json["players"][0]["velocity"] = serde_json::json!([0, 0, 0]);
+        let save: ArpgSaveState = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            ArpgGame::from_save_state(save).unwrap_err().message(),
+            "unsupported ARPG save schema version 12; expected 13"
+        );
+    }
+
+    #[test]
     fn save_state_rejects_unknown_schema_and_tampered_seed_state() {
         let mut game = ArpgGame::new_with_seed(91).unwrap();
         game.add_player(1).unwrap();
@@ -10846,19 +10893,42 @@ mod tests {
             .iter()
             .find(|monster| monster.id == id)
             .unwrap()
-            .position
+            .at()
     }
 
     fn player_position(game: &ArpgGame) -> Vec3i {
-        game.world
-            .body(ArpgGame::player_body_id(1))
-            .unwrap()
-            .position()
+        Vec3i::rounded(game.players[&1].position)
     }
 
     fn overlaps_xz(center: Vec3i, half: Vec3i, other: Vec3i, other_half: Vec3i) -> bool {
         (center.x - other.x).abs() < half.x + other_half.x
             && (center.z - other.z).abs() < half.z + other_half.z
+    }
+
+    /// Penetration deeper than this counts as overlap; Rapier keeps bodies touching at its
+    /// contact offset.
+    const OVERLAP_TOLERANCE: f32 = 0.01;
+
+    /// Whether an upright character body of `half_extents` (a capsule, round on the plane)
+    /// at `center` penetrates the box footprint centred on `other`.
+    fn body_overlaps_box(
+        center: Vector,
+        half_extents: Vec3i,
+        other: Vec3i,
+        other_half: Vec3i,
+    ) -> bool {
+        let gap = |own: f32, at: i32, half: i32| ((own - at as f32).abs() - half as f32).max(0.0);
+        let (dx, dz) = (
+            gap(center.x, other.x, other_half.x),
+            gap(center.z, other.z, other_half.z),
+        );
+        (dx * dx + dz * dz).sqrt() < half_extents.x as f32 - OVERLAP_TOLERANCE
+    }
+
+    /// Whether two upright character bodies penetrate each other on the plane.
+    fn bodies_overlap(center: Vector, half: Vec3i, other: Vector, other_half: Vec3i) -> bool {
+        let (dx, dz) = (center.x - other.x, center.z - other.z);
+        (dx * dx + dz * dz).sqrt() < (half.x + other_half.x) as f32 - OVERLAP_TOLERANCE
     }
 
     /// Ticks until monster `id` starts a wind-up, or `None` within `limit`.
@@ -10905,8 +10975,8 @@ mod tests {
         let arrived = (1..=600).find(|_| {
             game.advance_tick().unwrap();
             let position = monster_position(&game, 1);
-            assert!(!overlaps_xz(
-                position,
+            assert!(!body_overlaps_box(
+                game.monsters[0].position,
                 MONSTER_BODY_HALF_EXTENTS,
                 wall,
                 wall_half
@@ -11053,10 +11123,10 @@ mod tests {
             ArpgGame::monster_body_id(1),
             ArpgGame::player_body_id(59_001)
         );
-        assert!(game.world.body(ArpgGame::monster_body_id(1)).is_some());
-        let player = game.world.body(ArpgGame::player_body_id(59_001)).unwrap();
+        assert!(game.physics.has_character(ArpgGame::monster_body_id(1)));
+        let player = Vec3i::rounded(game.players[&59_001].position);
         assert!(
-            (player.position().x - x).abs() < 100,
+            (player.x - x).abs() < 100,
             "the player was not moved to the monster"
         );
     }
@@ -11067,13 +11137,13 @@ mod tests {
         place_monster(&mut game, 1, x + 600, z);
         place_monster(&mut game, 2, x - 600, z);
         game.advance_tick().unwrap();
-        assert!(game.world.body(ArpgGame::monster_body_id(1)).is_some());
+        assert!(game.physics.has_character(ArpgGame::monster_body_id(1)));
 
         game.monsters[0].health = 0;
         game.advance_tick().unwrap();
 
-        assert!(game.world.body(ArpgGame::monster_body_id(1)).is_none());
-        assert!(game.world.body(ArpgGame::monster_body_id(2)).is_some());
+        assert!(!game.physics.has_character(ArpgGame::monster_body_id(1)));
+        assert!(game.physics.has_character(ArpgGame::monster_body_id(2)));
     }
 
     fn monster_state(game: &ArpgGame, id: u32) -> MonsterState {
@@ -11096,9 +11166,7 @@ mod tests {
     }
 
     fn place_player(game: &mut ArpgGame, id: PlayerId, x: i32, z: i32) {
-        game.world
-            .set_position(ArpgGame::player_body_id(id), Vec3i::new(x, PLAYER_Y, z))
-            .unwrap();
+        game.put_player(id, Vec3i::new(x, PLAYER_Y, z));
     }
 
     fn add_player_at(game: &mut ArpgGame, id: PlayerId, x: i32, z: i32) {
@@ -11178,26 +11246,27 @@ mod tests {
         let mut attackers = BTreeSet::new();
         for _ in 0..360 {
             game.advance_tick().unwrap();
-            let player = player_position(&game);
             for (index, monster) in game.monsters.iter().enumerate() {
                 for other in &game.monsters[index + 1..] {
                     assert!(
-                        !overlaps_xz(
+                        !bodies_overlap(
                             monster.position,
                             MONSTER_BODY_HALF_EXTENTS,
                             other.position,
                             MONSTER_BODY_HALF_EXTENTS
                         ),
-                        "tick {}: monsters {} and {} overlap",
+                        "tick {}: monsters {} and {} overlap: {:?} {:?}",
                         game.tick,
                         monster.id,
-                        other.id
+                        other.id,
+                        monster.position,
+                        other.position
                     );
                 }
-                assert!(!overlaps_xz(
+                assert!(!bodies_overlap(
                     monster.position,
                     MONSTER_BODY_HALF_EXTENTS,
-                    player,
+                    game.players[&1].position,
                     PLAYER_HALF_EXTENTS
                 ));
                 if monster.action.is_some() {
@@ -11415,11 +11484,7 @@ mod tests {
             }
             if Some(tick) == drop_bodies_at {
                 for id in 1..=3 {
-                    assert!(
-                        game.world
-                            .remove_body(ArpgGame::monster_body_id(id))
-                            .is_some()
-                    );
+                    assert!(game.physics.remove_character(ArpgGame::monster_body_id(id)));
                 }
             }
             game.advance_tick().unwrap();
@@ -11451,10 +11516,10 @@ mod tests {
         assert_eq!(published(&game, 1), (MonsterBehavior::Pursuing, Some(1)));
         let from = monster_position(&game, 1);
         let landed = Vec3i::new(from.x + 150, from.y, from.z + 200);
-        game.world
-            .set_position(ArpgGame::monster_body_id(1), landed)
+        game.physics
+            .place_character(ArpgGame::monster_body_id(1), landed.into())
             .unwrap();
-        game.monsters[0].position = landed;
+        game.monsters[0].position = landed.into();
         let before = xz_distance_sq(landed, player_position(&game));
         game.advance_tick().unwrap();
         assert_eq!(published(&game, 1), (MonsterBehavior::Pursuing, Some(1)));
@@ -11486,7 +11551,7 @@ mod tests {
             .iter_mut()
             .find(|monster| monster.id == id)
             .unwrap()
-            .position = Vec3i::new(room.max_x - 120, PLAYER_Y, z);
+            .position = Vec3i::new(room.max_x - 120, PLAYER_Y, z).into();
         game.reconcile_encounters().unwrap();
         // The target dies at tick 60; player 2 is out of aggro range, so the monster
         // searches, then returns to its post.
@@ -11768,7 +11833,7 @@ mod tests {
                 );
             }
             if tick == 80 {
-                game.world.remove_body(BodyId(STATIC_BODY_BASE + 950));
+                game.physics.remove_fixed(STATIC_BODY_BASE + 950);
             }
             game.advance_tick().unwrap();
             snapshots.push(game.snapshot().unwrap());
@@ -11866,7 +11931,7 @@ mod tests {
 
     #[test]
     fn a_chase_continues_identically_after_a_save_that_drops_the_navigation_cache() {
-        use physics_workloads::{Case, commands};
+        use seeded_workloads::{Case, commands};
         // The room's generated monsters, moved to its west edge: saves only accept the
         // generated monster set in its own rooms.
         let mut game = ArpgGame::new_with_seed(42).unwrap();
@@ -11889,7 +11954,8 @@ mod tests {
                 room.min_x + 120,
                 PLAYER_Y,
                 z + i32::try_from(index).unwrap() * 90,
-            );
+            )
+            .into();
         }
         game.reconcile_encounters().unwrap();
         for tick in 0..45 {
@@ -11941,11 +12007,7 @@ mod tests {
             for _ in 0..30 {
                 game.advance_tick().unwrap();
             }
-            assert_ne!(
-                monster_position(&game, chaser.id),
-                chaser.position,
-                "mid-chase"
-            );
+            assert_ne!(monster_position(&game, chaser.id), chaser.at(), "mid-chase");
             game
         };
         let mut game = run();
@@ -11975,22 +12037,16 @@ mod tests {
         let monster = game.monsters.iter().find(|m| m.id == id).unwrap();
         let room = game.rooms.iter().find(|r| r.id == monster.room_id).unwrap();
         assert!(
-            room.contains_xz_with_margin(monster.position, MONSTER_BODY_HALF_EXTENTS.x),
+            room.contains_xz_with_margin(monster.at(), MONSTER_BODY_HALF_EXTENTS.x),
             "tick {tick}: {:?} left room {}",
             monster.position,
             room.id
         );
-        for body in game.world.bodies().filter(|b| b.kind() == BodyKind::Fixed) {
+        for (center, half) in game.physics.fixed_boxes() {
             assert!(
-                !overlaps_xz(
-                    monster.position,
-                    MONSTER_BODY_HALF_EXTENTS,
-                    body.position(),
-                    body.half_extents()
-                ),
-                "tick {tick}: {:?} overlaps fixed body {:?}",
+                !body_overlaps_box(monster.position, MONSTER_BODY_HALF_EXTENTS, center, half),
+                "tick {tick}: {:?} overlaps fixed body at {center:?}",
                 monster.position,
-                body.id()
             );
         }
     }
@@ -12020,7 +12076,7 @@ mod tests {
             let snapshot = game.snapshot().unwrap();
             let action = snapshot.monsters[0].action.unwrap();
             let distance = isqrt(xz_distance_sq(
-                game.monsters[0].position,
+                game.monsters[0].at(),
                 player_position(&game),
             ));
             first_windups.insert(definition, (start, distance, action));
@@ -12073,7 +12129,7 @@ mod tests {
                 assert_eq!(monster.target_player_id, Some(1));
             }
             if was_free && game.monsters[0].action.is_some() {
-                let distance_sq = xz_distance_sq(game.monsters[0].position, player_position(&game));
+                let distance_sq = xz_distance_sq(game.monsters[0].at(), player_position(&game));
                 attacked_inside_range |= distance_sq < retreat * retreat;
             }
             shots += monster_shots(&snapshot, 1).len();
@@ -12085,7 +12141,7 @@ mod tests {
         );
         assert!(shots >= 3, "{shots}");
         let distance = isqrt(xz_distance_sq(
-            game.monsters[0].position,
+            game.monsters[0].at(),
             player_position(&game),
         ));
         assert!(
@@ -12113,8 +12169,7 @@ mod tests {
             game.arrows
                 .iter()
                 .any(|arrow| arrow.source == StrikeSource::Monster(1))
-                && xz_distance_sq(game.monsters[0].position, player_position(&game))
-                    < retreat * retreat
+                && xz_distance_sq(game.monsters[0].at(), player_position(&game)) < retreat * retreat
         });
         assert!(fired_up_close);
     }
@@ -12352,18 +12407,18 @@ mod tests {
             );
             assert!(shot.velocity[0] < 0 && shot.velocity[2] == 0);
             let moved = Vec3i::new(player.x - 300, PLAYER_Y, player.z);
-            game.world
-                .set_position(ArpgGame::monster_body_id(id), moved)
+            game.physics
+                .place_character(ArpgGame::monster_body_id(id), moved.into())
                 .unwrap();
             game.monsters
                 .iter_mut()
                 .find(|m| m.id == id)
                 .unwrap()
-                .position = moved;
+                .position = moved.into();
             face_x(&mut game, facing_x);
             let event = land_shot(&mut game, id, shot);
             // The archer really stands on the other side when the shot lands.
-            let archer_at = game.monsters.iter().find(|m| m.id == id).unwrap().position;
+            let archer_at = game.monsters.iter().find(|m| m.id == id).unwrap().at();
             assert!(
                 archer_at.x < player_position(&game).x,
                 "facing {facing_x}: archer at {archer_at:?}"

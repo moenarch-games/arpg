@@ -9,7 +9,7 @@ The MVP is intentionally an **integration proof**: gameplay truth lives in one d
 The browser slice currently proves:
 
 - WASD top-down movement with diagonal normalization;
-- a procedurally partitioned, seeded dungeon whose walls and doorways are resolved by `physics-engine`;
+- a procedurally partitioned, seeded dungeon whose walls and doorways are resolved by Rapier physics inside the Rust simulation;
 - an isometric follow camera and simple 3D scene rendered through `3d-lab`;
 - nearby primary attacks against deterministic monster state;
 - deterministic character progression exposed through authoritative snapshots;
@@ -35,7 +35,7 @@ The near-term execution order is the content-readiness roadmap [#50](https://git
 | Capability | Status | Implementation | Exercised by |
 | --- | --- | --- | --- |
 | Startup and character selection | Implemented | [`web/src/main.tsx`](web/src/main.tsx), [`character-selection.js`](web/src/character-selection.js) | `character-selection.test.js`; browser specs in [`web/tests/browser`](web/tests/browser) |
-| Movement, locomotion feel and wall sliding | Implemented | [`arpg-core`](crates/arpg-core/src/lib.rs) through `physics-engine` | `locomotion_accelerates_brakes_and_reverses_over_bounded_ticks`, `diagonal_control_slides_along_outer_wall`, `wasd_style_movement_is_driven_through_physics_engine` |
+| Movement, locomotion feel and wall sliding | Implemented | [`arpg-core`](crates/arpg-core/src/lib.rs) through Rapier's character controller ([`physics.rs`](crates/arpg-core/src/physics.rs)) | `locomotion_accelerates_brakes_and_reverses_over_bounded_ticks`, `diagonal_control_slides_along_outer_wall`, `wasd_style_movement_is_driven_through_physics`, `physics::tests` |
 | Combat phases, facing, telegraphs, stagger, defeat | Implemented | [`arpg-core`](crates/arpg-core/src/lib.rs) | `attacks_have_authoritative_commitment_active_and_recovery_phases`, `attack_targeting_respects_committed_facing`, `monster_attack_is_telegraphed_before_damage`, `player_stagger_interrupts_monster_windup`; `app.spec.js`, `hotkeys.spec.js` |
 | Enemy pursuit, engagement and separation | Implemented | [`arpg-core`](crates/arpg-core/src/lib.rs) (aggro, leash and target-switch tunables in [`base.json`](crates/arpg-core/content/base.json)); behaviour published in snapshots | `two_competing_targets_switch_only_beyond_the_hysteresis_margin`, `a_crowd_surrounds_its_target_without_overlapping_bodies`, `a_lost_target_is_searched_for_then_another_is_reacquired`, `an_interrupted_windup_resumes_pursuit_of_the_same_target`, `engagement_matches_between_local_and_dedicated_execution` |
 | Enemy roles: melee, ranged spacing, heavy telegraph | Implemented | Role parameters in [`base.json`](crates/arpg-core/content/base.json) on the shared pursuit and strike path ([roles](docs/CONTENT.md#enemy-roles)); monster shots on the arrow path; `ranged` and `heavy` training fixtures | `the_default_dungeon_places_melee_ranged_and_heavy_roles_that_differ_in_play`, `an_archer_backs_off_around_a_wall_into_its_band_and_never_enters_fixed_bodies`, `interrupting_a_bruiser_windup_cancels_the_slam_and_it_winds_up_anew`, `saves_mid_shot_mid_retreat_and_mid_telegraph_continue_like_the_uninterrupted_game`, `engagement_matches_between_local_and_dedicated_execution` |
@@ -46,10 +46,10 @@ The near-term execution order is the content-readiness roadmap [#50](https://git
 | Training scenario (`?scenario=training&seed=<u32>`) | Implemented | [`training-arena.js`](web/src/training-arena.js) | `training-arena.test.js`; `app.spec.js`, `hotkeys.spec.js` |
 | Workbench spawn/remove/reset and exact tuning | Implemented (local training only) | [`workbench.rs`](crates/arpg-core/src/workbench.rs), [`workbench-controls.jsx`](web/src/workbench-controls.jsx) | `recorded_operations_replay_in_their_order_among_commands`, `exact_tuning_values_are_validated_with_the_content_bounds`, `workbench_operations_are_recorded_and_replay_natively`, `workbench.spec.js` |
 | Versioned savestates | Implemented | [`arpg-core`](crates/arpg-core/src/lib.rs), [`save-state.js`](web/src/save-state.js) | `save_state_*` tests, `save-state.test.js`, `savestate.spec.js` |
-| Local Rust/Wasm authority | Implemented | [`arpg-web-wasm`](crates/arpg-web-wasm/src/lib.rs) | `bun run test:physics-wasm`; all browser specs |
+| Local Rust/Wasm authority | Implemented | [`arpg-web-wasm`](crates/arpg-web-wasm/src/lib.rs) | `arpg-web-wasm` unit tests; all browser specs |
 | Peer-hosted co-op | Implemented | [`peer-session.js`](web/src/peer-session.js) | `peer-session.test.js`, `turn.spec.ts` |
 | Dedicated online | Implemented | [`arpg-game-server`](crates/arpg-game-server/src/lib.rs), [`dedicated-session.js`](web/src/dedicated-session.js) | `real_arpg_snapshot_matches_the_game_server_runtime_path`, `rejects_malformed_game_payloads_before_the_core_sees_them`, `reliable_one_shots.rs`, `dedicated-session.test.js`, `reliable-command-lane.test.js`, `reliable-one-shots.test.ts`, `dedicated.spec.js` |
-| Persistent physics solver migration | In flight: compatible engine update landed ([evidence](docs/physics-workloads.md)); solver/controller transition pending | [#48](https://github.com/moritzbrantner/arpg/issues/48) is the sole migration owner | `physics_workloads` traces |
+| Physics backend | Implemented: Rapier (`rapier3d`) is authoritative until `physics-engine` is finished ([Atlas 2.3.1](docs/decisions/atlas.md)); saves rebuild the physics world from game state | [`physics.rs`](crates/arpg-core/src/physics.rs), [#175](https://github.com/moritzbrantner/arpg/issues/175) | `saves_taken_mid_play_continue_exactly_as_the_uninterrupted_game`, `actual_seeded_ticks_preserve_wall_door_correction_combat_and_lifecycle_acceptance` |
 | Typed client runtime, scenario workbench | Planned (F0) | [#52](https://github.com/moritzbrantner/arpg/issues/52), [#53](https://github.com/moritzbrantner/arpg/issues/53) | — |
 | Humanoid, camera, jumping, unified input, menus | Planned (F1) | [#55](https://github.com/moritzbrantner/arpg/issues/55)–[#61](https://github.com/moritzbrantner/arpg/issues/61) | — |
 | Directional melee, bow, shield, combos, counters | Planned (F2) | [#63](https://github.com/moritzbrantner/arpg/issues/63), [#76](https://github.com/moritzbrantner/arpg/issues/76)–[#80](https://github.com/moritzbrantner/arpg/issues/80) | — |
@@ -62,7 +62,7 @@ The next product foundation is the **mechanical game loop**: locomotion, action 
 | Concern | Authority |
 | --- | --- |
 | ARPG rules, player intent, monsters, combat state | `arpg-core` |
-| Collision and physical movement | `physics-engine` |
+| Collision and physical movement | Rapier (`rapier3d`, inside `arpg-core`) until `physics-engine` is finished |
 | Scene rendering and renderer contract | `3d-lab` |
 | Runtime input semantics and rebinding UI | `input-bindings` |
 | Game command/snapshot encoding | `arpg-protocol` |
@@ -109,7 +109,6 @@ bun run format:check
 bun run lint
 bun run test
 bun run build
-bun run test:physics-wasm
 bunx playwright install chromium
 bun run test:browser
 ```
@@ -138,7 +137,7 @@ The dedicated host defaults to UDP port `4433` and session path `/arpg`. Optiona
 
 ## Pinned foundations
 
-- `physics-engine`: `65e00816fa4e17c899f45d618dcdc8c40990dc00`
+- `rapier3d` (crates.io): `0.36.1`
 - `3d-lab`: `f484db8a3d2a7a555fa463eddf9c28790b240ce0`
 - `input-bindings`: `b3b7204faa47d3b0af56eebc55cdfd4ced127ddc`
 - `multiplayer-setup-service`: `cc5c20fabdac0fc9da4329a5be04d0f4e8eae383`

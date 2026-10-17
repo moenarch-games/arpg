@@ -20,8 +20,9 @@ make those systems harder to validate and reproduce.
 
 ### Physical height is real
 
-`physics-engine` owns continuous physical height, support/contact, collision,
-gravity, and motion resolution. Height is not a render-only offset.
+The physics backend (Rapier until `physics-engine` is finished, Atlas 2.3.1) owns
+continuous physical height, support/contact, collision, gravity, and motion
+resolution. Height is not a render-only offset.
 
 A walkable region is a connected gameplay surface, not a flat plane. One region
 may contain slopes, ramps, stairs, and uneven ground.
@@ -79,8 +80,8 @@ deliberate vertical combat mechanics.
 
 ## Authority boundaries
 
-- `physics-engine` owns physical height, collision, support, contacts, and
-  spatial queries.
+- The physics backend (Rapier for now) owns physical height, collision, support,
+  contacts, and spatial queries.
 - `arpg-core` owns walkable-region topology, typed traversal semantics, actor
   region/transit state, and ability-specific cross-region eligibility.
 - Level content or procedural generation produces geometry and the matching
