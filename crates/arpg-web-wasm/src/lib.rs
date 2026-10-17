@@ -144,7 +144,8 @@ pub fn wasm_content_revision() -> String {
 
 #[wasm_bindgen(js_name = loadGameFromSaveStateJson)]
 pub fn load_game_from_save_state_json(encoded: &str) -> Result<WasmGame, JsValue> {
-    let save = serde_json::from_str::<ArpgSaveState>(encoded).map_err(js_error)?;
+    // A save of another schema is refused by its version, not by the fields it lacks.
+    let save = ArpgSaveState::from_json(encoded).map_err(js_error)?;
     Ok(WasmGame {
         game: ArpgGame::from_save_state(save).map_err(js_error)?,
         protocol: JsonProtocol,

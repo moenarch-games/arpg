@@ -65,7 +65,31 @@ const player = {
   weapon: "bow",
   drawTicks: 12,
   interaction: { kind: "available", target: { kind: "chest", id: 50002 } },
+  motion: { grounded: false, verticalVelocity: -3, feetY: 42, groundY: 0 },
 };
+
+test("admits a player's authoritative height and support and rejects malformed motion", () => {
+  const decoded = decodeSnapshot(encode({ ...payload, players: [player] })).players[0];
+  expect(decoded.motion).toEqual({ grounded: false, verticalVelocity: -3, feetY: 42, groundY: 0 });
+  // No ground below the body is published as null.
+  expect(() =>
+    decodeSnapshot(
+      encode({ ...payload, players: [{ ...player, motion: { ...player.motion, groundY: null } }] }),
+    ),
+  ).not.toThrow();
+  for (const motion of [
+    undefined,
+    null,
+    { ...player.motion, grounded: "no" },
+    { ...player.motion, verticalVelocity: 0.5 },
+    { ...player.motion, feetY: undefined },
+    { ...player.motion, groundY: "floor" },
+  ]) {
+    expect(() => decodeSnapshot(encode({ ...payload, players: [{ ...player, motion }] }))).toThrow(
+      "Malformed ARPG presentation snapshot",
+    );
+  }
+});
 
 test("admits shield guard state and rejects malformed guard data", () => {
   expect(decodeSnapshot(encode({ ...payload, players: [player] })).players[0].guard.phase).toBe(

@@ -69,6 +69,7 @@ const snapshotJson = (tick, weapon) =>
           attackDamage: 1,
           gold: 0,
           guardPoints: 100,
+          motion: { grounded: true, verticalVelocity: 0, feetY: 0, groundY: 0 },
           maxGuardPoints: 100,
           weapon,
           interaction: { kind: "unavailable", reason: "nothingInRange" },

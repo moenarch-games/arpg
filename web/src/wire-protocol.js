@@ -1,6 +1,6 @@
-// Browser projection of the arpg-protocol v20 envelope. This adapter validates
+// Browser projection of the arpg-protocol v21 envelope. This adapter validates
 // only data consumed by presentation; gameplay rules remain in arpg-core.
-export const PROTOCOL_VERSION = 20;
+export const PROTOCOL_VERSION = 21;
 const MAX_SNAPSHOT_CHARACTERS = 65_535;
 const integer = (value) => Number.isSafeInteger(value);
 const nonNegative = (value) => integer(value) && value >= 0;
@@ -71,6 +71,13 @@ const aimDirection = (value) =>
   value.every((component) => Math.abs(component) <= AIM_COMPONENT_LIMIT) &&
   value.some((component) => component !== 0);
 const action = (value) => phases.has(value?.phase) && nonNegative(value.ticksRemaining);
+// A player body's authoritative height and support (#59): presentation places and poses the
+// character from it and never decides height or support itself.
+const motion = (value) =>
+  typeof value?.grounded === "boolean" &&
+  integer(value.verticalVelocity) &&
+  integer(value.feetY) &&
+  optional(value.groundY, integer);
 const reaction = (value, kind) => value?.kind === kind && nonNegative(value.ticksRemaining);
 
 // A guest or dedicated client plays only against an authority running the same content
@@ -152,7 +159,8 @@ export function decodeSnapshot(encoded) {
         optional(player.drawTicks, nonNegative) &&
         interactionPrompt(player.interaction) &&
         optional(player.aim, aimDirection) &&
-        optional(player.lockedMonsterId, nonNegative),
+        optional(player.lockedMonsterId, nonNegative) &&
+        motion(player.motion),
     ) &&
     list(
       "chests",

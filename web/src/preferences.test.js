@@ -4,7 +4,6 @@ import {
   MOUSE_AIM_KEY,
   loadGraphics,
   loadMouseAim,
-  loadProfile,
   persistStoredValue,
   readStoredValue,
 } from "./preferences.js";
@@ -20,7 +19,6 @@ test("storage failure leaves the current session usable", () => {
   };
   expect(readStoredValue("endpoint", "fallback", blocked)).toBe("fallback");
   expect(persistStoredValue("endpoint", "new-value", blocked)).toBe(false);
-  expect(loadProfile(() => true, blocked)).toEqual({ id: "arpg-player", patches: [] });
 });
 
 test("graphics accepts only supported settings and discards unrelated persisted fields", () => {
@@ -36,13 +34,6 @@ test("graphics accepts only supported settings and discards unrelated persisted 
   expect(
     loadGraphics(storage({ shadows: false, pixelRatioLimit: 1.5, other: "untrusted" })),
   ).toEqual({ shadows: false, pixelRatioLimit: 1.5 });
-});
-
-test("profiles are admitted only when the foundation validates them", () => {
-  const parsed = { id: "player", patches: [] };
-  const storage = { getItem: () => JSON.stringify(parsed) };
-  expect(loadProfile(() => false, storage)).toEqual({ id: "arpg-player", patches: [] });
-  expect(loadProfile(() => true, storage)).toEqual(parsed);
 });
 
 test("mouse aim is opt-in and only an explicit setting enables it", () => {

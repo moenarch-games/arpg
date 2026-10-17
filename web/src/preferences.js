@@ -1,4 +1,3 @@
-export const PROFILE_KEY = "arpg-input-profile-v1";
 export const SETUP_URL_KEY = "arpg-setup-service-url-v1";
 export const DEDICATED_URL_KEY = "arpg-dedicated-url-v1";
 export const GRAPHICS_KEY = "arpg-graphics-v1";
@@ -37,22 +36,6 @@ export function loadGraphics(storage) {
     // Invalid local presentation settings fall back to known-safe defaults.
   }
   return { shadows: true, pixelRatioLimit: 2 };
-}
-
-export function loadProfile(validate, storage) {
-  try {
-    const parsed = JSON.parse(readStoredValue(PROFILE_KEY, "null", storage));
-    if (
-      parsed &&
-      typeof parsed.id === "string" &&
-      Array.isArray(parsed.patches) &&
-      validate(parsed)
-    )
-      return parsed;
-  } catch {
-    // Invalid local profiles fall back to the registry defaults.
-  }
-  return { id: "arpg-player", patches: [] };
 }
 
 // Mouse aim is opt-in: by default melee and the bow follow committed facing.

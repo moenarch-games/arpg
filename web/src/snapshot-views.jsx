@@ -9,7 +9,19 @@ function focusedPlayer(snapshot, playerId) {
   return snapshot?.players.find((player) => player.id === playerId) ?? null;
 }
 
-export function PlayerHud({ store, playerId, status, interactKey = "E" }) {
+// The label of the key an action is bound to, or a marker for an unbound action.
+const UNBOUND = "unbound";
+const keyOf = (keyLabels, action) => keyLabels?.[action] ?? UNBOUND;
+
+// The movement keys as one hint: `WASD` for single keys, joined otherwise.
+function movementKeys(keyLabels) {
+  const keys = ["game.moveForward", "game.moveLeft", "game.moveBackward", "game.moveRight"].map(
+    (action) => keyOf(keyLabels, action),
+  );
+  return keys.every((key) => key.length === 1) ? keys.join("") : keys.join("/");
+}
+
+export function PlayerHud({ store, playerId, status, interactKey = "E", keyLabels }) {
   const snapshot = useSnapshot(store);
   const player = focusedPlayer(snapshot, playerId);
   const healthPercent = player?.maxHealth
@@ -80,13 +92,16 @@ export function PlayerHud({ store, playerId, status, interactKey = "E" }) {
         </p>
       )}
       <p className="desktop-controls-hint">
-        WASD move · Space primary / hold to draw bow · Q heavy · F hold shield · X switch bow · E
-        interact · Esc settings
+        {movementKeys(keyLabels)} move · {keyOf(keyLabels, "game.jump")} jump ·{" "}
+        {keyOf(keyLabels, "game.primaryAttack")} primary / hold to draw bow ·{" "}
+        {keyOf(keyLabels, "game.secondaryAttack")} heavy · {keyOf(keyLabels, "game.guard")} hold
+        shield · {keyOf(keyLabels, "game.switchWeapon")} switch bow ·{" "}
+        {keyOf(keyLabels, "game.interact")} interact · {keyOf(keyLabels, "game.settings")} settings
       </p>
       <p className="mobile-controls-hint">
         {player?.weapon === "bow"
-          ? "Left stick · Hold Draw, release to shoot · Guard and Heavy unavailable with bow"
-          : "Left stick · Tap Attack for light, swipe ↑ Heavy, → target, ← unlock · Hold Guard · Tap Interact"}
+          ? "Left stick · Tap Jump · Hold Draw, release to shoot · Guard and Heavy unavailable with bow"
+          : "Left stick · Tap Jump · Tap Attack for light, swipe ↑ Heavy, → target, ← unlock · Hold Guard · Tap Interact"}
       </p>
     </section>
   );
@@ -112,6 +127,7 @@ export function CombatActions({
   setTouchGuard,
   setTouchDraw,
   switchWeapon,
+  keyLabels,
 }) {
   const player = focusedPlayer(useSnapshot(store), playerId);
   const light = LIGHT_KINDS.has(player?.action?.kind);
@@ -132,6 +148,8 @@ export function CombatActions({
   const heavyHandlers = usePressButton(() => triggerCombatAction("game.secondaryAttack"));
   const swapHandlers = usePressButton(switchWeapon);
   const interactHandlers = usePressButton(() => triggerCombatAction("game.interact"));
+  // Jump is a press like the keyboard's: the authority decides whether it takes off.
+  const jumpHandlers = usePressButton(() => triggerCombatAction("game.jump"));
   const bowHandlers = useHeldButton(
     (held, interrupted) => setTouchDraw(held, interrupted),
     canAttack && bow,
@@ -154,7 +172,7 @@ export function CombatActions({
         {...drawHandlers}
       >
         <strong>{bow ? "Draw" : player?.counter ? "Counter" : "Attack"}</strong>
-        <span>Space</span>
+        <span>{keyOf(keyLabels, "game.primaryAttack")}</span>
       </button>
       <button
         type="button"
@@ -165,7 +183,7 @@ export function CombatActions({
         {...heavyHandlers}
       >
         <strong>Heavy</strong>
-        <span>Q</span>
+        <span>{keyOf(keyLabels, "game.secondaryAttack")}</span>
       </button>
       <button
         type="button"
@@ -176,7 +194,7 @@ export function CombatActions({
         {...guardHandlers}
       >
         <strong>Guard</strong>
-        <span>F</span>
+        <span>{keyOf(keyLabels, "game.guard")}</span>
       </button>
       <button
         type="button"
@@ -186,7 +204,7 @@ export function CombatActions({
         {...swapHandlers}
       >
         <strong>{bow ? "Sword" : "Bow"}</strong>
-        <span>X</span>
+        <span>{keyOf(keyLabels, "game.switchWeapon")}</span>
       </button>
       <button
         type="button"
@@ -199,7 +217,20 @@ export function CombatActions({
         {...interactHandlers}
       >
         <strong>Interact</strong>
-        <span>E</span>
+        <span>{keyOf(keyLabels, "game.interact")}</span>
+      </button>
+      <button
+        type="button"
+        className={`combat-action combat-action-jump ${
+          player && !player.motion?.grounded ? "is-airborne" : ""
+        }`}
+        data-motion={player ? (player.motion?.grounded ? "grounded" : "airborne") : undefined}
+        aria-label="Jump"
+        disabled={!canAttack}
+        {...jumpHandlers}
+      >
+        <strong>Jump</strong>
+        <span>{keyOf(keyLabels, "game.jump")}</span>
       </button>
     </section>
   );

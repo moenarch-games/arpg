@@ -260,3 +260,26 @@ test("a monster engaged with the character draws its sword while standing", () =
   });
   expect(transitions(instance)).toEqual(["Sword_Idle", "Idle_Shield_Loop"]);
 });
+
+test("the humanoid stands at the body's feet and rises with a jump without changing gait (#59)", () => {
+  const { layer, instance } = fixture();
+  const motion = (feetY: number) => ({ grounded: feetY === 0, feetY, groundY: 0 });
+  layer.sync({
+    tick: 1,
+    worldUnitsPerMeter: 100,
+    players: [{ id: 1, position: [0, 50, 0], facing: [1, 0], motion: motion(0) }],
+  });
+  // The character's origin is its feet: on the floor, not at the body's centre.
+  expect(instance.root.position.value).toEqual([0, 0, 0]);
+  // Rising straight up at 6 units per tick: no horizontal speed, so it keeps standing.
+  for (let tick = 2; tick <= 12; tick += 1) {
+    const feet = (tick - 1) * 6;
+    layer.sync({
+      tick,
+      worldUnitsPerMeter: 100,
+      players: [{ id: 1, position: [0, 50 + feet, 0], facing: [1, 0], motion: motion(feet) }],
+    });
+    expect(instance.root.position.value[1]).toBeCloseTo(feet / 100, 6);
+  }
+  expect(transitions(instance)).toEqual([]);
+});

@@ -1333,6 +1333,18 @@ select {
   border-color: #8a7a9c;
   background: #3a3248e8;
 }
+.combat-action-jump {
+  border-color: #6b8f95;
+  background: #2d4447e8;
+}
+.combat-action-jump:active {
+  background: #3a585c;
+}
+.combat-action-jump.is-airborne {
+  box-shadow:
+    0 0 0 3px #9fc7cdaa,
+    0 0.4rem 1.5rem #0008;
+}
 .combat-action-primary[data-draw="drawing"] {
   box-shadow:
     0 0 0 3px #f5df9b,

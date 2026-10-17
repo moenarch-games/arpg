@@ -53,6 +53,7 @@ const snapshotJson = (tick, weapon) =>
           attackDamage: 1,
           gold: 0,
           guardPoints: 100,
+          motion: { grounded: true, verticalVelocity: 0, feetY: 0, groundY: 0 },
           maxGuardPoints: 100,
           weapon,
           interaction: { kind: "unavailable", reason: "nothingInRange" },
@@ -229,7 +230,8 @@ afterEach(() => {
 });
 
 test("the protocol version is bumped for aimed one-shots", () => {
-  expect(PROTOCOL_VERSION).toBe(20);
+  // Version 20 introduced aimed one-shots; later versions (21: jump, #59) keep them.
+  expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(20);
 });
 
 // The defect from the issue: aim A settled, the turn to B is lost, the release fires.

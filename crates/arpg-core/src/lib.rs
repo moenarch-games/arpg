@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use content::{
     BowData, Content, EncounterActivation, EncounterCompletion, EncounterDefinition, GuardData,
-    MonsterDefinition, StrikeDefinition, content,
+    JumpTuning, MonsterDefinition, StrikeDefinition, content,
 };
 pub use content::{
     CONTENT_FORMAT_VERSION, ContentBundle, ContentError, DefinitionId, MAX_ENCOUNTER_SPAWNS,
@@ -82,7 +82,9 @@ pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// 13: Rapier physics (#175): `f32` positions and velocities; schema 12 saves are refused.
 /// 14: gameplay rules on `f32` positions (#182): projectiles, ground loot and monster posts
 /// are `f32` game state; schema 13 saves are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 14;
+/// 15: jumping and support (#59): a player's vertical velocity, grounded state, coyote and
+/// jump-buffer ticks continue exactly after a load; schema 14 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 15;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -93,13 +95,15 @@ pub const SAVE_STATE_SCHEMA_VERSION: u16 = 14;
 // 9: aim intent separate from movement and optional target lock (#103).
 // 10: ranged spacing and monster projectiles on the shared arrow path (#108).
 // 11: shield monsters guard on the shared guard path (#92).
-pub const SAVE_STATE_RULES_VERSION: u16 = 11;
+// 12: jumping, gravity and grounded-only guard and counter (#59).
+pub const SAVE_STATE_RULES_VERSION: u16 = 12;
 // Velocities are world units per simulation tick. At 60 Hz and 100 world units per
 // meter, 7 units/tick is 4.2 m/s.
 const PLAYER_SPEED: i32 = 7;
 const PLAYER_DIAGONAL_SPEED: i32 = 5;
-// Control converges on player intent over a few 60 Hz ticks, starting from the
-// velocity physics resolved in the previous tick rather than replacing it.
+// Ground control converges on player intent over a few 60 Hz ticks, starting from the
+// velocity physics resolved in the previous tick rather than replacing it. Airborne control
+// is content (`jump`).
 const PLAYER_ACCELERATION_PER_TICK: i32 = 3;
 const PLAYER_BRAKING_PER_TICK: i32 = 5;
 const PLAYER_REVERSAL_PER_TICK: i32 = 5;
@@ -109,6 +113,13 @@ const DOOR_BODY_BASE: u64 = 20_000;
 const GROUND_LOOT_ID_BASE: u64 = 30_000;
 const PLAYER_HALF_EXTENTS: Vec3i = Vec3i::new(30, 50, 30);
 const PLAYER_Y: i32 = 50;
+/// Height of a grounded body's lowest point: the flat floor's walking height (#59).
+const FLOOR_FOOT_Y: i32 = PLAYER_Y - PLAYER_HALF_EXTENTS.y;
+/// How far (world units) a saved grounded player may stand from the plane: Rapier settles a
+/// landing body within its support reach, about five units, and to `f32` resolution after.
+const GROUNDED_HEIGHT_TOLERANCE: f32 = 6.0;
+#[cfg(test)]
+const COYOTE_TICKS: u8 = 6;
 #[cfg(test)]
 const ATTACK_RANGE: i64 = 220;
 #[cfg(test)]
@@ -422,6 +433,11 @@ pub enum ArpgCommand {
     CycleTarget,
     /// Drops the target lock.
     ClearTarget,
+    /// A jump press (#59): a one-shot intent. The jump takes off as soon as it is possible
+    /// within the content's buffer window: on the ground, or within the coyote window after
+    /// leaving it without jumping, and not while an action is committed. Repeated presses
+    /// only renew the window; a press never stacks a second jump.
+    Jump,
 }
 
 impl ArpgCommand {
@@ -1258,6 +1274,24 @@ pub struct PlayerSnapshot {
     pub aim: Option<[i16; 2]>,
     /// Monster held by the optional target lock.
     pub locked_monster_id: Option<u32>,
+    /// The body's physical height and support (#59).
+    pub motion: PlayerMotionSnapshot,
+}
+
+/// A player body's height and support (#59), for presentation and animation: they place
+/// and pose the character from it and never decide height or support themselves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerMotionSnapshot {
+    /// Supported by the ground; false from takeoff to landing.
+    pub grounded: bool,
+    /// Vertical velocity (world units per tick, rounded): positive while rising.
+    pub vertical_velocity: i32,
+    /// Height of the body's lowest point, its feet.
+    pub feet_y: i32,
+    /// Height of the ground directly below the body, where its feet would stand; `None`
+    /// when no ground lies below.
+    pub ground_y: Option<i32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1470,6 +1504,24 @@ pub struct ArpgSaveState {
     pub content_revision: String,
 }
 
+impl ArpgSaveState {
+    /// Parses a save document's JSON, refusing a save of another schema or rules version
+    /// by its version before any field it lacks or adds: older saves are refused cleanly.
+    pub fn from_json(json: &str) -> Result<Self, GameError> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Versions {
+            schema_version: u16,
+            rules_version: u16,
+        }
+        let versions = serde_json::from_str::<Versions>(json)
+            .map_err(|error| GameError::new(format!("invalid ARPG save: {error}")))?;
+        ArpgGame::check_save_versions(versions.schema_version, versions.rules_version)?;
+        serde_json::from_str(json)
+            .map_err(|error| GameError::new(format!("invalid ARPG save: {error}")))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlayerSaveState {
@@ -1477,8 +1529,15 @@ pub struct PlayerSaveState {
     /// Physical position in world units.
     pub position: [f32; 3],
     /// Physical velocity (world units per tick) carried into the next tick by controlled
-    /// acceleration: the part of last tick's intended motion that physics allowed.
+    /// acceleration: the part of last tick's intended motion that physics allowed. Its
+    /// vertical part is the jump's or fall's speed while airborne, and zero on the ground.
     pub velocity: [f32; 3],
+    /// Supported by the ground at the end of the saved tick.
+    pub grounded: bool,
+    /// Ticks left in which a jump may still take off after leaving the ground unjumped.
+    pub coyote_ticks_remaining: u8,
+    /// Ticks left in which a buffered jump press may still take off.
+    pub jump_buffer_ticks_remaining: u8,
     pub movement: [i8; 2],
     pub facing: [i8; 2],
     pub action: Option<PlayerActionSnapshot>,
@@ -1553,6 +1612,23 @@ pub enum StaticColliderKind {
     Wall,
     Pillar,
     Door,
+}
+
+/// Speed changes per tick by which controlled horizontal velocity converges on the movement
+/// intent: towards a held direction, to rest, and when reversing.
+#[derive(Clone, Copy, Debug)]
+struct ControlRates {
+    acceleration: i32,
+    braking: i32,
+    reversal: i32,
+}
+
+impl ControlRates {
+    const GROUND: Self = Self {
+        acceleration: PLAYER_ACCELERATION_PER_TICK,
+        braking: PLAYER_BRAKING_PER_TICK,
+        reversal: PLAYER_REVERSAL_PER_TICK,
+    };
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1673,8 +1749,17 @@ pub struct StrikeOutcome {
 struct PlayerState {
     /// Authoritative physical position in world units, mirrored by its Rapier body.
     position: Vector,
-    /// The motion physics allowed last tick, in world units per tick.
+    /// The motion physics allowed last tick, in world units per tick; vertically the
+    /// airborne speed (zero on the ground).
     velocity: Vector,
+    /// Supported by the ground after last tick's motion (Rapier's controller and support
+    /// query). Guard and counter need it; jumps take off from it.
+    grounded: bool,
+    /// Coyote window: ticks in which a jump may still take off after the body left the
+    /// ground without jumping.
+    coyote_ticks_remaining: u8,
+    /// Jump buffer: ticks in which a jump press keeps waiting for a takeoff.
+    jump_buffer_ticks_remaining: u8,
     movement_x: i8,
     movement_z: i8,
     facing_x: i8,
@@ -2100,6 +2185,7 @@ impl ArpgGame {
 
     fn generated(content: Arc<Content>, run_seed: RunSeed) -> Result<Self, GameError> {
         let mut physics = Physics::new();
+        physics.add_floor(FLOOR_FOOT_Y as f32)?;
         let GeneratedDungeon {
             rooms,
             doors,
@@ -2270,6 +2356,9 @@ impl ArpgGame {
                     id,
                     position: state.position.to_array(),
                     velocity: state.velocity.to_array(),
+                    grounded: state.grounded,
+                    coyote_ticks_remaining: state.coyote_ticks_remaining,
+                    jump_buffer_ticks_remaining: state.jump_buffer_ticks_remaining,
                     movement: [state.movement_x, state.movement_z],
                     facing: [state.facing_x, state.facing_z],
                     action: state.action.map(ActionState::snapshot),
@@ -2364,7 +2453,7 @@ impl ArpgGame {
         bundle: ContentBundle,
     ) -> Result<Self, GameError> {
         // Refuse a save from another bundle or format before anything is resolved.
-        Self::check_save_versions(&save)?;
+        Self::check_save_versions(save.schema_version, save.rules_version)?;
         let revision = bundle.revision();
         if save.content_revision != revision {
             return Err(GameError::new(format!(
@@ -2375,24 +2464,22 @@ impl ArpgGame {
         Self::restore(save, Self::load_content(bundle)?)
     }
 
-    fn check_save_versions(save: &ArpgSaveState) -> Result<(), GameError> {
-        if save.schema_version != SAVE_STATE_SCHEMA_VERSION {
+    fn check_save_versions(schema_version: u16, rules_version: u16) -> Result<(), GameError> {
+        if schema_version != SAVE_STATE_SCHEMA_VERSION {
             return Err(GameError::new(format!(
-                "unsupported ARPG save schema version {}; expected {}",
-                save.schema_version, SAVE_STATE_SCHEMA_VERSION
+                "unsupported ARPG save schema version {schema_version}; expected {SAVE_STATE_SCHEMA_VERSION}"
             )));
         }
-        if save.rules_version != SAVE_STATE_RULES_VERSION {
+        if rules_version != SAVE_STATE_RULES_VERSION {
             return Err(GameError::new(format!(
-                "unsupported ARPG save rules version {}; expected {}",
-                save.rules_version, SAVE_STATE_RULES_VERSION
+                "unsupported ARPG save rules version {rules_version}; expected {SAVE_STATE_RULES_VERSION}"
             )));
         }
         Ok(())
     }
 
     fn restore(save: ArpgSaveState, content: Arc<Content>) -> Result<Self, GameError> {
-        Self::check_save_versions(&save)?;
+        Self::check_save_versions(save.schema_version, save.rules_version)?;
         if save.content_revision != content.revision {
             return Err(GameError::new(format!(
                 "save was made with content revision {}; this authority runs {}",
@@ -2493,11 +2580,31 @@ impl ArpgGame {
             }
             let [velocity_x, velocity_y, velocity_z] = player.velocity;
             let speed = PLAYER_SPEED as f32;
-            if velocity_y != 0.0
+            let jump = &content.jump;
+            // The fastest fall on flat ground is the takeoff speed plus one gravity step.
+            let vertical = jump.takeoff_speed + jump.gravity;
+            if !(-vertical..=vertical).contains(&velocity_y)
                 || !(-speed..=speed).contains(&velocity_x)
                 || !(-speed..=speed).contains(&velocity_z)
             {
                 return Err(GameError::new("saved player velocity is out of range"));
+            }
+            let height = player.position[1] - PLAYER_Y as f32;
+            let support_valid = if player.grounded {
+                velocity_y == 0.0
+                    && player.coyote_ticks_remaining == 0
+                    && height.abs() <= GROUNDED_HEIGHT_TOLERANCE
+            } else {
+                player.coyote_ticks_remaining <= jump.data.coyote_ticks
+                    && (-GROUNDED_HEIGHT_TOLERANCE
+                        ..=f32::from(jump.data.apex_height) + GROUNDED_HEIGHT_TOLERANCE)
+                        .contains(&height)
+            };
+            if !support_valid
+                || player.jump_buffer_ticks_remaining > jump.data.buffer_ticks
+                || (player.health == 0 && player.jump_buffer_ticks_remaining > 0)
+            {
+                return Err(GameError::new("saved player jump state is invalid"));
             }
         }
 
@@ -2703,7 +2810,11 @@ impl ArpgGame {
                 || save.tick - arrow.launched_at_tick
                     != u64::from(lifetime - arrow.ticks_remaining) + unflown
                 || !possible
-                || !game.dungeon_contains(Vector::from_array(arrow.position), Vec3i::ZERO)
+                || !game.projectile_height_possible(content, arrow.position[1])
+                || !game.dungeon_contains(
+                    Vector::new(arrow.position[0], PLAYER_Y as f32, arrow.position[2]),
+                    Vec3i::ZERO,
+                )
             {
                 return Err(GameError::new("save contains an invalid arrow"));
             }
@@ -2740,6 +2851,9 @@ impl ArpgGame {
             *state = PlayerState {
                 position,
                 velocity: Vector::from_array(player.velocity),
+                grounded: player.grounded,
+                coyote_ticks_remaining: player.coyote_ticks_remaining,
+                jump_buffer_ticks_remaining: player.jump_buffer_ticks_remaining,
                 movement_x: player.movement[0],
                 movement_z: player.movement[1],
                 facing_x: player.facing[0],
@@ -2812,8 +2926,9 @@ impl ArpgGame {
         Ok(game)
     }
 
-    /// Whether a saved character with `half_extents` stands on the gameplay plane inside the
-    /// generated dungeon without penetrating its walls or pillars. Touching is allowed.
+    /// Whether a saved character with `half_extents` lies inside the generated dungeon
+    /// without penetrating its floor, walls or pillars. Touching is allowed; its height is
+    /// checked against its support state by the caller.
     fn character_fits(&self, position: [f32; 3], half_extents: Vec3i) -> bool {
         let position = Vector::from_array(position);
         let extent = |select: fn(&RoomSnapshot) -> i32, pick: fn(i32, i32) -> i32| {
@@ -2824,7 +2939,6 @@ impl ArpgGame {
                 .map(|value| value as f32)
         };
         position.is_finite()
-            && position.y == PLAYER_Y as f32
             && extent(|room| room.min_x, i32::min).is_some_and(|min| position.x >= min)
             && extent(|room| room.max_x, i32::max).is_some_and(|max| position.x <= max)
             && extent(|room| room.min_z, i32::min).is_some_and(|min| position.z >= min)
@@ -2857,6 +2971,14 @@ impl ArpgGame {
                         (position[axis] - f64::from(collider.position[axis])).abs() < reach
                     })
             })
+    }
+
+    /// Whether a projectile can fly at `height`: shots leave from the shooter's body, which
+    /// is on the plane or up to a jump's apex above it.
+    fn projectile_height_possible(&self, content: &Content, height: f32) -> bool {
+        let above = height - PLAYER_Y as f32;
+        (0.0..=f32::from(content.jump.data.apex_height) + GROUNDED_HEIGHT_TOLERANCE)
+            .contains(&above)
     }
 
     fn validate_axis(axis: [i8; 2], label: &str) -> Result<(), GameError> {
@@ -3027,8 +3149,10 @@ impl ArpgGame {
     }
 
     fn validate_guard(content: &Content, player: &PlayerSaveState) -> Result<(), GameError> {
-        let can_guard =
-            player.health > 0 && player.action.is_none() && player.hurt_ticks_remaining == 0;
+        let can_guard = player.health > 0
+            && player.action.is_none()
+            && player.hurt_ticks_remaining == 0
+            && player.grounded;
         if !player.guard.save_valid(&content.guard, can_guard) {
             return Err(GameError::new("saved player guard is invalid"));
         }
@@ -3172,9 +3296,11 @@ impl ArpgGame {
         if state.health == 0 {
             state.counter = None;
         }
+        // Guarding needs the ground (#59): airborne, the held guard waits for the landing.
         let free = state.action.is_none()
             && state.hurt_ticks_remaining == 0
-            && state.weapon == Weapon::SwordAndShield;
+            && state.weapon == Weapon::SwordAndShield
+            && state.grounded;
         state.guard.advance(tuning, state.health > 0, free);
     }
 
@@ -3198,9 +3324,14 @@ impl ArpgGame {
         ))
     }
 
-    /// The velocity a player intends this tick: last tick's resolved velocity converging on
-    /// the movement target by the bounded acceleration, braking and reversal steps.
-    fn controlled_movement_velocity(current: Vector, state: PlayerState) -> Vector {
+    /// The horizontal velocity a player intends this tick: last tick's resolved velocity
+    /// converging on the movement target by the bounded acceleration, braking and reversal
+    /// steps of `control` (ground or air).
+    fn controlled_movement_velocity(
+        current: Vector,
+        state: PlayerState,
+        control: ControlRates,
+    ) -> Vector {
         if state.health == 0 || state.action.is_some() {
             return Vector::ZERO;
         }
@@ -3209,19 +3340,38 @@ impl ArpgGame {
         let changing_z = current.z != target.z;
         let changing_two_axes = changing_x && changing_z;
         Vector::new(
-            Self::approach_controlled_axis(current.x, target.x, changing_two_axes),
+            Self::approach_controlled_axis(current.x, target.x, changing_two_axes, control),
             0.0,
-            Self::approach_controlled_axis(current.z, target.z, changing_two_axes),
+            Self::approach_controlled_axis(current.z, target.z, changing_two_axes, control),
         )
     }
 
-    fn approach_controlled_axis(current: f32, target: f32, changing_two_axes: bool) -> f32 {
-        let maximum_delta = if target == 0.0 {
-            PLAYER_BRAKING_PER_TICK
-        } else if current != 0.0 && current.signum() != target.signum() {
-            PLAYER_REVERSAL_PER_TICK
+    /// The control rates for a player on the ground or in the air.
+    fn control_rates(&self, grounded: bool) -> ControlRates {
+        if grounded {
+            ControlRates::GROUND
         } else {
-            PLAYER_ACCELERATION_PER_TICK
+            let jump = &self.content.jump.data;
+            ControlRates {
+                acceleration: i32::from(jump.air_acceleration_per_tick),
+                braking: i32::from(jump.air_braking_per_tick),
+                reversal: i32::from(jump.air_reversal_per_tick),
+            }
+        }
+    }
+
+    fn approach_controlled_axis(
+        current: f32,
+        target: f32,
+        changing_two_axes: bool,
+        control: ControlRates,
+    ) -> f32 {
+        let maximum_delta = if target == 0.0 {
+            control.braking
+        } else if current != 0.0 && current.signum() != target.signum() {
+            control.reversal
+        } else {
+            control.acceleration
         };
         let maximum_delta =
             Self::normalized_axis_control_delta(maximum_delta, changing_two_axes) as f32;
@@ -4069,7 +4219,10 @@ impl ArpgGame {
             let wall = self.physics.first_fixed_hit(from, translation);
             let hurt = hurtboxes
                 .into_iter()
+                // Hurt volumes are columns on the plane (ADR 0002): a shot meets a body at
+                // any height, so jumping neither dodges nor loses shots.
                 .filter_map(|(target, center, half_extents)| {
+                    let center = Vector::new(center.x, from.y, center.z);
                     Some((box_hit(center, half_extents, from, translation)?, target))
                 })
                 .min_by(|(left, left_target), (right, right_target)| {
@@ -4994,21 +5147,32 @@ impl ArpgGame {
     /// become momentum.
     fn resolve_motion(&mut self, monster_motions: &[(usize, Vector)]) -> Result<(), GameError> {
         self.physics.rebuild();
-        for (&player_id, state) in &mut self.players {
-            let intended = Self::controlled_movement_velocity(state.velocity, *state);
-            let (to, moved) = self.physics.move_character(
+        let jump = self.content.jump;
+        let player_ids = self.players.keys().copied().collect::<Vec<_>>();
+        for player_id in player_ids {
+            let control = self.control_rates(self.players[&player_id].grounded);
+            let state = self
+                .players
+                .get_mut(&player_id)
+                .expect("moving player exists");
+            let vertical = Self::takeoff_or_fall(&jump, state);
+            let horizontal = Self::controlled_movement_velocity(state.velocity, *state, control);
+            let intended = Vector::new(horizontal.x, vertical, horizontal.z);
+            let motion = self.physics.move_player(
                 Self::player_body_id(player_id),
                 state.position,
                 intended,
             )?;
             let allowed =
                 |moved: f32, intended: f32| moved.clamp(intended.min(0.0), intended.max(0.0));
+            let moved = motion.moved;
             state.velocity = Vector::new(
                 allowed(moved.x, intended.x),
-                0.0,
+                allowed(moved.y, intended.y),
                 allowed(moved.z, intended.z),
             );
-            state.position = to;
+            state.position = motion.to;
+            Self::settle_support(&jump, state, motion.supported);
         }
         for &(index, velocity) in monster_motions {
             let monster = &mut self.monsters[index];
@@ -5023,6 +5187,42 @@ impl ArpgGame {
             .checked_add(1)
             .ok_or_else(|| GameError::new("physics step counter overflow"))?;
         Ok(())
+    }
+
+    /// This tick's vertical intent (world units): a takeoff when a buffered jump press meets
+    /// a possible jump, gravity while airborne, nothing on the ground. A takeoff consumes the
+    /// press and the coyote window and lowers the guard at once, since guarding needs the
+    /// ground; it never touches an action, which it cannot happen during.
+    fn takeoff_or_fall(jump: &JumpTuning, state: &mut PlayerState) -> f32 {
+        let can_jump = state.health > 0
+            && state.action.is_none()
+            && (state.grounded || state.coyote_ticks_remaining > 0);
+        if can_jump && state.jump_buffer_ticks_remaining > 0 {
+            state.jump_buffer_ticks_remaining = 0;
+            state.coyote_ticks_remaining = 0;
+            state.grounded = false;
+            state.guard.stance = None;
+            return jump.takeoff_speed;
+        }
+        state.jump_buffer_ticks_remaining = state.jump_buffer_ticks_remaining.saturating_sub(1);
+        if state.grounded {
+            return 0.0;
+        }
+        state.coyote_ticks_remaining = state.coyote_ticks_remaining.saturating_sub(1);
+        state.velocity.y - jump.gravity
+    }
+
+    /// Support after this tick's motion. A rising body is never grounded; landing ends the
+    /// vertical motion, and leaving the ground without jumping opens the coyote window.
+    fn settle_support(jump: &JumpTuning, state: &mut PlayerState, supported: bool) {
+        let grounded = supported && state.velocity.y <= 0.0;
+        if grounded {
+            state.velocity.y = 0.0;
+            state.coyote_ticks_remaining = 0;
+        } else if state.grounded {
+            state.coyote_ticks_remaining = jump.data.coyote_ticks;
+        }
+        state.grounded = grounded;
     }
 
     fn sync_door_locks(&mut self) -> Result<(), GameError> {
@@ -5108,6 +5308,10 @@ impl AuthoritativeGame for ArpgGame {
             PlayerState {
                 position: spawn,
                 velocity: Vector::ZERO,
+                // Spawns stand on the floor.
+                grounded: true,
+                coyote_ticks_remaining: 0,
+                jump_buffer_ticks_remaining: 0,
                 movement_x: 0,
                 movement_z: 0,
                 facing_x: 1,
@@ -5205,7 +5409,11 @@ impl AuthoritativeGame for ArpgGame {
                     .players
                     .get_mut(&command.player_id)
                     .expect("player existence checked");
-                let counter = state.counter.filter(|counter| counter.usable_at(tick));
+                // Countering needs the ground (#59); airborne, the press is a plain attack and
+                // the opportunity stays open.
+                let counter = state
+                    .counter
+                    .filter(|counter| counter.usable_at(tick) && state.grounded);
                 if state.health > 0 && state.action.is_some() {
                     Self::combo_input(&self.content, state, ComboInput::Light, aim);
                 } else if counter.is_some() && state.health > 0 && state.action.is_none() {
@@ -5291,6 +5499,16 @@ impl AuthoritativeGame for ArpgGame {
                     .get_mut(&command.player_id)
                     .expect("player existence checked")
                     .draw_ticks = None;
+            }
+            ArpgCommand::Jump => {
+                let buffer_ticks = self.content.jump.data.buffer_ticks;
+                let state = self
+                    .players
+                    .get_mut(&command.player_id)
+                    .expect("player existence checked");
+                if state.health > 0 {
+                    state.jump_buffer_ticks_remaining = buffer_ticks;
+                }
             }
         }
         count(Counter::CommandBookkeeping, 1);
@@ -5387,6 +5605,15 @@ impl AuthoritativeGame for ArpgGame {
                     },
                     aim: state.aim,
                     locked_monster_id: state.locked_monster_id,
+                    motion: PlayerMotionSnapshot {
+                        grounded: state.grounded,
+                        vertical_velocity: state.velocity.y.round() as i32,
+                        feet_y: (state.position.y - PLAYER_HALF_EXTENTS.y as f32).round() as i32,
+                        ground_y: self
+                            .physics
+                            .ground_height(state.position)
+                            .map(|height| height.round() as i32),
+                    },
                 })
             })
             .collect::<Result<Vec<_>, GameError>>()?;
@@ -5407,7 +5634,7 @@ impl AuthoritativeGame for ArpgGame {
         }));
 
         Ok(ArpgSnapshot {
-            schema_version: 21,
+            schema_version: 22,
             run_seed: self.run_seed,
             tick: self.tick,
             world_units_per_meter: WORLD_UNITS_PER_METER,
@@ -6122,6 +6349,9 @@ mod tests {
         PlayerState {
             position: Vector::ZERO,
             velocity: Vector::ZERO,
+            grounded: true,
+            coyote_ticks_remaining: 0,
+            jump_buffer_ticks_remaining: 0,
             movement_x: x,
             movement_z: z,
             facing_x: if x == 0 { 1 } else { x },
@@ -6165,22 +6395,29 @@ mod tests {
         let idle = movement_state(0, 0);
         let reverse = movement_state(-1, 0);
 
-        let first = ArpgGame::controlled_movement_velocity(Vector::ZERO, forward);
-        let second = ArpgGame::controlled_movement_velocity(first, forward);
-        let full = ArpgGame::controlled_movement_velocity(second, forward);
+        let first =
+            ArpgGame::controlled_movement_velocity(Vector::ZERO, forward, ControlRates::GROUND);
+        let second = ArpgGame::controlled_movement_velocity(first, forward, ControlRates::GROUND);
+        let full = ArpgGame::controlled_movement_velocity(second, forward, ControlRates::GROUND);
         assert_eq!(first, Vector::from(Vec3i::new(3, 0, 0)));
         assert_eq!(second, Vector::from(Vec3i::new(6, 0, 0)));
         assert_eq!(full, Vector::from(Vec3i::new(7, 0, 0)));
 
-        let braking = ArpgGame::controlled_movement_velocity(full, idle);
-        let stopped = ArpgGame::controlled_movement_velocity(braking, idle);
+        let braking = ArpgGame::controlled_movement_velocity(full, idle, ControlRates::GROUND);
+        let stopped = ArpgGame::controlled_movement_velocity(braking, idle, ControlRates::GROUND);
         assert_eq!(braking, Vector::from(Vec3i::new(2, 0, 0)));
         assert_eq!(stopped, Vector::ZERO);
 
-        let turning = ArpgGame::controlled_movement_velocity(full, reverse);
-        let crossed_zero = ArpgGame::controlled_movement_velocity(turning, reverse);
-        let accelerating_reverse = ArpgGame::controlled_movement_velocity(crossed_zero, reverse);
-        let reversed = ArpgGame::controlled_movement_velocity(accelerating_reverse, reverse);
+        let turning = ArpgGame::controlled_movement_velocity(full, reverse, ControlRates::GROUND);
+        let crossed_zero =
+            ArpgGame::controlled_movement_velocity(turning, reverse, ControlRates::GROUND);
+        let accelerating_reverse =
+            ArpgGame::controlled_movement_velocity(crossed_zero, reverse, ControlRates::GROUND);
+        let reversed = ArpgGame::controlled_movement_velocity(
+            accelerating_reverse,
+            reverse,
+            ControlRates::GROUND,
+        );
         assert_eq!(turning, Vector::from(Vec3i::new(2, 0, 0)));
         assert_eq!(crossed_zero, Vector::from(Vec3i::new(-3, 0, 0)));
         assert_eq!(accelerating_reverse, Vector::from(Vec3i::new(-6, 0, 0)));
@@ -6193,9 +6430,10 @@ mod tests {
         let idle = movement_state(0, 0);
         let reverse = movement_state(-1, -1);
 
-        let first = ArpgGame::controlled_movement_velocity(Vector::ZERO, forward);
-        let second = ArpgGame::controlled_movement_velocity(first, forward);
-        let full = ArpgGame::controlled_movement_velocity(second, forward);
+        let first =
+            ArpgGame::controlled_movement_velocity(Vector::ZERO, forward, ControlRates::GROUND);
+        let second = ArpgGame::controlled_movement_velocity(first, forward, ControlRates::GROUND);
+        let full = ArpgGame::controlled_movement_velocity(second, forward, ControlRates::GROUND);
         assert_eq!(first, Vector::from(Vec3i::new(2, 0, 2)));
         assert_eq!(second, Vector::from(Vec3i::new(4, 0, 4)));
         assert_eq!(full, Vector::from(Vec3i::new(5, 0, 5)));
@@ -6203,15 +6441,21 @@ mod tests {
             first.x * first.x + first.z * first.z <= PLAYER_ACCELERATION_PER_TICK.pow(2) as f32
         );
 
-        let braking = ArpgGame::controlled_movement_velocity(full, idle);
-        let stopped = ArpgGame::controlled_movement_velocity(braking, idle);
+        let braking = ArpgGame::controlled_movement_velocity(full, idle, ControlRates::GROUND);
+        let stopped = ArpgGame::controlled_movement_velocity(braking, idle, ControlRates::GROUND);
         assert_eq!(braking, Vector::from(Vec3i::new(2, 0, 2)));
         assert_eq!(stopped, Vector::ZERO);
 
-        let turning = ArpgGame::controlled_movement_velocity(full, reverse);
-        let crossed_zero = ArpgGame::controlled_movement_velocity(turning, reverse);
-        let accelerating_reverse = ArpgGame::controlled_movement_velocity(crossed_zero, reverse);
-        let reversed = ArpgGame::controlled_movement_velocity(accelerating_reverse, reverse);
+        let turning = ArpgGame::controlled_movement_velocity(full, reverse, ControlRates::GROUND);
+        let crossed_zero =
+            ArpgGame::controlled_movement_velocity(turning, reverse, ControlRates::GROUND);
+        let accelerating_reverse =
+            ArpgGame::controlled_movement_velocity(crossed_zero, reverse, ControlRates::GROUND);
+        let reversed = ArpgGame::controlled_movement_velocity(
+            accelerating_reverse,
+            reverse,
+            ControlRates::GROUND,
+        );
         assert_eq!(turning, Vector::from(Vec3i::new(2, 0, 2)));
         assert_eq!(crossed_zero, Vector::from(Vec3i::new(-1, 0, -1)));
         assert_eq!(accelerating_reverse, Vector::from(Vec3i::new(-3, 0, -3)));
@@ -10668,7 +10912,7 @@ mod tests {
         game.add_player(1).unwrap();
         let snapshot = game.snapshot().unwrap();
         let generated = generate_dungeon(content(), snapshot.run_seed);
-        assert_eq!(snapshot.schema_version, 21);
+        assert_eq!(snapshot.schema_version, 22);
         assert_eq!(snapshot.run_seed, 0xDEAD_BEEF);
         assert_eq!(game.run_seed(), snapshot.run_seed);
         assert_eq!(snapshot.rooms, generated.rooms);
@@ -11061,7 +11305,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 14"
+            "unsupported ARPG save schema version 12; expected 15"
         );
     }
 
@@ -11076,7 +11320,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 13; expected 14"
+            "unsupported ARPG save schema version 13; expected 15"
         );
     }
 
@@ -12946,5 +13190,210 @@ mod tests {
             .filter(|event| event.definition == "monster.bolt")
             .count();
         assert!(bolts >= 2, "{bolts}");
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Jumping and support (#59)
+    // -----------------------------------------------------------------------------------
+
+    /// Sends a jump press and advances `ticks` ticks.
+    fn jump_for(game: &mut ArpgGame, ticks: u32) {
+        command(game, ArpgCommand::Jump);
+        for _ in 0..ticks {
+            game.advance_tick().unwrap();
+        }
+    }
+
+    fn airborne(game: &ArpgGame) -> bool {
+        !game.players[&1].grounded
+    }
+
+    #[test]
+    fn countering_needs_the_ground_and_an_airborne_press_keeps_the_opportunity() {
+        let (mut game, _, _) = blocked_once(120);
+        game.players.get_mut(&1).unwrap().guard.held = false;
+        jump_for(&mut game, 2);
+        assert!(airborne(&game));
+        let opportunity = game.players[&1].counter;
+        assert!(opportunity.is_some_and(|counter| counter.usable_at(game.tick)));
+        command(&mut game, ArpgCommand::PrimaryAttack { aim: None });
+        assert_eq!(action_kind(&game), Some(ActionKind::PrimaryAttack));
+        assert_eq!(game.players[&1].counter, opportunity);
+    }
+
+    #[test]
+    fn an_airborne_player_is_struck_and_strikes_as_on_the_ground() {
+        // A monster's claw lands on a player in the air: no invulnerability.
+        let (mut game, x, z) = strike_arena();
+        place_monster(&mut game, 1, x + 120, z);
+        jump_for(&mut game, 12);
+        assert!(game.players[&1].position.y > PLAYER_Y as f32 + 60.0);
+        assert_eq!(claw(&mut game, 1), CLAW_HIT);
+
+        // And a light swing from the air hits the monster in front at the same reach.
+        let (mut game, x, z) = strike_arena();
+        place_monster(&mut game, 1, x + 150, z);
+        jump_for(&mut game, 6);
+        assert!(airborne(&game));
+        let outcomes = strike(&mut game, 1_000, ArpgCommand::PrimaryAttack { aim: None });
+        assert_eq!(targets(&outcomes), [(StrikeTarget::Monster(1), LIGHT_HIT)]);
+    }
+
+    #[test]
+    fn shots_meet_bodies_at_any_height() {
+        // An arrow loosed at the top of a jump flies at that height and still hits.
+        let (mut game, x, z) = bow_arena();
+        place_monster(&mut game, 1, x + 600, z);
+        draw_for(&mut game, BOW_FULL_DRAW_TICKS);
+        jump_for(&mut game, 14);
+        assert!(airborne(&game));
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
+        game.advance_tick().unwrap();
+        let arrow = game.arrows[0];
+        assert!(arrow.position.y > PLAYER_Y as f32 + 60.0, "{arrow:?}");
+        let mut hit = Vec::new();
+        for _ in 0..20 {
+            game.advance_tick().unwrap();
+            hit.extend(
+                game.strike_outcomes()
+                    .iter()
+                    .filter(|outcome| outcome.definition == "bow.arrow")
+                    .map(|outcome| outcome.target),
+            );
+        }
+        assert_eq!(hit, [StrikeTarget::Monster(1)]);
+
+        // An archer's bolt meets a player in the air.
+        let mut game = ranged_scenario();
+        advance_until_shot(&mut game);
+        jump_for(&mut game, 0);
+        let mut landed = None;
+        for _ in 0..40 {
+            game.advance_tick().unwrap();
+            if let Some(event) = game
+                .strike_outcomes()
+                .iter()
+                .find(|outcome| outcome.target == StrikeTarget::Player(1))
+            {
+                landed = Some((event.result, game.players[&1].position.y));
+                break;
+            }
+        }
+        let (result, height) = landed.expect("the bolt lands");
+        assert!(matches!(result, StrikeResult::Hit { .. }), "{result:?}");
+        assert!(height > PLAYER_Y as f32 + 20.0, "hit at {height}");
+
+        // A save with an arrow in flight at jump height restores and continues.
+        let mut game = ArpgGame::new_with_seed(77).unwrap();
+        game.add_player(1).unwrap();
+        command(
+            &mut game,
+            ArpgCommand::EquipWeapon {
+                weapon: Weapon::Bow,
+            },
+        );
+        draw_for(&mut game, BOW_FULL_DRAW_TICKS);
+        jump_for(&mut game, 14);
+        command(&mut game, ArpgCommand::ReleaseBow { aim: None });
+        game.advance_tick().unwrap();
+        game.advance_tick().unwrap();
+        assert!(game.arrows[0].position.y > PLAYER_Y as f32 + 60.0);
+        let mut restored = ArpgGame::from_save_state(game.save_state().unwrap()).unwrap();
+        for _ in 0..10 {
+            game.advance_tick().unwrap();
+            restored.advance_tick().unwrap();
+        }
+        assert_eq!(restored.save_state().unwrap(), game.save_state().unwrap());
+        let mut tampered = game.save_state().unwrap();
+        tampered.arrows[0].position[1] = PLAYER_Y as f32 + 300.0;
+        assert!(ArpgGame::from_save_state(tampered).is_err());
+    }
+
+    #[test]
+    fn a_player_defeated_in_the_air_falls_lands_and_cannot_jump() {
+        let mut game = ArpgGame::new_with_seed(23).unwrap();
+        game.add_player(1).unwrap();
+        jump_for(&mut game, 10);
+        let height = game.players[&1].position.y;
+        assert!(height > PLAYER_Y as f32 + 50.0);
+        game.players.get_mut(&1).unwrap().health = 0;
+        command(&mut game, ArpgCommand::Jump);
+        assert_eq!(game.players[&1].jump_buffer_ticks_remaining, 0);
+        let mut previous = height;
+        let mut landed = false;
+        for _ in 0..60 {
+            game.advance_tick().unwrap();
+            let state = game.players[&1];
+            if state.grounded {
+                landed = true;
+                assert!(state.position.y - (PLAYER_Y as f32) < 6.0);
+            } else {
+                // Past the defeat the body only keeps its jump's arc.
+                assert!(state.velocity.x == 0.0 && state.velocity.z == 0.0);
+            }
+            assert!(state.position.y <= previous + 10.0);
+            previous = state.position.y;
+        }
+        assert!(landed);
+        assert!((game.players[&1].position.y - PLAYER_Y as f32).abs() < 1.0e-3);
+        assert!(!game.snapshot().unwrap().players[0].alive);
+        // The dead body never takes off again.
+        command(&mut game, ArpgCommand::Jump);
+        game.advance_tick().unwrap();
+        assert!(game.players[&1].grounded);
+        // A save of the dead, landed body restores.
+        ArpgGame::from_save_state(game.save_state().unwrap()).unwrap();
+    }
+
+    /// A player standing on a 40-unit block (a test ledge; ledges are content of a later
+    /// slice) in the start room, walking off its +x edge.
+    fn on_a_ledge() -> ArpgGame {
+        let mut game = ArpgGame::new_with_seed(31).unwrap();
+        game.add_player(1).unwrap();
+        let spawn = game.players[&1].position;
+        game.physics
+            .add_fixed(
+                STATIC_BODY_BASE + 990,
+                Vec3i::new(spawn.x as i32, 0, spawn.z as i32),
+                Vec3i::new(60, 40, 200),
+            )
+            .unwrap();
+        game.put_player(1, spawn + Vector::new(0.0, 41.0, 0.0));
+        let state = game.players.get_mut(&1).unwrap();
+        state.grounded = false;
+        // Settle onto the block.
+        for _ in 0..10 {
+            game.advance_tick().unwrap();
+        }
+        assert!(game.players[&1].grounded, "{:?}", game.players[&1]);
+        command(&mut game, ArpgCommand::SetMovement { x: 1, z: 0 });
+        game
+    }
+
+    #[test]
+    fn walking_off_the_ground_opens_the_coyote_window() {
+        // Walk until the body leaves the block's top without jumping.
+        let mut game = on_a_ledge();
+        let left = (0..120)
+            .find(|_| {
+                game.advance_tick().unwrap();
+                airborne(&game)
+            })
+            .expect("the body walks off the block");
+        assert!(left > 0);
+        assert_eq!(game.players[&1].coyote_ticks_remaining, COYOTE_TICKS);
+        assert!(game.players[&1].velocity.y <= 0.0);
+        let fork = game.save_state().unwrap();
+
+        // A press on each tick of the window still takes off; one after it does not.
+        for late in 0..=COYOTE_TICKS {
+            let mut game = ArpgGame::from_save_state(fork.clone()).unwrap();
+            for _ in 0..late {
+                game.advance_tick().unwrap();
+            }
+            jump_for(&mut game, 1);
+            let rising = game.players[&1].velocity.y > 0.0;
+            assert_eq!(rising, late < COYOTE_TICKS, "pressed {late} ticks late");
+        }
     }
 }

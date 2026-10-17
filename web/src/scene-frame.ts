@@ -59,6 +59,13 @@ function barrierOccludesFocus(collider, target, scale) {
   );
 }
 
+// Height (m) of the ground under a player, from its authoritative motion; snapshots without
+// it (older fixtures) keep the ring at the body's height.
+function groundHeight(player, scale) {
+  const motion = player.motion;
+  return (motion?.groundY ?? motion?.feetY ?? player.position[1]) / scale;
+}
+
 function dungeonFloor(snapshot, scale) {
   if (!snapshot.rooms?.length) {
     return { center: [0, -0.08, 0], size: [18, 0.12, 13] };
@@ -219,7 +226,10 @@ export function buildFrame(
           id: `player-${player.id}`,
           geometry: { kind: "cylinder", radius: 0.42, height: 0.03 },
           color,
-          transform: { translation: [position[0], position[1] + 0.015, position[2]] },
+          // On the ground under the body, also while it is airborne (#59).
+          transform: {
+            translation: [position[0], groundHeight(player, scale) + 0.015, position[2]],
+          },
         },
       ];
     }),

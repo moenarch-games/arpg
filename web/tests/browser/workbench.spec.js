@@ -40,25 +40,25 @@ test("melee scenarios show a forward hit, an aimed-away whiff, a blocked strike 
   appUrl,
 }) => {
   const dummy = await openScenario(page, appUrl, "dummy");
-  await dummy.press("Space");
+  await dummy.press("r");
   await dummy.stepUntil(dummy.timeline, "sword.lightSwing · player 1 → monster 1 · hit 25");
 
   const whiff = await openScenario(page, appUrl, "dummy");
   await page.keyboard.down("a");
   await whiff.steps(1);
   await page.keyboard.up("a");
-  await whiff.press("Space");
+  await whiff.press("r");
   await whiff.stepUntil(whiff.diagnostics, "primaryAttack · recovery");
   await expect(whiff.timeline).toContainText("No events yet");
 
   const blocked = await openScenario(page, appUrl, "obstructed");
-  await blocked.press("Space");
+  await blocked.press("r");
   await blocked.stepUntil(blocked.timeline, "obstructed");
   await expect(blocked.timeline).not.toContainText("hit");
 
   // The archer starts inside the swing but backs out of reach during the wind-up.
   const retreat = await openScenario(page, appUrl, "retreating");
-  await retreat.press("Space");
+  await retreat.press("r");
   await retreat.stepUntil(retreat.diagnostics, "primaryAttack · recovery");
   await expect(retreat.diagnostics).toContainText("Retreating1");
   await expect(retreat.timeline).toContainText("No events yet");
@@ -74,12 +74,12 @@ test("a block opens a counter window that expires and a counter honours reach", 
   await page.keyboard.down("f");
   await arena.stepUntil(arena.timeline, "monster.claw · monster 1 → player 1 · blocked");
   await page.keyboard.up("f");
-  await arena.press("Space");
+  await arena.press("r");
   await arena.steps(1);
   await expect(arena.diagnostics).toContainText("counter · windup");
   // The counter continues into the declared combo follow-up (recovery tick 2 of 10).
   await arena.stepUntil(arena.diagnostics, "counter · recovery · 8t");
-  await arena.press("Space");
+  await arena.press("r");
   await arena.steps(1);
   await expect(arena.diagnostics).toContainText("lightFollowUp · windup");
 
@@ -88,7 +88,7 @@ test("a block opens a counter window that expires and a counter honours reach", 
   await late.stepUntil(late.timeline, "blocked");
   await page.keyboard.up("f");
   await late.steps(31);
-  await late.press("Space");
+  await late.press("r");
   await late.steps(1);
   await expect(late.diagnostics).toContainText("primaryAttack · windup");
 
@@ -99,7 +99,7 @@ test("a block opens a counter window that expires and a counter honours reach", 
   await retreated.stepUntil(retreated.timeline, "→ player 1 · blocked", 150);
   await expect(retreated.timeline).toContainText("monster.bolt");
   await page.keyboard.up("f");
-  await retreated.press("Space");
+  await retreated.press("r");
   await retreated.steps(1);
   await expect(retreated.diagnostics).toContainText("counter · windup");
   await retreated.stepUntil(retreated.diagnostics, "counter · recovery");
@@ -117,9 +117,9 @@ test("archery scenarios show an arrow hit and an arrow stopped by a pillar", asy
     const range = await openScenario(page, appUrl, fixture);
     await range.press("x");
     await range.steps(1);
-    await page.keyboard.down("Space");
+    await page.keyboard.down("r");
     await range.steps(32);
-    await page.keyboard.up("Space");
+    await page.keyboard.up("r");
     await range.stepUntil(range.diagnostics, "Arrows1");
     await range.stepUntil(range.diagnostics, "Arrows0");
     if (hits) await expect(range.timeline).toContainText("bow.arrow · player 1 → monster 1 · hit");
@@ -147,7 +147,7 @@ test("a defeated dummy drops gold that the authority prompts for and pays once",
 }) => {
   const arena = await openScenario(page, appUrl, "dummy");
   for (let swing = 0; swing < 4; swing += 1) {
-    await arena.press("Space");
+    await arena.press("r");
     await arena.steps(1);
     await arena.stepUntil(arena.diagnostics, "Player actionidle");
   }
