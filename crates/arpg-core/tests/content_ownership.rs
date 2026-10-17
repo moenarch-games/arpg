@@ -73,10 +73,10 @@ use arpg_core::{
 use serde_json::{Value, json};
 use std::ops::Deref;
 
-/// Revision of the built-in bundle at the baseline of #154 (origin/main 435c9ea).
-const BUILT_IN_REVISION: &str = "3a14b8be9ae981e4";
+/// Revision of the built-in bundle since jump tuning became content (#59, format 9).
+const BUILT_IN_REVISION: &str = "d10b4f0a39988ec7";
 /// Revision of `paying(4_242)` at the same baseline.
-const PAYING_4242_REVISION: &str = "336c4220cb330869";
+const PAYING_4242_REVISION: &str = "759248bdcf0161c4";
 
 const BUILT_IN_SWING: &str = "sword.lightSwing";
 /// Distance from a monster at which an arranged light swing lands next tick.

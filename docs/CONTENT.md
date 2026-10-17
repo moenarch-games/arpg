@@ -5,7 +5,7 @@ Gameplay tuning lives in one typed, versioned bundle:
 validated by [`content.rs`](../crates/arpg-core/src/content.rs). Definitions *select*
 supported behaviour; executable rules stay in Rust. Appearance and audio never live here.
 
-## What the bundle holds (format 8)
+## What the bundle holds (format 9)
 
 | Section | Contents |
 | --- | --- |
@@ -22,6 +22,7 @@ supported behaviour; executable rules stay in Rust. Appearance and audio never l
 | `progression` | Experience per level and the base/per-level health and attack damage. |
 | `loot` | `monsterGold`: gold dropped by a defeated monster. |
 | `targeting` | Target-lock acquisition range and the larger break range that keeps a held lock (stickiness). |
+| `jump` | Jump arc and forgiveness (#59): `apexHeight` (how high the feet rise on flat ground, 1–100 world units, so no jump clears a wall), `airtimeTicks` (takeoff to landing, 4–120), `coyoteTicks` (after walking off the ground, 0–30), `bufferTicks` (how long a press waits for a possible jump, 1–30) and the airborne control rates `airAccelerationPerTick`, `airBrakingPerTick`, `airReversalPerTick` (1 to the top speed of 7). The core derives the takeoff speed and gravity that give exactly that apex and airtime. |
 
 Ids are 1–64 ASCII characters, unique per collection and published to clients (strike
 events, `MonsterSnapshot.definition`, `RoomSnapshot.encounter`), so presentation can key

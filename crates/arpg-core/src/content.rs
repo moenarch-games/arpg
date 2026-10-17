@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ActionKind, ComboInput};
 
-pub const CONTENT_FORMAT_VERSION: u16 = 8;
+pub const CONTENT_FORMAT_VERSION: u16 = 9;
 /// Touching monster and player bodies keep their centres up to √2 times their
 /// combined XZ half extents apart (85 units), and pursuit stops one navigation
 /// cell inside strike reach, so a monster strike must reach past both.
@@ -71,6 +71,60 @@ pub struct ContentBundle {
     pub progression: ProgressionData,
     pub loot: LootData,
     pub targeting: TargetingData,
+    pub jump: JumpData,
+}
+
+/// Jump and airborne-control tuning (#59). Heights are world units, durations ticks and
+/// control rates world units per tick, as for ground movement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JumpData {
+    /// How high the body's lowest point rises above flat ground at the top of a jump.
+    pub apex_height: u16,
+    /// Ticks from takeoff to landing on flat ground.
+    pub airtime_ticks: u8,
+    /// Ticks after leaving the ground without jumping in which a jump still takes off.
+    pub coyote_ticks: u8,
+    /// Ticks a jump press keeps waiting for the jump to become possible.
+    pub buffer_ticks: u8,
+    /// Airborne control converges on the movement intent like ground control: speed change
+    /// per tick towards a held direction, to rest, and when reversing.
+    pub air_acceleration_per_tick: u8,
+    pub air_braking_per_tick: u8,
+    pub air_reversal_per_tick: u8,
+}
+
+/// The highest permitted jump apex (world units above the ground). Walls and pillars stand
+/// 150 units above the ground, so the body's lowest point stays well below their tops: no
+/// jump clears level geometry, and a body beside a wall always overlaps it in height.
+pub(crate) const MAX_JUMP_APEX: u16 = 100;
+
+/// Jump tuning with the per-tick motion it implies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct JumpTuning {
+    pub data: JumpData,
+    /// Upward speed (world units per tick) a jump takes off with.
+    pub takeoff_speed: f32,
+    /// Speed (world units per tick) gravity takes away every airborne tick.
+    pub gravity: f32,
+}
+
+impl JumpTuning {
+    /// The takeoff speed and gravity under which a jump on flat ground rises by exactly
+    /// `apex_height` and lands after `airtime_ticks`: the takeoff tick moves by the takeoff
+    /// speed and every later tick by `gravity` less than the one before.
+    fn new(data: JumpData) -> Self {
+        // `airtime_ticks` moves sum to zero when takeoff = gravity * (n - 1) / 2. The rising
+        // moves are the first `rising` ones; the apex is their sum.
+        let ticks = f64::from(data.airtime_ticks);
+        let rising = f64::from(data.airtime_ticks / 2);
+        let gravity = 2.0 * f64::from(data.apex_height) / (rising * (ticks - rising));
+        Self {
+            data,
+            takeoff_speed: (gravity * (ticks - 1.0) / 2.0) as f32,
+            gravity: gravity as f32,
+        }
+    }
 }
 
 /// Optional target-lock tuning. Distances are centre-to-centre world units on the plane.
@@ -470,6 +524,7 @@ pub(crate) struct Resolved {
     pub progression: ProgressionData,
     pub loot: LootData,
     pub targeting: TargetingData,
+    pub jump: JumpTuning,
 }
 
 impl Resolved {
@@ -1063,6 +1118,31 @@ impl ContentBundle {
             );
         }
 
+        let jump = self.jump;
+        if !(1..=MAX_JUMP_APEX).contains(&jump.apex_height) {
+            fail("jump.apexHeight".into(), "must be within 1..=100");
+        }
+        if !(4..=120).contains(&jump.airtime_ticks) {
+            fail("jump.airtimeTicks".into(), "must be within 4..=120");
+        }
+        if jump.coyote_ticks > 30 {
+            fail("jump.coyoteTicks".into(), "must be at most 30");
+        }
+        if !(1..=30).contains(&jump.buffer_ticks) {
+            fail("jump.bufferTicks".into(), "must be within 1..=30");
+        }
+        let top_speed = crate::PLAYER_SPEED as u8;
+        for (field, rate) in [
+            ("airAccelerationPerTick", jump.air_acceleration_per_tick),
+            ("airBrakingPerTick", jump.air_braking_per_tick),
+            ("airReversalPerTick", jump.air_reversal_per_tick),
+        ] {
+            if !(1..=top_speed).contains(&rate) {
+                let message = format!("must be within 1..={top_speed} (the top speed)");
+                fail(format!("jump.{field}"), &message);
+            }
+        }
+
         if errors.is_empty() {
             Ok(Resolved {
                 revision: self.revision(),
@@ -1079,6 +1159,7 @@ impl ContentBundle {
                 progression,
                 loot,
                 targeting,
+                jump: JumpTuning::new(jump),
             })
         } else {
             Err(errors)

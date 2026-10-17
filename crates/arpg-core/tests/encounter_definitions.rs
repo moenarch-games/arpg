@@ -546,7 +546,8 @@ fn opened_gold(results: &[InteractionResult]) -> Vec<u32> {
 
 #[test]
 fn base_bundle_assigns_each_combat_room_a_single_member_encounter_with_a_chest_reward() {
-    assert_eq!(CONTENT_FORMAT_VERSION, 8, "the bundle's shape changed");
+    // Format 9 added jump tuning (#59) after the encounter definitions of format 8.
+    assert_eq!(CONTENT_FORMAT_VERSION, 9, "the bundle's shape changed");
     assert_eq!(base_bundle().format_version, CONTENT_FORMAT_VERSION);
     base_bundle()
         .check()

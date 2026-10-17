@@ -21,6 +21,16 @@ authorities. The physics backend (Rapier for now) owns continuous physical truth
 owns stable walkable regions, typed traversal connections, actor region/transit
 state, and ability-specific cross-region rules.
 
+The first slice (#59) is flat-ground jumping: the floor is a Rapier half-space, players
+move with gravity under Rapier's character controller, and support (grounded, falling,
+landing) comes from the controller's grounded test confirmed by a support query against
+static ground. Jump eligibility, the coyote and buffer windows, airborne control and the
+grounded-only guard and counter are `arpg-core` rules over that state; the tuning is
+content (`jump`). Snapshots publish each player's `motion` (support, vertical velocity,
+feet and ground height) for presentation, which places the humanoid at the feet and the
+ground ring on the ground, never correcting either. Walkable regions, typed connections
+and traversal geometry are later slices.
+
 Combat and interaction are region-local by default. Abilities may explicitly
 opt into cross-region 3D range/line-of-sight checks. Authored and procedurally
 generated levels must both provide topology matching their geometry; undeclared
@@ -91,7 +101,7 @@ Peer-hosted authority is a convenience/trust model, not an anti-cheat boundary. 
 Dedicated commands use two `game-server` command lanes ([game-server ADR 0008](https://github.com/moritzbrantner/game-server/blob/main/docs/adr/0008-reliable-command-lane.md)). The browser picks the lane by command kind; gameplay rules never depend on it.
 
 - **Held state** (`setMovement`, `setAim`, `setGuard`) travels as best-effort WebTransport datagrams with latest-wins semantics. Each one carries an absolute value that the authority can take again at any time without a side effect. A datagram may be lost, and one overtaken by a newer datagram is ignored as stale. The client re-asserts the whole held set on a bounded cadence (#139), so the authority converges on what the player holds within a few refresh periods.
-- **One-shots and bow transitions** (`primaryAttack`, `secondaryAttack`, `interact`, `equipWeapon`, `cycleTarget`, `clearTarget`, `drawBow`, `releaseBow`, `cancelBow`) travel on the connection's reliable command lane. The bow transitions are held input, but a release consumes the draw it shoots. As datagrams, a lost release followed by a new draw would leave the first draw in place, and the next release would fire one shot for two releases. On the lane, draw, release and cancel are lossless and stay in order among themselves, and the refresh never repeats them. A draw that reaches the authority during a shot is ignored, exactly as in local play. The lane is one bidirectional stream, opened when the first lane command of a connection is sent, that carries the commands in order. The authority acknowledges each one as applied, duplicate or rejected. `DedicatedGameSession` keeps every command until its ack (at most 256), and after a resume re-sends the unacknowledged ones, in order, before newer ones. A re-sent command that already reached the authority before the outage is a duplicate: the reliable watermark ignores it, so an attack or interaction applies at most once while the player keeps its slot.
+- **One-shots and bow transitions** (`primaryAttack`, `secondaryAttack`, `interact`, `equipWeapon`, `cycleTarget`, `clearTarget`, `jump`, `drawBow`, `releaseBow`, `cancelBow`) travel on the connection's reliable command lane. The bow transitions are held input, but a release consumes the draw it shoots. As datagrams, a lost release followed by a new draw would leave the first draw in place, and the next release would fire one shot for two releases. On the lane, draw, release and cancel are lossless and stay in order among themselves, and the refresh never repeats them. A draw that reaches the authority during a shot is ignored, exactly as in local play. The lane is one bidirectional stream, opened when the first lane command of a connection is sent, that carries the commands in order. The authority acknowledges each one as applied, duplicate or rejected. `DedicatedGameSession` keeps every command until its ack (at most 256), and after a resume re-sends the unacknowledged ones, in order, before newer ones. A re-sent command that already reached the authority before the outage is a duplicate: the reliable watermark ignores it, so an attack or interaction applies at most once while the player keeps its slot.
 
 `MatchRuntime` keeps one sequence watermark per (player, lane), and `ArpgGame` mirrors that through `AuthoritativeGame::apply_lane_command`: a command is stale only against earlier commands of its own lane, so a one-shot overtaken by a newer held datagram still applies. `apply_command` is the datagram lane, which local and peer play use. Player saves keep both watermarks (`lastSequence` and the defaulted `lastReliableSequence`). The browser uses one sequence counter for both lanes, which keeps each lane strictly increasing.
 
