@@ -35,7 +35,8 @@ use crate::{GameError, TICK_HZ, Vec3i};
 const METRES_PER_UNIT: f32 = 1.0 / crate::WORLD_UNITS_PER_METER as f32;
 /// The gap (in metres) Rapier's controller keeps between a character and what it touches:
 /// a quarter world unit stays well above `f32` resolution across the dungeon and below the
-/// half unit that rounding to whole world units hides.
+/// half unit that snapshots round away. Gameplay rules see it (#182): touching bodies are
+/// a quarter unit apart.
 const CONTACT_OFFSET: f32 = 0.25 * METRES_PER_UNIT;
 /// Overlap (in metres) below this depth counts as touching, not penetrating.
 const PENETRATION_TOLERANCE: f32 = 1.0e-3 * METRES_PER_UNIT;

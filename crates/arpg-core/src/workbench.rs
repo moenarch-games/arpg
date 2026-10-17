@@ -6,12 +6,14 @@
 //! in local training. Every accepted operation is recordable in a [`Reproduction`], so an
 //! edited session still replays; it can no longer be saved.
 
+use rapier3d::math::Vector;
 use serde::{Deserialize, Serialize};
 
 use crate::content::{BowData, Content, GuardData, validate_tuning};
+use crate::physics::vector;
 use crate::{
     ArpgGame, GameError, MONSTER_BODY_HALF_EXTENTS, MonsterState, PLAYER_HALF_EXTENTS, PLAYER_Y,
-    RoomEncounterState, RoomId, RoomSnapshot, Vec3i, WALL_HALF_THICKNESS, vec_to_array,
+    RoomEncounterState, RoomId, RoomSnapshot, Vec3i, WALL_HALF_THICKNESS,
 };
 
 /// Monsters the workbench room may hold at once, spawned or generated, living or defeated:
@@ -358,11 +360,11 @@ impl ArpgGame {
                 "spawn offset lies outside the workbench room",
             ));
         }
-        if !self.dungeon_contains(vec_to_array(position), MONSTER_BODY_HALF_EXTENTS) {
+        if !self.dungeon_contains(vector(position), MONSTER_BODY_HALF_EXTENTS) {
             return Err(GameError::new("spawn offset overlaps level geometry"));
         }
-        let overlaps = |other: Vec3i, half: Vec3i| {
-            bodies_overlap(position, MONSTER_BODY_HALF_EXTENTS, other, half)
+        let overlaps = |other: Vector, half: Vec3i| {
+            bodies_overlap(vector(position), MONSTER_BODY_HALF_EXTENTS, other, half)
         };
         let living_in_room = self
             .monsters
@@ -370,11 +372,11 @@ impl ArpgGame {
             .filter(|monster| monster.room_id == room_id && monster.health > 0);
         if living_in_room
             .clone()
-            .any(|monster| overlaps(monster.at(), MONSTER_BODY_HALF_EXTENTS))
+            .any(|monster| overlaps(monster.position, MONSTER_BODY_HALF_EXTENTS))
             || self
                 .players
                 .values()
-                .any(|player| overlaps(Vec3i::rounded(player.position), PLAYER_HALF_EXTENTS))
+                .any(|player| overlaps(player.position, PLAYER_HALF_EXTENTS))
         {
             return Err(GameError::new("spawn offset overlaps another body"));
         }
@@ -438,9 +440,9 @@ impl ArpgGame {
         let blocked = arrangement.iter().any(|monster| {
             self.players.values().any(|player| {
                 bodies_overlap(
-                    monster.at(),
+                    monster.position,
                     MONSTER_BODY_HALF_EXTENTS,
-                    Vec3i::rounded(player.position),
+                    player.position,
                     PLAYER_HALF_EXTENTS,
                 )
             })
@@ -598,9 +600,12 @@ impl ArpgGame {
 }
 
 /// Whether two bodies' footprints on the gameplay plane overlap.
-fn bodies_overlap(left: Vec3i, left_half: Vec3i, right: Vec3i, right_half: Vec3i) -> bool {
-    (left.x - right.x).abs() < left_half.x + right_half.x
-        && (left.z - right.z).abs() < left_half.z + right_half.z
+fn bodies_overlap(left: Vector, left_half: Vec3i, right: Vector, right_half: Vec3i) -> bool {
+    let close = |left: f32, right: f32, reach: i32| {
+        (f64::from(left) - f64::from(right)).abs() < f64::from(reach)
+    };
+    close(left.x, right.x, left_half.x + right_half.x)
+        && close(left.z, right.z, left_half.z + right_half.z)
 }
 
 #[cfg(test)]
@@ -919,17 +924,17 @@ mod tests {
         assert!(game.players[&1].counter.is_none());
         game.tick = 0;
 
-        let arrow = crate::ArrowSnapshot {
+        let arrow = crate::ArrowState {
             id: 1,
             source: crate::StrikeSource::Player(1),
             launched_at_tick: 0,
-            position: [0, PLAYER_Y, 0],
-            velocity: [10, 0, 0],
+            position: Vec3i::new(0, PLAYER_Y, 0).into(),
+            velocity: Vec3i::new(10, 0, 0).into(),
             damage: 1,
             ticks_remaining: 10,
         };
         game.arrows = (1..=3)
-            .map(|id| crate::ArrowSnapshot { id, ..arrow })
+            .map(|id| crate::ArrowState { id, ..arrow })
             .collect();
         // Shortening the lifetime keeps only what is left of each arrow's flight.
         game.tick = 4;
@@ -941,7 +946,7 @@ mod tests {
         assert!(game.arrows.is_empty());
         game.tick = 0;
         game.arrows = (1..=3)
-            .map(|id| crate::ArrowSnapshot { id, ..arrow })
+            .map(|id| crate::ArrowState { id, ..arrow })
             .collect();
         game.apply_workbench(&tune(TuningParameter::BowMaxLiveArrows, 1))
             .unwrap();
@@ -1086,7 +1091,7 @@ mod tests {
         for id in 0..20 {
             game.ground_loot.push(crate::GroundLootState {
                 id: 900 + id,
-                position: Vec3i::new(x - 300, PLAYER_Y, z),
+                position: Vec3i::new(x - 300, PLAYER_Y, z).into(),
                 kind: crate::LootKind::Gold,
                 amount: 1,
             });
@@ -1139,7 +1144,7 @@ mod tests {
         let (x, z) = room_center(&game);
         game.ground_loot.push(crate::GroundLootState {
             id: 900,
-            position: Vec3i::new(x + 200, PLAYER_Y, z),
+            position: Vec3i::new(x + 200, PLAYER_Y, z).into(),
             kind: crate::LootKind::Gold,
             amount: 1,
         });
