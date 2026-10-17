@@ -26,9 +26,8 @@
 //   An in-grace resume ("connecting") is *not* an authoritative loss: the #92 contract in
 //   `reconnect-guard.test.ts` and `peer-link-recovery.test.ts` (a key held through a resume
 //   stays asserted) remains in force and is not contradicted here.
-// - Peer-guest authoritative loss is not covered: the baseline runtime has no peer-guest
-//   "disconnected" lifecycle, and choosing which lobby event is authoritative is not settled
-//   by the issue. See the handoff comment on #176.
+// - Peer-guest authoritative loss (owner decision, Atlas 4.1.2: the guest's own host link
+//   closed and recovery gave up) is covered in `peer-link-recovery.test.ts`.
 import { expect, test } from "bun:test";
 import { createInputAttachment } from "./input-attachment.ts";
 import { createGameClientRuntime } from "./game-client-runtime.ts";

@@ -13,6 +13,7 @@ export function attachPeerGameSession({
   localContentRevision,
   onIncompatible,
   onLinkRecovered = () => true,
+  onHostLinkLost = () => {},
 }) {
   const players = new Map();
   // Guest only: whether the host assigned this guest a player, and whether the host link has
@@ -123,6 +124,15 @@ export function attachPeerGameSession({
       return;
     }
     retryLinkRecovery();
+  });
+
+  // Guest only: the foundation gave up recovering the link to the host. This is the
+  // authoritative loss (#176): the guest stops acting until it joins again.
+  listen("peer-recovery-exhausted", ({ peerId }) => {
+    if (role !== "guest" || !guestAssigned || peerId !== session.hostParticipantId) return;
+    guestAssigned = false;
+    hostLinkInterrupted = false;
+    onHostLinkLost();
   });
 
   // The recovery stays pending until the re-assertion actually reaches the host link, so a

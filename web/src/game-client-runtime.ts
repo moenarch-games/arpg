@@ -3,7 +3,8 @@
 // fixed-tick loop outside React. React subscribes to `getState()` for bounded shell changes
 // and to the snapshot store for per-tick views; it never reaches into sources directly.
 //
-// Lifecycle: idle → starting → running ⇄ disconnected; any active state → failed; stop()
+// Lifecycle: idle → starting → running ⇄ disconnected (dedicated grace expiry, or a peer
+// guest's host link whose recovery gave up); any active state → failed; stop()
 // returns to idle and dispose() is terminal.
 
 // Core loading: the Rust/Wasm gameplay core (`loadCore`) is runtime state, unloaded → loading
@@ -134,6 +135,8 @@ export interface GameClientRuntimeOptions {
     // Guest: the host link recovered in place, keeping the assigned player. Returns false
     // when the re-assertion could not be sent yet, so the adapter retries it.
     onLinkRecovered?: () => boolean;
+    // Guest: the host link closed and its recovery gave up (authoritative loss, #176).
+    onHostLinkLost?: () => void;
   }): () => void;
   createDedicatedSession(endpoint: string): DedicatedSessionLike;
   supportsWebTransport(): boolean;
@@ -647,6 +650,13 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
         // The host kept this guest's player across an in-place link recovery, but any held
         // change sent during the outage was refused; re-assert it like after a re-join.
         onLinkRecovered: syncGuardOnAssignment,
+        // Held input is released and nothing is sent until the player joins again.
+        onHostLinkLost: () => {
+          if (!isCurrent(generation) || peer !== session) return;
+          teardown();
+          update({ lifecycle: "disconnected", playerId: null });
+          status("Host connection lost");
+        },
         onSnapshot: (snapshot) => options.snapshots.publish(snapshot),
         onStatus: status,
         localContentRevision: options.localContentRevision,
