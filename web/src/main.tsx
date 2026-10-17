@@ -216,8 +216,9 @@ function GameCanvas({ snapshots, playerId, accent, graphics, effects, onPointerM
       cancelFrame: (handle) => cancelAnimationFrame(handle),
       characters: createCharacterLayer({
         getAsset: characterAssets.get,
-        idleClip: RANGER_BUNDLE.idleClip,
-        now: () => performance.now(),
+        animation: RANGER_BUNDLE.animation,
+        // Animation follows the simulation's fixed tick (arpg-core TICK_HZ).
+        tickHz: 60,
       }),
       view: viewRef.current,
     });
