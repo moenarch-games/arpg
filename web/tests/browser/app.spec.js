@@ -339,8 +339,9 @@ test("all combat controls stay reachable on the narrowest phones", async ({ brow
     try {
       await page.goto(`${appUrl}?scenario=training&seed=42`);
       const controls = page.getByRole("region", { name: "Combat actions" }).getByRole("button");
-      // Heavy is encoded by an upward Attack swipe on touch layouts.
-      await expect(controls).toHaveCount(4);
+      // Attack, Guard, the weapon switch, Interact and Jump (#59). Heavy is encoded by an
+      // upward Attack swipe on touch layouts, so its button is hidden.
+      await expect(controls).toHaveCount(5);
       await expect(page.getByRole("button", { name: "Heavy attack" })).toBeHidden();
       const stick = await page.getByRole("group", { name: "Movement joystick" }).boundingBox();
       const boxes = [];
