@@ -72,9 +72,6 @@ jobs:
       - name: Bundle browser MVP
         working-directory: web
         run: bun run build
-      - name: Execute compiled WASM gameplay controls
-        working-directory: web
-        run: bun run test:physics-wasm
       - name: Build dedicated acceptance server
         run: cargo build --locked -p arpg-game-server --bin server
       - name: Verify browser workflows

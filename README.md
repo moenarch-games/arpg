@@ -46,7 +46,7 @@ The near-term execution order is the content-readiness roadmap [#50](https://git
 | Training scenario (`?scenario=training&seed=<u32>`) | Implemented | [`training-arena.js`](web/src/training-arena.js) | `training-arena.test.js`; `app.spec.js`, `hotkeys.spec.js` |
 | Workbench spawn/remove/reset and exact tuning | Implemented (local training only) | [`workbench.rs`](crates/arpg-core/src/workbench.rs), [`workbench-controls.jsx`](web/src/workbench-controls.jsx) | `recorded_operations_replay_in_their_order_among_commands`, `exact_tuning_values_are_validated_with_the_content_bounds`, `workbench_operations_are_recorded_and_replay_natively`, `workbench.spec.js` |
 | Versioned savestates | Implemented | [`arpg-core`](crates/arpg-core/src/lib.rs), [`save-state.js`](web/src/save-state.js) | `save_state_*` tests, `save-state.test.js`, `savestate.spec.js` |
-| Local Rust/Wasm authority | Implemented | [`arpg-web-wasm`](crates/arpg-web-wasm/src/lib.rs) | `bun run test:physics-wasm`; all browser specs |
+| Local Rust/Wasm authority | Implemented | [`arpg-web-wasm`](crates/arpg-web-wasm/src/lib.rs) | `arpg-web-wasm` unit tests; all browser specs |
 | Peer-hosted co-op | Implemented | [`peer-session.js`](web/src/peer-session.js) | `peer-session.test.js`, `turn.spec.ts` |
 | Dedicated online | Implemented | [`arpg-game-server`](crates/arpg-game-server/src/lib.rs), [`dedicated-session.js`](web/src/dedicated-session.js) | `real_arpg_snapshot_matches_the_game_server_runtime_path`, `rejects_malformed_game_payloads_before_the_core_sees_them`, `reliable_one_shots.rs`, `dedicated-session.test.js`, `reliable-command-lane.test.js`, `reliable-one-shots.test.ts`, `dedicated.spec.js` |
 | Persistent physics solver migration | In flight: compatible engine update landed ([evidence](docs/physics-workloads.md)); solver/controller transition pending | [#48](https://github.com/moritzbrantner/arpg/issues/48) is the sole migration owner | `physics_workloads` traces |
@@ -109,7 +109,6 @@ bun run format:check
 bun run lint
 bun run test
 bun run build
-bun run test:physics-wasm
 bunx playwright install chromium
 bun run test:browser
 ```

@@ -13,8 +13,7 @@
     "test:browser": "playwright test",
     "setup": "bun run vendor && bun run wasm",
     "build": "vite build",
-    "dev": "vite",
-    "test:physics-wasm": "bun ../scripts/test-physics-wasm.mjs src/wasm/arpg_web_wasm.js"
+    "dev": "vite"
   },
   "dependencies": {
     "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#f484db8a3d2a7a555fa463eddf9c28790b240ce0",

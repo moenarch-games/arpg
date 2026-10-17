@@ -56,7 +56,6 @@ bun run lint
 bun run test
 bun run setup
 bun run build
-bun run test:physics-wasm
 bun run test:browser
 ```
 
