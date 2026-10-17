@@ -31,15 +31,14 @@ import {
   GameSummary,
 } from "./snapshot-views.jsx";
 import { SettingsDialog } from "./settings-dialog.jsx";
+import { PROFILE_KEY, loadInputProfile } from "./input-profile.js";
 import {
-  PROFILE_KEY,
   SETUP_URL_KEY,
   DEDICATED_URL_KEY,
   MOUSE_AIM_KEY,
   DEFAULT_PRESENTATION,
   MOTION_PREFERENCES,
   TEXT_SCALES,
-  loadProfile,
   loadPresentation,
   loadMouseAim,
   normalizePresentation,
@@ -122,7 +121,10 @@ const inputRegistry = {
     ["game.moveBackward", "Move backward", "KeyS", "allow", "Movement"],
     ["game.moveLeft", "Move left", "KeyA", "allow", "Movement"],
     ["game.moveRight", "Move right", "KeyD", "allow", "Movement"],
-    ["game.primaryAttack", "Primary attack", "Space", "never", "Combat"],
+    // The standard scheme (#59): Space jumps and R attacks. Older stored profiles migrate
+    // once (`input-profile.js`); customized ones keep their bindings.
+    ["game.jump", "Jump", "Space", "never", "Movement"],
+    ["game.primaryAttack", "Primary attack", "KeyR", "never", "Combat"],
     ["game.secondaryAttack", "Heavy attack", "KeyQ", "never", "Combat"],
     ["game.interact", "Interact / pick up", "KeyE", "never", "Interaction"],
     ["game.guard", "Raise shield (hold)", "KeyF", "never", "Combat"],
@@ -155,6 +157,16 @@ const inputRegistry = {
       },
     ]),
 };
+
+const inputDefaults = inputRegistry.actions.flatMap((action) => action.defaults);
+
+// Labels of the keys each action is bound to under `profile`; `null` for an unbound action.
+function actionKeyLabels(profile) {
+  const bindings = applyProfile(inputDefaults, profile).bindings;
+  return Object.fromEntries(
+    inputRegistry.actions.map((action) => [action.id, keyLabelForAction(bindings, action.id)]),
+  );
+}
 
 // Offers `text` as a JSON file download.
 function downloadJson(text, fileName) {
@@ -335,7 +347,11 @@ function App() {
   const [trainingFixture, setTrainingFixture] = useState(initialRequest.training.fixture);
   const [selectedCharacterId, setSelectedCharacterId] = useState(() => loadSelectedCharacterId());
   const [profile, setProfile] = useState(() =>
-    loadProfile((profile) => validateRegistry(inputRegistry, profile).valid),
+    loadInputProfile({
+      validate: (profile) => validateRegistry(inputRegistry, profile).valid,
+      defaults: inputDefaults,
+      foundation: { applyProfile },
+    }),
   );
   // Local display preferences (#61): never part of a save or the authority.
   const [presentation, setPresentation] = useState(() => loadPresentation());
@@ -363,10 +379,9 @@ function App() {
     () => new URLSearchParams(location.search).get("join") ?? "",
   );
 
-  const interactKey = useMemo(() => {
-    const defaults = inputRegistry.actions.flatMap((action) => action.defaults);
-    return keyLabelForAction(applyProfile(defaults, profile).bindings, "game.interact");
-  }, [profile]);
+  // Prompts and hints name the keys of the effective profile, never the defaults.
+  const keyLabels = useMemo(() => actionKeyLabels(profile), [profile]);
+  const interactKey = keyLabels["game.interact"];
 
   const selectedCharacter = useMemo(
     () => resolveCharacter(selectedCharacterId),
@@ -441,6 +456,7 @@ function App() {
       if (action === "game.cycleTarget") return runtime.cycleTarget();
       if (action === "game.clearTarget") return runtime.clearTarget();
       const type = {
+        "game.jump": "jump",
         "game.primaryAttack": "primaryAttack",
         "game.secondaryAttack": "secondaryAttack",
         "game.interact": "interact",
@@ -508,6 +524,7 @@ function App() {
         }
         if (
           [
+            "game.jump",
             "game.primaryAttack",
             "game.secondaryAttack",
             "game.interact",
@@ -1153,6 +1170,7 @@ function App() {
         playerId={playerId}
         status={shownStatus}
         interactKey={interactKey}
+        keyLabels={keyLabels}
       />
 
       {ready && !settingsOpen && (
@@ -1186,6 +1204,7 @@ function App() {
             runtime.setBowDraw("touch", held, { interrupted })
           }
           switchWeapon={switchWeapon}
+          keyLabels={keyLabels}
         />
       )}
 

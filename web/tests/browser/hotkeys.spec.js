@@ -35,7 +35,7 @@ async function closeSettings(page, settings) {
 }
 
 async function savedProfile(page) {
-  return page.evaluate(() => localStorage.getItem("arpg-input-profile-v1"));
+  return page.evaluate(() => localStorage.getItem("arpg-input-profile-v2"));
 }
 
 test("a replaced movement hotkey persists across reloads", async ({ page, appUrl }) => {
@@ -58,14 +58,15 @@ test("a replaced primary-attack hotkey drives combat and disables the old key", 
 }) => {
   await page.goto(`${appUrl}?scenario=training&seed=42`);
   let settings = await openSettings(page);
-  await replaceBinding(page, settings, "Primary attack", "r");
-  expect(await savedProfile(page)).toContain("KeyR");
+  // The standard key is R (#59); move it to J.
+  await replaceBinding(page, settings, "Primary attack", "j");
+  expect(await savedProfile(page)).toContain("KeyJ");
   await closeSettings(page, settings);
 
   await page.reload();
   settings = await openSettings(page);
-  await expect(actionRow(settings, "Primary attack")).toContainText("KeyR");
-  await expect(actionRow(settings, "Primary attack")).not.toContainText("Space");
+  await expect(actionRow(settings, "Primary attack")).toContainText("KeyJ");
+  await expect(actionRow(settings, "Primary attack")).not.toContainText("KeyR");
   await closeSettings(page, settings);
 
   await page.getByRole("button", { name: "Pause", exact: true }).click();
@@ -73,12 +74,12 @@ test("a replaced primary-attack hotkey drives combat and disables the old key", 
   const attack = page.getByRole("button", { name: "Primary attack", exact: true });
   const step = page.getByRole("button", { name: "Step", exact: true });
 
-  await page.keyboard.press("Space");
+  await page.keyboard.press("r");
   await step.click();
   await page.evaluate(() => document.activeElement?.blur());
   await expect(attack).not.toHaveAttribute("data-phase", "windup");
 
-  await page.keyboard.press("r");
+  await page.keyboard.press("j");
   await step.click();
   await expect(attack).toHaveAttribute("data-phase", "windup");
 });

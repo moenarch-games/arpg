@@ -342,7 +342,7 @@ test("dedicated one-shots land while every outgoing datagram is lost", async ({ 
     await page.evaluate(() => {
       globalThis.__arpgDatagramLoss.dropOutgoing = true;
     });
-    await page.keyboard.press("Space");
+    await page.keyboard.press("r");
     await expect
       .poll(() => page.evaluate(() => globalThis.__arpgAttackPhases), { timeout: 10_000 })
       .toContain("windup");

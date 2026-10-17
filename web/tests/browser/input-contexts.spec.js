@@ -138,11 +138,12 @@ test("focusing a text field mid-hold releases held keys once and typing never pl
   const seed = page.getByRole("spinbutton", { name: "Seed" });
 
   // The player clicks the seed field while still holding forward and the shield, then types
-  // keys that are also gameplay bindings (move right, heavy, primary, interact).
+  // keys that are also gameplay bindings (move right, heavy, jump, primary, interact).
   await seed.click();
   await page.keyboard.press("d");
   await page.keyboard.press("q");
   await page.keyboard.press("Space");
+  await page.keyboard.press("r");
   await page.keyboard.press("e");
   await page.keyboard.type("7");
   await expect(seed).toBeFocused();

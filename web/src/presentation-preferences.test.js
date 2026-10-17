@@ -20,7 +20,7 @@
 //
 // Version 1 is the existing `arpg-graphics-v1` document `{ shadows, pixelRatioLimit }`, read
 // with the existing all-or-nothing `loadGraphics` rules. Mouse aim (`arpg-mouse-aim-v1`) and
-// the input profile (`arpg-input-profile-v1`) are input preferences with their own owners and
+// the input profile (`arpg-input-profile-v2`, `input-profile.js`) are input preferences with their own owners and
 // are not part of this document.
 //
 // API added to `web/src/preferences.js`:
@@ -56,13 +56,13 @@ import {
   MOUSE_AIM_KEY,
   PRESENTATION_KEY,
   PRESENTATION_VERSION,
-  PROFILE_KEY,
   TEXT_SCALES,
   loadGraphics,
   loadPresentation,
   normalizePresentation,
   persistPresentation,
 } from "./preferences.js";
+import { PROFILE_KEY } from "./input-profile.js";
 
 const DEFAULTS = {
   graphics: { shadows: true, pixelRatioLimit: 2 },

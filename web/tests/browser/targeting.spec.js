@@ -29,7 +29,7 @@ test("a target lock turns the swing towards the dummy after facing away", async 
   await arena.step.click();
   await expect(arena.diagnostics).toContainText("locked monster 1");
   await expect(page.getByLabel("Character progression")).toContainText("Target locked");
-  await page.keyboard.press("Space");
+  await page.keyboard.press("r");
   for (let tick = 0; tick < 30; tick += 1) {
     if ((await arena.timeline.textContent()).includes("hit 25")) break;
     await arena.step.click();

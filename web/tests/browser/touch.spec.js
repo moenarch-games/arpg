@@ -353,3 +353,43 @@ test("releasing the movement finger first still commits the independent Attack g
     await context.close();
   }
 });
+
+test("the touch Jump control jumps once per tap while the other thumb moves (#59)", async ({
+  browser,
+  appUrl,
+}) => {
+  const { context, page, cdp } = await phone(browser, appUrl);
+  try {
+    const stickRect = await page.getByRole("group", { name: "Movement joystick" }).boundingBox();
+    const jump = page.getByRole("button", { name: "Jump", exact: true });
+    const jumpRect = await jump.boundingBox();
+    // The control sits on screen next to the others, clear of the joystick.
+    const viewport = page.viewportSize();
+    expect(jumpRect.x + jumpRect.width).toBeLessThanOrEqual(viewport.width);
+    expect(jumpRect.y + jumpRect.height).toBeLessThanOrEqual(viewport.height);
+    const origin = center(1, stickRect);
+    const right = point(1, origin.x + stickRect.width * 0.4, origin.y);
+    const press = center(2, jumpRect);
+    expect(
+      await page.evaluate(
+        ({ x, y }) =>
+          document.elementFromPoint(x, y)?.closest("button")?.getAttribute("aria-label"),
+        press,
+      ),
+    ).toBe("Jump");
+
+    await touch(cdp, "touchStart", origin);
+    await touch(cdp, "touchMove", right);
+    await touch(cdp, "touchStart", right, press);
+    await touch(cdp, "touchEnd", press);
+    await page.getByRole("button", { name: "Step", exact: true }).click();
+    await expect(jump).toHaveAttribute("data-motion", "airborne");
+    await touch(cdp, "touchEnd", right);
+
+    const commands = (await exportedCommands(page)).map((command) => command.type);
+    expect(commands.filter((type) => type === "jump")).toHaveLength(1);
+    expect(commands).not.toContain("primaryAttack");
+  } finally {
+    await context.close();
+  }
+});

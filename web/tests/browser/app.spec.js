@@ -220,7 +220,7 @@ test("the training arena exports its session as a replayable reproduction", asyn
   await page.getByRole("button", { name: "Pause", exact: true }).click();
   const step = page.getByRole("button", { name: "Step", exact: true });
   await page.evaluate(() => document.activeElement?.blur());
-  await page.keyboard.press("Space");
+  await page.keyboard.press("r");
   for (let tick = 0; tick < 3; tick += 1) await step.click();
 
   const download = page.waitForEvent("download");
@@ -270,7 +270,7 @@ test("timed attacks chain into the light combo and a missed window starts over",
   // Commands apply immediately; the paused view updates on the next simulation step.
   const pressAndStep = async () => {
     await page.evaluate(() => document.activeElement?.blur());
-    await page.keyboard.press("Space");
+    await page.keyboard.press("r");
     await step.click();
   };
   const stepUntil = async (text) => {
@@ -311,19 +311,19 @@ test("the bow draws while held, shoots one arrow on release and cancels on blur"
   await page.keyboard.press("x");
   await expect(draw).toBeVisible();
 
-  await page.keyboard.down("Space");
+  await page.keyboard.down("r");
   await expect(draw).toHaveAttribute("data-draw", "drawing");
   await page.waitForTimeout(600);
-  await page.keyboard.up("Space");
+  await page.keyboard.up("r");
   await expect(arrows).toContainText("Arrows1");
   await expect(arrows).toContainText("Arrows0", { timeout: 5_000 });
 
-  await page.keyboard.down("Space");
+  await page.keyboard.down("r");
   await expect(draw).toHaveAttribute("data-draw", "drawing");
   await page.waitForTimeout(600);
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));
   await expect(draw).not.toHaveAttribute("data-draw", /.+/);
-  await page.keyboard.up("Space");
+  await page.keyboard.up("r");
   await page.waitForTimeout(300);
   await expect(arrows).toContainText("Arrows0");
 });
