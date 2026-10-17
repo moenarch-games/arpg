@@ -175,32 +175,24 @@ export function buildFrame(
             : player.action?.phase === "recovery"
               ? palette.playerRecovery
               : null;
+      // The real shield in the character's hand shows a guard (#183); the ring carries its
+      // rising, raised and blocked colours, after defeat, hurt and guard-broken.
+      const guardColor = player.guard
+        ? player.reaction?.kind === "blocked"
+          ? palette.shieldBlocked
+          : player.guard.phase === "raised"
+            ? palette.shieldRaised
+            : palette.shieldRising
+        : null;
       const color = !player.alive
         ? "#45413d"
         : player.reaction?.kind === "hurt"
           ? palette.playerHurt
           : player.reaction?.kind === "guardBroken"
             ? palette.playerGuardBroken
-            : (actionColor ??
+            : (guardColor ??
+              actionColor ??
               (player.id === focusPlayerId ? focusPlayerAccent : palette.playerPeer));
-      // The thin shield board faces along the authoritative 8-way facing, which the core's
-      // guard cone uses, not the exact aim shown by the weapon and marker.
-      const guardFacing = player.facing ?? [1, 0];
-      const guardLength = Math.hypot(guardFacing[0], guardFacing[1]) || 1;
-      const guardX = guardFacing[0] / guardLength;
-      const guardZ = guardFacing[1] / guardLength;
-      const shield = player.guard
-        ? [
-            shieldBoard(
-              `player-shield-${player.id}`,
-              position,
-              [guardX, guardZ],
-              0.42,
-              player.reaction?.kind === "blocked" ? "blocked" : player.guard.phase,
-              palette,
-            ),
-          ]
-        : [];
       const bow =
         player.weapon === "bow"
           ? [
@@ -219,7 +211,6 @@ export function buildFrame(
             ]
           : [];
       return [
-        ...shield,
         ...bow,
         // The humanoid itself is an imported character (#55, `character-layer.ts`); this flat
         // ground ring under it carries the action phase, hurt, guard-broken, dead and

@@ -88,7 +88,8 @@ function looks(effects) {
   return {
     frame,
     activePlayer: node(frame, "player-1").color,
-    blockedShield: node(frame, "player-shield-2").color,
+    blockedShield: node(frame, "player-2").color,
+    playerShieldBoard: frame.nodes.some((candidate) => candidate.id.startsWith("player-shield-")),
     windupPlayer: node(frame, "player-3").color,
     hurtPlayer: node(frame, "player-4").color,
     staggerMonster: node(frame, "monster-1").color,
@@ -108,6 +109,7 @@ test("default effects draw exactly what main draws today", () => {
   expect(explicit).toMatchObject({
     activePlayer: "#fff0a3",
     blockedShield: "#e8f4ff",
+    playerShieldBoard: false,
     windupPlayer: "#e3a45d",
     hurtPlayer: "#e05a4f",
     staggerMonster: "#e8a25d",

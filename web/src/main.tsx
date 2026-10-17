@@ -10,7 +10,12 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { createThreeSceneRenderer } from "@moritzbrantner/three-d-renderer";
-import { adaptImportedCharacterBundle } from "@moritzbrantner/three-d-renderer/imported-character";
+import {
+  adaptImportedCharacterBundle,
+  adaptImportedItemBundle,
+  readBundleAttachment,
+} from "@moritzbrantner/three-d-renderer/imported-character";
+import { createEquipment } from "./character-equipment.ts";
 import { createCharacterAssets } from "./character-assets.ts";
 import { RANGER_BUNDLE } from "./character-bundles.js";
 import { createCharacterLayer } from "./character-layer.ts";
@@ -179,7 +184,26 @@ const characterAssets = createCharacterAssets({
   bundle: RANGER_BUNDLE,
   baseUrl: `${import.meta.env.BASE_URL}characters/`,
   fetch: (url) => fetch(url),
-  adapt: adaptImportedCharacterBundle,
+  // The character, its equipment items and its sockets (#183) from the same bundle.
+  adapt: async (source, options) => {
+    const character = await adaptImportedCharacterBundle(source, options);
+    const { equipment: data } = RANGER_BUNDLE;
+    const items = Object.fromEntries(
+      await Promise.all(
+        Object.entries(data.items).map(async ([id, item]) => [
+          id,
+          await adaptImportedItemBundle({ ...source, key: item.key, variant: "default" }),
+        ]),
+      ),
+    );
+    const sockets = await readBundleAttachment({ ...source, name: "humanoid-sockets" });
+    const equipment = createEquipment({ data, items, sockets });
+    return {
+      clips: character.clips,
+      createInstance: character.createInstance,
+      equip: equipment.equip,
+    };
+  },
 });
 
 const megabytes = (bytes) => (bytes / 1_000_000).toFixed(1);

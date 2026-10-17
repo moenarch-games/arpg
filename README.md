@@ -138,7 +138,7 @@ The dedicated host defaults to UDP port `4433` and session path `/arpg`. Optiona
 ## Pinned foundations
 
 - `rapier3d` (crates.io): `0.36.1`
-- `3d-lab`: `356bcc7b58e3739eccced9d03aeaec919fe42640`
+- `3d-lab`: `c08cc252070d0eb887731cd174803ed26e07aefa`
 - `input-bindings`: `b3b7204faa47d3b0af56eebc55cdfd4ced127ddc`
 - `multiplayer-setup-service`: `cc5c20fabdac0fc9da4329a5be04d0f4e8eae383`
 - `game-server`: `ebd6aaee156c8e12a1444d1dd55a305eae13df86`
