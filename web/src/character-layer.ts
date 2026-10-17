@@ -4,9 +4,11 @@
 // reads snapshots and never feeds anything back into gameplay.
 //
 // Animation time follows the simulation timeline (snapshot ticks), so pausing, stepping and
-// the render frame rate behave like the game. Standing plays the idle clip, moving picks a
-// gait by speed with playback scaled to the stride, death plays once and holds, and every
-// change crossfades. Attack, hurt and bow clips belong to #56.
+// the render frame rate behave like the game. Standing plays the idle clip (the guard clip
+// while guarding, the sword-drawn idle while a monster is engaged with the character), moving
+// picks a gait by speed with playback scaled to the stride, death plays once and holds, and
+// every change crossfades. Attack, hurt and bow clips belong to #56. Each character carries
+// the equipment of its authoritative weapon (#183).
 
 export interface CharacterInstanceLike {
   root: {
@@ -22,10 +24,14 @@ export interface CharacterInstanceLike {
 export interface CharacterAssetLike {
   clips: readonly { name: string; duration: number }[];
   createInstance(): CharacterInstanceLike;
+  // Attaches a weapon's equipment to an instance and returns a function that removes it.
+  equip?(instance: CharacterInstanceLike, weapon: string): () => void;
 }
 
 export interface CharacterAnimation {
   idle: string;
+  engagedIdle?: string;
+  guard?: string;
   death: string;
   // Speeds (m/s) below this count as standing.
   standingBelow: number;
@@ -38,6 +44,8 @@ export interface CharacterAnimation {
 interface PlayerLike {
   id: number;
   alive?: boolean;
+  weapon?: string;
+  guard?: unknown;
   position: number[];
   facing?: number[] | null;
   aim?: number[] | null;
@@ -49,6 +57,7 @@ interface SnapshotLike {
   tick: number;
   worldUnitsPerMeter: number;
   players: PlayerLike[];
+  monsters?: { alive?: boolean; targetPlayerId?: number | null }[];
 }
 
 // The exact committed or intended direction, as the frame shows it: an action's aim or
@@ -70,12 +79,25 @@ interface Animated {
   speed: number;
   // Seconds of the death clip already played, while dead.
   dying: number | null;
+  weapon: string | undefined;
+  unequip: () => void;
 }
 
-export function chooseClip(animation: CharacterAnimation, alive: boolean, speed: number) {
-  if (!alive) return animation.death;
-  if (speed < animation.standingBelow) return animation.idle;
-  return (animation.gaits.find((gait) => speed <= gait.upTo) ?? animation.gaits.at(-1)!).clip;
+export interface ClipState {
+  alive: boolean;
+  speed: number;
+  guarding?: boolean;
+  engaged?: boolean;
+}
+
+export function chooseClip(animation: CharacterAnimation, state: ClipState) {
+  if (!state.alive) return animation.death;
+  if (state.speed < animation.standingBelow) {
+    if (state.guarding && animation.guard) return animation.guard;
+    if (state.engaged && animation.engagedIdle) return animation.engagedIdle;
+    return animation.idle;
+  }
+  return (animation.gaits.find((gait) => state.speed <= gait.upTo) ?? animation.gaits.at(-1)!).clip;
 }
 
 export function createCharacterLayer(options: {
@@ -109,13 +131,24 @@ export function createCharacterLayer(options: {
     const scale = snapshot.worldUnitsPerMeter;
     let changed = false;
     const live = new Set<number>();
+    const engaged = new Set(
+      (snapshot.monsters ?? [])
+        .filter((monster) => monster.alive !== false && monster.targetPlayerId != null)
+        .map((monster) => monster.targetPlayerId),
+    );
     if (asset) {
       for (const player of snapshot.players) {
         live.add(player.id);
         const alive = player.alive !== false;
+        const clipState = (speed: number): ClipState => ({
+          alive,
+          speed,
+          guarding: player.guard != null,
+          engaged: engaged.has(player.id),
+        });
         let state = animated.get(player.id);
         if (!state) {
-          const clip = chooseClip(animation, alive, 0);
+          const clip = chooseClip(animation, clipState(0));
           const instance = asset.createInstance();
           instance.seek(clip, 0);
           state = {
@@ -125,6 +158,8 @@ export function createCharacterLayer(options: {
             position: player.position,
             speed: 0,
             dying: alive ? null : 0,
+            weapon: undefined,
+            unequip: () => {},
           };
           animated.set(player.id, state);
           changed = true;
@@ -142,13 +177,19 @@ export function createCharacterLayer(options: {
           }
           state.tick = snapshot.tick;
           state.position = player.position;
-          const clip = chooseClip(animation, alive, state.speed);
+          const clip = chooseClip(animation, clipState(state.speed));
           if (clip !== state.clip) {
             state.instance.transition(clip, animation.crossfadeSeconds);
             state.clip = clip;
             state.dying = alive ? null : 0;
           }
           advance(state, seconds, asset);
+        }
+        if (player.weapon !== state.weapon) {
+          state.unequip();
+          state.weapon = player.weapon;
+          state.unequip =
+            player.weapon && asset.equip ? asset.equip(state.instance, player.weapon) : () => {};
         }
         const [x, y, z] = player.position;
         state.instance.root.position.set(x / scale, y / scale, z / scale);
@@ -159,6 +200,7 @@ export function createCharacterLayer(options: {
     }
     for (const [id, state] of animated) {
       if (live.has(id)) continue;
+      state.unequip();
       state.instance.dispose();
       animated.delete(id);
       changed = true;
@@ -169,7 +211,10 @@ export function createCharacterLayer(options: {
   return {
     sync,
     dispose() {
-      for (const state of animated.values()) state.instance.dispose();
+      for (const state of animated.values()) {
+        state.unequip();
+        state.instance.dispose();
+      }
       animated.clear();
     },
   };

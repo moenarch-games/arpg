@@ -15,7 +15,17 @@ function fakeAsset() {
       { name: "Jog_Fwd_Loop", duration: 0.93 },
       { name: "Sprint_Loop", duration: 0.67 },
       { name: "Death01", duration: DEATH_SECONDS },
+      { name: "Sword_Idle", duration: 1.67 },
+      { name: "Idle_Shield_Loop", duration: 2.5 },
     ],
+    equipped: [] as unknown[][],
+    equip(instance: unknown, weapon: string) {
+      const entry = [instance, weapon, true];
+      this.equipped.push(entry);
+      return () => {
+        entry[2] = false;
+      };
+    },
     createInstance() {
       const instance = {
         root: {
@@ -92,11 +102,17 @@ const transitions = (instance: any) =>
     .map((call: unknown[]) => call[1]);
 
 test("clips are chosen by authoritative speed and life", () => {
-  expect(chooseClip(animation, true, 0)).toBe("Idle_Loop");
-  expect(chooseClip(animation, true, 1.2)).toBe("Walk_Loop");
-  expect(chooseClip(animation, true, 4.2)).toBe("Jog_Fwd_Loop");
-  expect(chooseClip(animation, true, 7)).toBe("Sprint_Loop");
-  expect(chooseClip(animation, false, 4)).toBe("Death01");
+  expect(chooseClip(animation, { alive: true, speed: 0 })).toBe("Idle_Loop");
+  expect(chooseClip(animation, { alive: true, speed: 1.2 })).toBe("Walk_Loop");
+  expect(chooseClip(animation, { alive: true, speed: 4.2 })).toBe("Jog_Fwd_Loop");
+  expect(chooseClip(animation, { alive: true, speed: 7 })).toBe("Sprint_Loop");
+  expect(chooseClip(animation, { alive: false, speed: 4 })).toBe("Death01");
+  // Standing: guarding beats engaged, engaged draws the sword; moving keeps the gait.
+  expect(chooseClip(animation, { alive: true, speed: 0, guarding: true, engaged: true })).toBe(
+    "Idle_Shield_Loop",
+  );
+  expect(chooseClip(animation, { alive: true, speed: 0, engaged: true })).toBe("Sword_Idle");
+  expect(chooseClip(animation, { alive: true, speed: 4.2, guarding: true })).toBe("Jog_Fwd_Loop");
 });
 
 test("a new character idles, places in metres and faces its direction", () => {
@@ -204,4 +220,43 @@ test("the humanoid faces the committed action, then a lock's facing, then aim", 
   expect(presentedFacing({ id: 1, position: [0, 0, 0], facing: [1, 0], aim: [0, 1] })).toEqual([
     0, 1,
   ]);
+});
+
+test("each character carries its weapon's equipment and swaps it when the weapon changes", () => {
+  const { asset, layer, instance } = fixture();
+  expect(asset.equipped).toEqual([]);
+  const at = (tick: number, weapon: string) =>
+    layer.sync({
+      tick,
+      worldUnitsPerMeter: 100,
+      players: [{ id: 1, position: [0, 0, 0], weapon }],
+    });
+  at(1, "swordAndShield");
+  expect(asset.equipped).toEqual([[instance, "swordAndShield", true]]);
+  at(2, "swordAndShield");
+  expect(asset.equipped).toHaveLength(1);
+  at(3, "bow");
+  expect(asset.equipped).toEqual([
+    [instance, "swordAndShield", false],
+    [instance, "bow", true],
+  ]);
+  layer.dispose();
+  expect(asset.equipped[1][2]).toBe(false);
+});
+
+test("a monster engaged with the character draws its sword while standing", () => {
+  const { layer, instance } = fixture();
+  layer.sync({
+    tick: 1,
+    worldUnitsPerMeter: 100,
+    players: [{ id: 1, position: [0, 0, 0] }],
+    monsters: [{ alive: true, targetPlayerId: 1 }],
+  });
+  expect(transitions(instance)).toEqual(["Sword_Idle"]);
+  layer.sync({
+    tick: 2,
+    worldUnitsPerMeter: 100,
+    players: [{ id: 1, position: [0, 0, 0], guard: { phase: "raised" } }],
+  });
+  expect(transitions(instance)).toEqual(["Sword_Idle", "Idle_Shield_Loop"]);
 });
