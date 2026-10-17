@@ -38,6 +38,14 @@ export interface CanvasLike {
 export interface SceneRendererLike<Frame> {
   setSize(width: number, height: number, pixelRatio: number): void;
   render(frame: Frame): void;
+  // Adds and removes imported character roots in the renderer's scene (#55).
+  renderImportedRoots?(frame: { camera: unknown; roots: unknown[] }): unknown;
+  dispose(): void;
+}
+
+// In-world humanoid characters (#55): synced to each drawn snapshot before the frame.
+export interface CharacterLayerLike<Snapshot> {
+  sync(snapshot: Snapshot): { roots: unknown[]; changed: boolean };
   dispose(): void;
 }
 
@@ -66,6 +74,7 @@ export interface FramePresenterOptions<Canvas extends CanvasLike, Snapshot, Fram
   cancelFrame(handle: unknown): void;
   pixelRatio?: () => number;
   background?: string;
+  characters?: CharacterLayerLike<Snapshot>;
   view: PresenterView;
 }
 
@@ -74,9 +83,11 @@ export const DEFAULT_BACKGROUND = "#11100f";
 const sameGraphics = (left: GraphicsOptions, right: GraphicsOptions) =>
   left.shadows === right.shadows && left.pixelRatioLimit === right.pixelRatioLimit;
 
-export function createFramePresenter<Canvas extends CanvasLike, Snapshot, Frame>(
-  options: FramePresenterOptions<Canvas, Snapshot, Frame>,
-) {
+export function createFramePresenter<
+  Canvas extends CanvasLike,
+  Snapshot,
+  Frame extends { camera: unknown },
+>(options: FramePresenterOptions<Canvas, Snapshot, Frame>) {
   const { canvas, snapshots } = options;
   const pixelRatio = options.pixelRatio ?? (() => globalThis.devicePixelRatio ?? 1);
   const background = options.background ?? DEFAULT_BACKGROUND;
@@ -96,21 +107,27 @@ export function createFramePresenter<Canvas extends CanvasLike, Snapshot, Frame>
       pixelRatioLimit: view.graphics.pixelRatioLimit,
     });
   let renderer = createRenderer();
+  // A new renderer has an empty scene: character roots are handed to it on its first draw.
+  let rootsSubmitted = false;
 
   const draw = () => {
     const snapshot = cues.take(snapshots.getSnapshot());
     if (!snapshot) return;
     const rect = canvas.getBoundingClientRect();
-    renderer.render(
-      options.buildFrame(
-        snapshot,
-        view.playerId,
-        rect.width,
-        rect.height,
-        view.accent,
-        view.effects ?? FULL_EFFECTS,
-      ),
+    const frame = options.buildFrame(
+      snapshot,
+      view.playerId,
+      rect.width,
+      rect.height,
+      view.accent,
+      view.effects ?? FULL_EFFECTS,
     );
+    if (options.characters && renderer.renderImportedRoots) {
+      const { roots, changed } = options.characters.sync(snapshot);
+      if (changed || !rootsSubmitted) renderer.renderImportedRoots({ camera: frame.camera, roots });
+      rootsSubmitted = true;
+    }
+    renderer.render(frame);
   };
 
   // Coalesces every request until the next animation frame into one draw.
@@ -155,6 +172,7 @@ export function createFramePresenter<Canvas extends CanvasLike, Snapshot, Frame>
         // single renderer ever holds the canvas.
         renderer.dispose();
         renderer = createRenderer();
+        rootsSubmitted = false;
         resize();
         return;
       }
@@ -168,6 +186,7 @@ export function createFramePresenter<Canvas extends CanvasLike, Snapshot, Frame>
       if (frameRequest !== null) options.cancelFrame(frameRequest);
       frameRequest = null;
       disconnect();
+      options.characters?.dispose();
       renderer.dispose();
     },
   };

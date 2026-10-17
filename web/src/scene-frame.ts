@@ -2,6 +2,7 @@
 // scene nodes. Presentation only: it reads the snapshot and never modifies it.
 
 import * as THREE from "three";
+import { presentedFacing } from "./character-layer.ts";
 import { CAMERA_FOV_DEGREES, CAMERA_OFFSET } from "./aim-input.js";
 import { FULL_EFFECTS } from "./presentation-effects.js";
 
@@ -161,13 +162,8 @@ export function buildFrame(
     }),
     ...snapshot.players.flatMap((player) => {
       const position = player.position.map((value) => value / scale);
-      // The exact committed or intended direction when aim or a lock owns it.
-      // A target lock takes precedence over aim, as in the core: show the authoritative facing.
-      const facing = player.action
-        ? (player.action.aim ?? player.action.facing)
-        : player.lockedMonsterId != null
-          ? (player.facing ?? [1, 0])
-          : (player.aim ?? player.facing ?? [1, 0]);
+      // The exact committed or intended direction, as the humanoid faces it.
+      const facing = presentedFacing(player);
       const facingLength = Math.hypot(facing[0], facing[1]) || 1;
       const facingX = facing[0] / facingLength;
       const facingZ = facing[1] / facingLength;
@@ -225,23 +221,14 @@ export function buildFrame(
       return [
         ...shield,
         ...bow,
+        // The humanoid itself is an imported character (#55, `character-layer.ts`); this flat
+        // ground ring under it carries the action phase, hurt, guard-broken, dead and
+        // focus-accent colours (owner decision A on #55).
         {
           id: `player-${player.id}`,
-          geometry: { kind: "cylinder", radius: 0.3, height: 1 },
+          geometry: { kind: "cylinder", radius: 0.42, height: 0.03 },
           color,
-          transform: { translation: position },
-        },
-        {
-          id: `player-facing-${player.id}`,
-          geometry: { kind: "sphere", radius: 0.09 },
-          color: "#f5df9b",
-          transform: {
-            translation: [
-              position[0] + facingX * 0.48,
-              Math.max(position[1], 0.12),
-              position[2] + facingZ * 0.48,
-            ],
-          },
+          transform: { translation: [position[0], position[1] + 0.015, position[2]] },
         },
       ];
     }),
