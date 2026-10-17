@@ -261,14 +261,18 @@ impl Arena {
                 .iter_mut()
                 .find(|monster| monster.id == defender_id)
                 .expect("defender saved");
-            defender.position = post;
+            defender.position = post.map(|axis| axis as f32);
             let player = save
                 .players
                 .iter_mut()
                 .find(|player| player.id == player_id)
                 .expect("player saved");
-            player.position = [post[0] + offset[0], player.position[1], post[2] + offset[1]];
-            player.velocity = [0, 0, 0];
+            player.position = [
+                (post[0] + offset[0]) as f32,
+                player.position[1],
+                (post[2] + offset[1]) as f32,
+            ];
+            player.velocity = [0.0; 3];
             player.movement = [0, 0];
             player.facing = facing;
             player.aim = None;

@@ -370,12 +370,11 @@ impl ArpgGame {
             .filter(|monster| monster.room_id == room_id && monster.health > 0);
         if living_in_room
             .clone()
-            .any(|monster| overlaps(monster.position, MONSTER_BODY_HALF_EXTENTS))
-            || self.players.keys().any(|&player_id| {
-                self.world
-                    .body(Self::player_body_id(player_id))
-                    .is_some_and(|body| overlaps(body.position(), PLAYER_HALF_EXTENTS))
-            })
+            .any(|monster| overlaps(monster.at(), MONSTER_BODY_HALF_EXTENTS))
+            || self
+                .players
+                .values()
+                .any(|player| overlaps(Vec3i::rounded(player.position), PLAYER_HALF_EXTENTS))
         {
             return Err(GameError::new("spawn offset overlaps another body"));
         }
@@ -424,7 +423,8 @@ impl ArpgGame {
                 GameError::new(format!("monster {monster_id} is not in the workbench room"))
             })?;
         self.monsters.remove(index);
-        self.world.remove_body(Self::monster_body_id(monster_id));
+        self.physics
+            .remove_character(Self::monster_body_id(monster_id));
         self.retire_projectiles_of(&[monster_id]);
         self.arrangement_changed(room_id)
     }
@@ -436,17 +436,13 @@ impl ArpgGame {
             .expect("workbench presence checked")
             .arrangement;
         let blocked = arrangement.iter().any(|monster| {
-            self.players.keys().any(|&player_id| {
-                self.world
-                    .body(Self::player_body_id(player_id))
-                    .is_some_and(|body| {
-                        bodies_overlap(
-                            monster.position,
-                            MONSTER_BODY_HALF_EXTENTS,
-                            body.position(),
-                            PLAYER_HALF_EXTENTS,
-                        )
-                    })
+            self.players.values().any(|player| {
+                bodies_overlap(
+                    monster.at(),
+                    MONSTER_BODY_HALF_EXTENTS,
+                    Vec3i::rounded(player.position),
+                    PLAYER_HALF_EXTENTS,
+                )
             })
         });
         if blocked {
@@ -459,7 +455,8 @@ impl ArpgGame {
             .iter()
             .filter(|monster| monster.room_id == room_id)
         {
-            self.world.remove_body(Self::monster_body_id(monster.id));
+            self.physics
+                .remove_character(Self::monster_body_id(monster.id));
         }
         let removed = self
             .monsters
@@ -684,9 +681,8 @@ mod tests {
         game.advance_tick().unwrap();
         game.advance_tick().unwrap();
         assert!(
-            game.world
-                .body(ArpgGame::monster_body_id(spawned.0))
-                .is_some()
+            game.physics
+                .has_character(ArpgGame::monster_body_id(spawned.0))
         );
     }
 
@@ -756,7 +752,11 @@ mod tests {
                 .iter()
                 .all(|monster| monster.0 != target)
         );
-        assert!(game.world.body(ArpgGame::monster_body_id(target)).is_none());
+        assert!(
+            !game
+                .physics
+                .has_character(ArpgGame::monster_body_id(target))
+        );
         let outside = game
             .monsters
             .iter()
@@ -774,7 +774,10 @@ mod tests {
             .unwrap();
         assert_eq!(room_monsters(&game), arranged);
         game.advance_tick().unwrap();
-        assert!(game.world.body(ArpgGame::monster_body_id(target)).is_some());
+        assert!(
+            game.physics
+                .has_character(ArpgGame::monster_body_id(target))
+        );
         // Spawned ids are never reused.
         game.apply_workbench(&spawn("monster.archer", 0, -300))
             .unwrap();
@@ -815,9 +818,8 @@ mod tests {
         game.advance_tick().unwrap();
         let spawned = room_monsters(&game)[0].0;
         assert!(
-            game.world
-                .body(ArpgGame::monster_body_id(spawned))
-                .is_some()
+            game.physics
+                .has_character(ArpgGame::monster_body_id(spawned))
         );
     }
 
@@ -890,9 +892,7 @@ mod tests {
         let (target, _, position, _) = room_monsters(&game)[0].clone();
         game.apply_workbench(&WorkbenchOperation::RemoveMonster { monster_id: target })
             .unwrap();
-        game.world
-            .set_position(ArpgGame::player_body_id(1), crate::array_to_vec(position))
-            .unwrap();
+        game.put_player(1, crate::array_to_vec(position));
         let error = game
             .apply_workbench(&WorkbenchOperation::ResetArrangement)
             .unwrap_err();

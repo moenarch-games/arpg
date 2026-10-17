@@ -167,11 +167,11 @@ fn swing_once(game: ArpgGame, bundle: Option<ContentBundle>) -> (Vec<StrikeOutco
     let player = save.players.iter_mut().find(|p| p.id == 1).expect("saved");
     let facing = [-dx as i8, -dz as i8];
     player.position = [
-        x + dx * SIDE_DISTANCE,
+        (x + dx * SIDE_DISTANCE) as f32,
         player.position[1],
-        z + dz * SIDE_DISTANCE,
+        (z + dz * SIDE_DISTANCE) as f32,
     ];
-    player.velocity = [0, 0, 0];
+    player.velocity = [0.0; 3];
     player.movement = [0, 0];
     player.facing = facing;
     player.aim = None;

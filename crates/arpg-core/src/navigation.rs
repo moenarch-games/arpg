@@ -1,6 +1,6 @@
 //! Room-local pursuit navigation (#65, #110).
 //!
-//! ARPG owns the tactical path; `physics-engine` moves the body along it. A room is
+//! ARPG owns the tactical path; Rapier's character controller moves the body along it. A room is
 //! rasterized into cells whose body-sized footprint is clear of every fixed obstacle.
 //!
 //! Two planners search that grid:

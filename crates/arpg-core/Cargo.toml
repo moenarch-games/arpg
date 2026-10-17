@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 graph-kernels.workspace = true
-physics-engine.workspace = true
+rapier3d.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

@@ -36,8 +36,8 @@
 //! }
 //! ```
 //!
-//! Physics steps use the existing `ArpgGame::physics_steps`; the cost of a step stays with
-//! physics-engine.
+//! Physics steps use the existing `ArpgGame::physics_steps`; their cost is part of the
+//! complete tick.
 
 use std::collections::BTreeMap;
 
