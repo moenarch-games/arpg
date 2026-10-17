@@ -39,7 +39,7 @@ import {
   persistStoredValue,
 } from "./preferences.js";
 import { InputRuntimeController } from "@moritzbrantner/input-bindings-runtime";
-import { attachKeyboardRuntime } from "@moritzbrantner/input-bindings-web";
+import { attachKeyboardRuntime, isTextEntryTarget } from "@moritzbrantner/input-bindings-web";
 import { KeybindingEditor } from "@moritzbrantner/input-bindings-react";
 import "@moritzbrantner/input-bindings-react/styles.css";
 import initWasm, {
@@ -171,6 +171,15 @@ function requestedRunSeed() {
 
 // The game world canvas. One frame presenter owns its renderer, projection and resize
 // observer for as long as the canvas is mounted; view changes reconfigure it in place.
+// The keyboard owner for the focused element, highest capture priority first (#176): the
+// shared keybinding editor's recorder, then any text-entry control. `null` leaves the
+// context to the menu/gameplay state.
+function focusedInputOwner(element) {
+  if (element?.closest?.(".ib-recorder")) return "rebinding-capture";
+  if (isTextEntryTarget(element)) return "text-entry";
+  return null;
+}
+
 function GameCanvas({ snapshots, playerId, accent, graphics, effects, onPointerMove }) {
   const canvasRef = useRef(null);
   const presenterRef = useRef(null);
@@ -621,10 +630,22 @@ function App() {
     return () => input.detach();
   }, [ready, inWorld]);
 
+  // Which keyboard owner has focus (#176): a binding recorder, a text-entry control or none.
+  const [focusOwner, setFocusOwner] = useState(() => focusedInputOwner(document.activeElement));
   useEffect(() => {
-    // Menus suppress gameplay bindings and release held input.
-    inputRef.current?.setContext(settingsOpen ? "menu" : "gameplay");
-  }, [settingsOpen]);
+    const update = () => setFocusOwner(focusedInputOwner(document.activeElement));
+    document.addEventListener("focusin", update);
+    document.addEventListener("focusout", update);
+    return () => {
+      document.removeEventListener("focusin", update);
+      document.removeEventListener("focusout", update);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Non-gameplay contexts suppress gameplay bindings and release held input.
+    inputRef.current?.setContext(focusOwner ?? (settingsOpen ? "menu" : "gameplay"));
+  }, [focusOwner, settingsOpen]);
 
   const updateProfile = (next) => {
     if (!persistStoredValue(PROFILE_KEY, JSON.stringify(next)))

@@ -8,9 +8,13 @@
 // input-bindings constructors are injected by the composition.
 //
 // Held keys do not survive focus loss or a hidden document (the release may never arrive),
-// leaving gameplay for a menu, or detaching: each of these calls `onRelease`.
+// leaving gameplay for any other context, or detaching: each of these calls `onRelease`.
+//
+// Capture priority, highest first: rebinding-capture, text-entry, menu, gameplay (#176). The
+// composition picks the highest active one. Only gameplay forwards gameplay actions; menu
+// forwards only `alwaysActions`; text entry and rebinding capture own the keyboard outright.
 
-export type InputContext = "gameplay" | "menu";
+export type InputContext = "gameplay" | "menu" | "text-entry" | "rebinding-capture";
 
 export interface InputDispatch {
   action: string;
@@ -38,7 +42,8 @@ export interface InputAttachmentOptions<Profile, Controller extends InputControl
   focusTarget: EventTarget;
   visibilityTarget: VisibilityTargetLike;
   // Actions whose bindings apply in every context (the settings toggle, which also closes
-  // the menu). Their dispatches still reach `onDispatch` in "menu".
+  // the menu). Their dispatches still reach `onDispatch` in "menu", but never while the
+  // player types or records a binding.
   alwaysActions?: Iterable<string>;
 }
 
@@ -67,7 +72,8 @@ export function createInputAttachment<Profile, Controller extends InputControlle
         onDispatch: (dispatch) => {
           // A detached or replaced controller can no longer reach the runtime.
           if (controller !== owned) return;
-          if (context !== "gameplay" && !alwaysActions.has(dispatch.action)) return;
+          if (context === "text-entry" || context === "rebinding-capture") return;
+          if (context === "menu" && !alwaysActions.has(dispatch.action)) return;
           options.onDispatch(dispatch);
         },
       });
