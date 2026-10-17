@@ -31,12 +31,18 @@ Child `- [x]` means **only the specifically named implemented capability** has c
       - [x] Existing adapters: `crates/arpg-web-wasm/src/lib.rs::WasmGame`, `web/src/peer-session.js::attachPeerGameSession`, `crates/arpg-game-server/src/lib.rs` and `web/src/dedicated-session.js`; server/lane tests documented in [README](../../README.md).
       - [x] Aimed one-shot delivery carries validated aim through the correct command lane (`crates/arpg-core/tests/aimed_one_shots.rs`, `crates/arpg-core/tests/command_lanes.rs`, merged [PR #158](https://github.com/moritzbrantner/arpg/pull/158)).
       - [ ] Complete co-op session continuity and public gameplay parity remain in [#71](https://github.com/moritzbrantner/arpg/issues/71).
+  - **2.3** Physics backend
+    - **2.3.1** [decision] Until physics-engine is finished, ARPG's authoritative physics is **Rapier**, embedded in the Rust/WASM simulation; `arpg-core` keeps all gameplay outcomes. Each concrete gap or lesson from developing and playing with Rapier becomes a focused physics-engine issue, so it feeds back into completing physics-engine. The old integer `World` adapter is removed in the switching PR with no shim. (Owner, 2026-10-17; [#175](https://github.com/moritzbrantner/arpg/issues/175), supersedes [#48](https://github.com/moritzbrantner/arpg/issues/48) and [#162](https://github.com/moritzbrantner/arpg/issues/162))
 - **3** Content and authoring
   - **3.1** Authoritative data definitions
     - **3.1.1** [decision] Use typed versioned content definitions for game-specific weapons, monsters, abilities and encounters; do not create gameplay authority inside the renderer. ([CONTENT](../CONTENT.md), [#73](https://github.com/moritzbrantner/arpg/issues/73))
       - [x] Versioned content bundle and validation exist in `crates/arpg-core/content/base.json`, `crates/arpg-core/src/content.rs`; tests include `base_content_reproduces_the_previous_tuning` and `saves_from_another_content_revision_are_rejected` ([README](../../README.md)).
       - [x] Seeded rooms/doors and encounter behavior exist (`crates/arpg-core/tests/dungeon_properties.rs`; `entering_combat_room_locks_connected_doors_until_encounter_is_cleared`).
       - [ ] A visually complete, reusable crypt presentation kit and owner-verifiable first adventure remain in [#72](https://github.com/moritzbrantner/arpg/issues/72) and [#145](https://github.com/moritzbrantner/arpg/issues/145).
+
+- **4** Input and controls
+  - **4.1** One input vocabulary across devices
+    - **4.1.1** [decision] Input work ships as ordered slices: contexts, capture priority and held-input release ([#176](https://github.com/moritzbrantner/arpg/issues/176)); the default desktop profile with LMB/R attack, right-drag orbit and right-click target ([#177](https://github.com/moritzbrantner/arpg/issues/177)); gamepad support ([#178](https://github.com/moritzbrantner/arpg/issues/178)). Space=Jump and the migration of unmodified old defaults wait for jump in [#59](https://github.com/moritzbrantner/arpg/issues/59). Reusable gesture and gamepad pieces belong upstream in `input-bindings` ([#93](https://github.com/moritzbrantner/input-bindings/issues/93), [#94](https://github.com/moritzbrantner/input-bindings/issues/94)). Acceptance is automated only (fake Gamepad API), with no manual device check. (Owner, 2026-10-17; supersedes [#57](https://github.com/moritzbrantner/arpg/issues/57))
 
 ## Issue handoffs
 
