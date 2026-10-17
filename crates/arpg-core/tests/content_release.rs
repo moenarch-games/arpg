@@ -16,8 +16,10 @@ mod linux {
     use arpg_core::{ArpgGame, AuthoritativeGame, ContentBundle, base_bundle};
     use serde_json::{Value, json};
 
-    /// Entries in each sizeable bundle's `roomEncounters`.
-    const ENTRIES: usize = 16_384;
+    /// Entries in each sizeable bundle's `roomEncounters`. Large enough that one bundle's
+    /// payload dwarfs the allocator noise a game run leaves behind (several MiB in CI since
+    /// physics moved to Rapier, #185), so the control and the retention signal stay apart.
+    const ENTRIES: usize = 65_536;
     /// The longest id content allows.
     const ID_LENGTH: usize = 64;
     /// Lower bound of the string bytes one sizeable bundle holds.
