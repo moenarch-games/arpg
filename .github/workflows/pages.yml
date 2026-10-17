@@ -46,7 +46,7 @@ jobs:
       # Reuse the exact wasm-pack executable across CI and Pages workflows.
       # Cargo installation only runs when the cache is absent or invalid.
       - name: Restore wasm-pack CLI
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cargo/bin/wasm-pack
           key: ${{ runner.os }}-${{ runner.arch }}-rust-1.98.1-wasm-pack-0.13.1
