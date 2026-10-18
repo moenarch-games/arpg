@@ -59,7 +59,7 @@ import { attachPeerGameSession } from "./peer-session.js";
 import { DedicatedGameSession } from "./dedicated-session.js";
 import { DemoLobbySession } from "./vendor/multiplayer-setup-service/demo-session.ts";
 import { sampleVirtualStick } from "./virtual-stick.js";
-import { aimFromPointer } from "./aim-input.js";
+import { aimFromPointer, movementFromAim } from "./aim-input.js";
 import {
   CHARACTER_PRESETS,
   loadSelectedCharacterId,
@@ -231,7 +231,20 @@ function focusedInputOwner(element) {
   return null;
 }
 
-function GameCanvas({ snapshots, playerId, accent, graphics, effects, onPointerMove }) {
+function GameCanvas({
+  snapshots,
+  playerId,
+  accent,
+  graphics,
+  effects,
+  onPointerMove,
+  onPointerDown,
+  onPointerUp,
+  onPointerCancel,
+  onLostPointerCapture,
+  onMouseUp,
+  onContextMenu,
+}) {
   const canvasRef = useRef(null);
   const presenterRef = useRef(null);
   const { shadows, pixelRatioLimit } = graphics;
@@ -276,6 +289,12 @@ function GameCanvas({ snapshots, playerId, accent, graphics, effects, onPointerM
       className="game-canvas"
       aria-label="ARPG game world"
       onPointerMove={onPointerMove}
+      onPointerDown={onPointerDown}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onLostPointerCapture={onLostPointerCapture}
+      onMouseUp={onMouseUp}
+      onContextMenu={onContextMenu}
     />
   );
 }
@@ -285,6 +304,7 @@ function App() {
   const touchStickRef = useRef(null);
   const touchKnobRef = useRef(null);
   const touchPointerIdRef = useRef(null);
+  const mousePointerIdRef = useRef(null);
   // Synchronous epoch invalidation protects gestures across a pending
   // weapon switch/session change, even before a new game snapshot arrives.
   const touchGestureEpochRef = useRef(0);
@@ -404,6 +424,7 @@ function App() {
 
   const releaseInput = useCallback(() => {
     invalidateTouchGestures();
+    mousePointerIdRef.current = null;
     runtime.releaseInput();
   }, [invalidateTouchGestures, runtime]);
 
@@ -736,20 +757,61 @@ function App() {
     if (!mouseAim) runtime.setAim(null);
   }, [mouseAim, runtime]);
 
-  // Mouse aim is semantic direction intent only; the authority validates and applies it.
-  // The last pointed direction holds while the pointer crosses HUD overlays; focus loss,
-  // menus and disabling mouse aim return to committed facing.
-  const aimWithPointer = (event) => {
-    if (!mouseAim || event.pointerType !== "mouse" || settingsOpen) return;
+  // Cursor projection is shared between continuous facing and right-button movement.
+  // The Rust authority owns both the resulting aim and physical locomotion.
+  const pointerAim = (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    const aim = aimFromPointer(
+    return aimFromPointer(
       event.clientX - rect.left,
       event.clientY - rect.top,
       rect.width,
       rect.height,
     );
-    // `null` inside the dead zone over the player returns to committed facing.
-    runtime.setAim(aim);
+  };
+
+  const stopMouseMovement = (pointerId) => {
+    if (mousePointerIdRef.current !== pointerId) return;
+    mousePointerIdRef.current = null;
+    runtime.setMouseMovement(0, 0);
+  };
+
+  const aimWithPointer = (event) => {
+    if (
+      event.pointerType !== "mouse" ||
+      settingsOpen ||
+      inputRef.current?.getContext() !== "gameplay"
+    )
+      return;
+    const aim = pointerAim(event);
+    // Aim remains independent from locomotion. A pointer in the player dead zone
+    // clears aim and stops right-button movement instead of walking indefinitely.
+    if (mouseAim) runtime.setAim(aim);
+    if (mousePointerIdRef.current !== event.pointerId) return;
+    if ((event.buttons & 2) === 0) stopMouseMovement(event.pointerId);
+    else runtime.setMouseMovement(...movementFromAim(aim));
+  };
+
+  const beginMouseMovement = (event) => {
+    if (
+      event.pointerType !== "mouse" ||
+      event.button !== 2 ||
+      settingsOpen ||
+      !ready ||
+      !inWorld ||
+      inputRef.current?.getContext() !== "gameplay"
+    )
+      return;
+    event.preventDefault();
+    mousePointerIdRef.current = event.pointerId;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    aimWithPointer(event);
+  };
+
+  const endMouseMovement = (event) => stopMouseMovement(event.pointerId);
+  // Native mouseup fires for each button; pointerup fires only after all buttons
+  // are released. Releasing RMB during an LMB hold must also stop walking.
+  const mouseUp = (event) => {
+    if (event.button === 2) stopMouseMovement(mousePointerIdRef.current);
   };
 
   const updatePresentation = (next) => {
@@ -1047,6 +1109,12 @@ function App() {
         graphics={graphics}
         effects={presentationEffects}
         onPointerMove={aimWithPointer}
+        onPointerDown={beginMouseMovement}
+        onPointerUp={endMouseMovement}
+        onPointerCancel={endMouseMovement}
+        onLostPointerCapture={endMouseMovement}
+        onMouseUp={mouseUp}
+        onContextMenu={(event) => event.preventDefault()}
       />
       <header className="game-header">
         <div>
