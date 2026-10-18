@@ -111,3 +111,36 @@ test("losing focus cancels a right-mouse hold without resuming it", async ({ pag
   expect([moves[0].x, moves[0].z]).not.toEqual([0, 0]);
   expect([moves[1].x, moves[1].z]).toEqual([0, 0]);
 });
+
+test("cancelled right-button capture stops moving exactly once", async ({ page, appUrl }) => {
+  await openDummy(page, appUrl);
+  const canvas = page.locator("canvas.game-canvas");
+  const box = await canvas.boundingBox();
+  await page.evaluate(() => {
+    const canvas = document.querySelector("canvas.game-canvas");
+    canvas.addEventListener(
+      "pointerdown",
+      (event) => {
+        window.__mousePointerId = event.pointerId;
+      },
+      { once: true },
+    );
+  });
+  await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.45);
+  await page.mouse.down({ button: "right" });
+  await page.evaluate(() => {
+    document.querySelector("canvas.game-canvas").dispatchEvent(
+      new PointerEvent("pointercancel", {
+        bubbles: true,
+        pointerId: window.__mousePointerId,
+        pointerType: "mouse",
+      }),
+    );
+  });
+  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.55);
+  await page.mouse.up({ button: "right" });
+  const moves = (await recordedCommands(page)).filter((command) => command.type === "setMovement");
+  expect(moves).toHaveLength(2);
+  expect([moves[0].x, moves[0].z]).not.toEqual([0, 0]);
+  expect([moves[1].x, moves[1].z]).toEqual([0, 0]);
+});
