@@ -105,10 +105,7 @@ test("holding right mouse moves toward the cursor and releasing stops", async ({
   expect(commands.some((command) => command.type === "primaryAttack")).toBe(false);
 });
 
-test("losing focus cancels a right-mouse hold without resuming it", async ({
-  page,
-  appUrl,
-}) => {
+test("losing focus cancels a right-mouse hold without resuming it", async ({ page, appUrl }) => {
   await openDummy(page, appUrl);
   const box = await page.locator("canvas.game-canvas").boundingBox();
   await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.5);
