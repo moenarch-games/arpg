@@ -44,7 +44,10 @@ test("a target lock turns the swing towards the dummy after facing away", async 
   await expect(arena.diagnostics).toContainText("Targetnone");
 });
 
-test("mouse facing is the default but remains an explicit accessibility preference", async ({ page, appUrl }) => {
+test("mouse facing is the default but remains an explicit accessibility preference", async ({
+  page,
+  appUrl,
+}) => {
   const arena = await openDummy(page, appUrl);
   const canvas = page
     .getByRole("img", { name: "ARPG game world" })
@@ -70,15 +73,19 @@ test("mouse facing is the default but remains an explicit accessibility preferen
   await expect(arena.diagnostics).toContainText("Aimaim ");
 });
 
- 
+
 async function recordedCommands(page) {
+  await page.getByRole("button", { name: "Step", exact: true }).click();
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export reproduction", exact: true }).click();
   const replay = JSON.parse(await readFile(await (await download).path(), "utf8"));
   return replay.commands.map((entry) => entry.command);
 }
 
-test("holding right mouse moves toward the cursor and releasing stops", async ({ page, appUrl }) => {
+test("holding right mouse moves toward the cursor and releasing stops", async ({
+  page,
+  appUrl,
+}) => {
   await openDummy(page, appUrl);
   const box = await page.locator("canvas.game-canvas").boundingBox();
   const point = (x, y) => [box.x + box.width * x, box.y + box.height * y];
@@ -98,7 +105,10 @@ test("holding right mouse moves toward the cursor and releasing stops", async ({
   expect(commands.some((command) => command.type === "primaryAttack")).toBe(false);
 });
 
-test("losing focus cancels a right-mouse hold without resuming it", async ({ page, appUrl }) => {
+test("losing focus cancels a right-mouse hold without resuming it", async ({
+  page,
+  appUrl,
+}) => {
   await openDummy(page, appUrl);
   const box = await page.locator("canvas.game-canvas").boundingBox();
   await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.5);
