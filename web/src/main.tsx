@@ -788,7 +788,10 @@ function App() {
     if (mouseAim) runtime.setAim(aim);
     if (mousePointerIdRef.current !== event.pointerId) return;
     if ((event.buttons & 2) === 0) stopMouseMovement(event.pointerId);
-    else runtime.setMouseMovement(...movementFromAim(aim));
+    else {
+      const [x, z] = movementFromAim(aim);
+      runtime.setMouseMovement(x, z);
+    }
   };
 
   const beginMouseMovement = (event) => {
