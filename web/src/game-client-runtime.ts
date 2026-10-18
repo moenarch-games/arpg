@@ -176,6 +176,8 @@ function idleMovement() {
     right: false,
     touchX: 0,
     touchZ: 0,
+    mouseX: 0,
+    mouseZ: 0,
     lastX: 0,
     lastZ: 0,
   };
@@ -517,8 +519,8 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
   const flushMovement = () => {
     const keyboardX = Number(movement.right) - Number(movement.left);
     const keyboardZ = Number(movement.backward) - Number(movement.forward);
-    const x = Math.max(-1, Math.min(1, keyboardX + movement.touchX));
-    const z = Math.max(-1, Math.min(1, keyboardZ + movement.touchZ));
+    const x = Math.max(-1, Math.min(1, keyboardX + movement.touchX + movement.mouseX));
+    const z = Math.max(-1, Math.min(1, keyboardZ + movement.touchZ + movement.mouseZ));
     if (x === movement.lastX && z === movement.lastZ) return;
     movement.lastX = x;
     movement.lastZ = z;
@@ -791,6 +793,14 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
       flushMovement();
     },
 
+    // Mouse and touch have separate held channels so releasing either leaves the other intact.
+    setMouseMovement(x: number, z: number) {
+      if (movement.mouseX === x && movement.mouseZ === z) return;
+      movement.mouseX = x;
+      movement.mouseZ = z;
+      flushMovement();
+    },
+
     // Clears every held input (focus loss, settings, context change) and stops movement.
     // Held shield input from one device; guard stays raised while any device holds it.
     setGuard(source: GuardSource, held: boolean) {
@@ -849,6 +859,8 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
       movement.right = false;
       movement.touchX = 0;
       movement.touchZ = 0;
+      movement.mouseX = 0;
+      movement.mouseZ = 0;
       flushMovement();
       if (guardSources.size > 0) {
         guardSources.clear();
