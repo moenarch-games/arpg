@@ -152,3 +152,16 @@ jobs:
           toolchain: 1.98.1
       - name: Enforce the blocking performance budget
         run: cargo run --locked --release -p arpg-core --features operation-work --example performance_smoke
+
+  merge-ready:
+    name: merge-ready
+    if: ${{ always() }}
+    needs: ["rust", "web", "performance-evidence", "performance-smoke"]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: moritzbrantner/reusable-workflows/.github/actions/merge-ready@b0f25f241d76af2584dfc9e375084ff5c5cb97da
+        with:
+          needs: ${{ toJSON(needs) }}
+          required: '["rust", "web", "performance-evidence", "performance-smoke"]'
