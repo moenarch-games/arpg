@@ -18,7 +18,7 @@ publish = false
 arpg-core = { path = "crates/arpg-core" }
 arpg-protocol = { path = "crates/arpg-protocol" }
 game-server = { git = "https://github.com/moritzbrantner/game-server.git", rev = "b591a79d0b3e88e6a66b7661464fc8631b843274" }
-graph-kernels = { git = "https://github.com/moritzbrantner/rust-kernels.git", rev = "45a7571890e1bbffc7f2ff5f517b5c4c7859d17c" }
+graph-kernels = { git = "https://github.com/moritzbrantner/rust-kernels.git", rev = "fa1e0b0385963b4e85ef5f51b7b801100cb56200" }
 rapier3d = "=0.36.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
