@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "lint": "oxlint --deny-warnings src scripts tests vite.config.js playwright.config.js",
-    "format:check": "oxfmt --check src scripts tests vite.config.js playwright.config.js package.json .oxlintrc.json .oxfmtrc.json",
+    "format:check": "oxfmt --check src scripts tests vite.config.js playwright.config.js package.json .oxlintrc.json .oxfmtrc.json || (oxfmt --write tests/browser/targeting.spec.js && git diff -- tests/browser/targeting.spec.js && exit 1)",
     "format": "oxfmt --write src scripts tests vite.config.js playwright.config.js package.json .oxlintrc.json .oxfmtrc.json",
     "vendor": "bun scripts/vendor-foundations.mjs",
     "wasm": "wasm-pack build ../crates/arpg-web-wasm --target web --out-dir ../../web/src/wasm --out-name arpg_web_wasm -- --locked",
