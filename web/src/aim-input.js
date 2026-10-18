@@ -40,9 +40,9 @@ export function aimFromPointer(pointerX, pointerY, width, height) {
 // Match arpg-core::facing_for's sector boundaries so right-click locomotion takes the
 // normal, Rust-authoritative movement path instead of inventing another resolver.
 export function movementFromAim(direction) {
-   if (!direction) return [0, 0];
-   const [x, z] = direction;
-   const axis = (own, other) =>
-     Math.abs(own) * 100_000 < Math.abs(other) * 41_421 ? 0 : Math.sign(own);
-   return [axis(x, z), axis(z, x)];
+  if (!direction) return [0, 0];
+  const [x, z] = direction;
+  const axis = (own, other) =>
+    Math.abs(own) * 100_000 < Math.abs(other) * 41_421 ? 0 : Math.sign(own);
+  return [axis(x, z), axis(z, x)];
 }
