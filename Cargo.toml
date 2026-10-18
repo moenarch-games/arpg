@@ -17,7 +17,7 @@ publish = false
 [workspace.dependencies]
 arpg-core = { path = "crates/arpg-core" }
 arpg-protocol = { path = "crates/arpg-protocol" }
-game-server = { git = "https://github.com/moritzbrantner/game-server.git", rev = "2f352619c1bbd980bda52dd15e99b1cc943bbb19" }
+game-server = { git = "https://github.com/moritzbrantner/game-server.git", rev = "b591a79d0b3e88e6a66b7661464fc8631b843274" }
 graph-kernels = { git = "https://github.com/moritzbrantner/rust-kernels.git", rev = "45a7571890e1bbffc7f2ff5f517b5c4c7859d17c" }
 rapier3d = "=0.36.1"
 serde = { version = "=1.0.229", features = ["derive"] }
