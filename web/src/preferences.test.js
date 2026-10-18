@@ -36,16 +36,17 @@ test("graphics accepts only supported settings and discards unrelated persisted 
   ).toEqual({ shadows: false, pixelRatioLimit: 1.5 });
 });
 
-test("mouse aim is opt-in and only an explicit setting enables it", () => {
+test("mouse facing is enabled unless the player explicitly opts out", () => {
   const storage = (value) => ({ getItem: (key) => (key === MOUSE_AIM_KEY ? value : null) });
-  expect(loadMouseAim(storage(null))).toBe(false);
-  expect(loadMouseAim(storage("yes"))).toBe(false);
+  expect(loadMouseAim(storage(null))).toBe(true);
+  expect(loadMouseAim(storage("yes"))).toBe(true);
   expect(loadMouseAim(storage("on"))).toBe(true);
+  expect(loadMouseAim(storage("off"))).toBe(false);
   expect(
     loadMouseAim({
       getItem: () => {
         throw new Error("blocked");
       },
     }),
-  ).toBe(false);
+  ).toBe(true);
 });
