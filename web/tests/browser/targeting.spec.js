@@ -73,7 +73,6 @@ test("mouse facing is the default but remains an explicit accessibility preferen
   await expect(arena.diagnostics).toContainText("Aimaim ");
 });
 
-
 async function recordedCommands(page) {
   await page.getByRole("button", { name: "Step", exact: true }).click();
   const download = page.waitForEvent("download");
