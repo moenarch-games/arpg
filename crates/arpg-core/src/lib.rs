@@ -27,7 +27,9 @@ mod content;
 mod navigation;
 mod operation_work;
 mod physics;
-#[cfg(test)]
+#[cfg(feature = "physics-ab")]
+pub mod physics_ab;
+#[cfg(any(test, feature = "physics-ab"))]
 mod seeded_workloads;
 mod workbench;
 use operation_work::{Counter, count};

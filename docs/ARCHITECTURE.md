@@ -14,6 +14,51 @@
 
 Neither renderer nor network transport may become an alternate source of gameplay truth.
 
+## Physics A/B against physics-engine (test and bench only)
+
+[physics-engine#330](https://github.com/moritzbrantner/physics-engine/issues/330) compares the
+real game on both physics backends. Rapier stays the production authority (Atlas 2.3.1): the
+non-default `arpg-core` feature `physics-ab` compiles the second backend, and no product,
+server or WASM build enables it.
+
+- **Seam.** [`physics.rs`](../crates/arpg-core/src/physics.rs) keeps the game-facing API. The
+  Rapier body lives in [`physics/rapier.rs`](../crates/arpg-core/src/physics/rapier.rs); with
+  `physics-ab`, `Physics` becomes an enum over it and
+  [`physics/engine.rs`](../crates/arpg-core/src/physics/engine.rs), a thin adapter over
+  `physics_engine::approximate::World`, chosen per thread by `physics_ab::with_backend` when a
+  world is created. Call sites do not change.
+- **Adapter.** The same metre conversion as Rapier (`Config::length_unit` stays 1); the 0.25
+  unit contact offset; the floor a static half-space, excluded from planar moves and rays and
+  counted by `penetrates_fixed`; only static ground is support; players snap within the support
+  reach; monsters move planar; each game move is its own one-element `move_characters` batch,
+  in the game's order; doors are added and removed as static boxes; positions are mirrored as
+  the game computes them, so a restored save continues exactly. `rebuild` does nothing: the
+  engine's results do not depend on insertion or move history.
+- **Acceptance.** `physics_ab::tests` (run by `cargo test --all-features`) drives every seeded
+  workload through the real game on both backends with the same fixture, commands and ticks.
+  Both must keep finite state, no floor, wall or door penetration or tunnelling, planar
+  monsters, grounded players on the ground, non-overlapping characters, blocking locked doors,
+  bit-identical replay and exact save continuation. Across them, game-visible outcomes
+  (doors, encounters, health, progression, support, strikes, interactions) must be identical
+  every tick, sight, strike, ray, ground and placement queries from the same inputs must
+  agree (ray distances within 0.01 units), and positions must agree within 0.5 units until two
+  characters first touch. The [physics contract tests](../crates/arpg-core/src/physics.rs) run
+  on both backends.
+- **Intentional divergences.** A character blocked head-on by another sidesteps to its right
+  on physics-engine and stops on Rapier, and sliding around another character differs, so
+  positions after the first character contact are reported, not bounded (up to about 195 units
+  in the four-player workloads, 2.6 units in `door`; outcomes stay identical). Rapier adds a 0.01
+  unit normal nudge per contact (up to 0.26 units of drift out of a corner) and pushes a body
+  placed into a wall out to touching, where the engine keeps the 0.25 unit offset. The engine
+  reports a translation as a difference of metre positions, so an unobstructed move can differ
+  from the intended one by `f32` rounding (7 units read as 6.99997 at 21 m from the origin).
+  `ground_height` probes 1 km down instead of an unbounded ray, a zero-length
+  `first_fixed_hit` meets nothing, and a character registers as planar until its first
+  `move_player`.
+- **Timing.** `cargo run --release --locked -p arpg-core --features physics-ab --example
+  physics_ab` reports per-tick whole-physics-path time (median, p95, p99), setup time and the
+  share of Rapier's per-tick rebuild, natively, for every workload. It is manual, not a gate.
+
 ## Height and traversal topology
 
 Real physical height and semantic walkable topology are separate but coordinated

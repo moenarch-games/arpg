@@ -14,13 +14,19 @@
 //! authoritative state and mirrors it here; nothing in this world is saved. A loaded save
 //! rebuilds it from the seed and the saved game state.
 //!
-//! The backend is [`rapier`].
+//! The backend is [`rapier`] in every product and WASM build. The test/bench-only `physics-ab`
+//! feature (physics-engine#330) also compiles [`engine`], a thin adapter over
+//! `physics_engine::approximate::World`, and makes [`Physics`] an enum over both, chosen per
+//! thread by [`with_backend`] when a world is created. Call sites never see the difference.
 
 use rapier3d::math::Vector;
 use rapier3d::prelude::{Cuboid, Pose, Ray, RayCast};
 
 mod queries;
 mod rapier;
+
+#[cfg(feature = "physics-ab")]
+mod engine;
 
 use crate::{GameError, Vec3i};
 
@@ -81,7 +87,8 @@ pub(crate) fn capsule_dimensions(half_extents: Vec3i) -> (f32, f32) {
 }
 
 /// The earliest time (in units of `translation`, within `0..=1`) at which the segment from
-/// `origin` along `translation` meets a box hurt volume centred on `center`.
+/// `origin` along `translation` meets a box hurt volume centred on `center`. A closed-form
+/// shape query on no world: both backends share it.
 pub(crate) fn box_hit(
     center: Vector,
     half_extents: Vec3i,
@@ -100,7 +107,245 @@ fn missing(key: BodyKey) -> GameError {
     GameError::new(format!("physics body {key} is missing"))
 }
 
+#[cfg(not(feature = "physics-ab"))]
 pub(crate) use rapier::Physics;
+
+#[cfg(feature = "physics-ab")]
+pub(crate) use ab::Physics;
+#[cfg(feature = "physics-ab")]
+pub use ab::{Backend, take_physics_time, take_rebuild_time, time_physics, with_backend};
+
+/// The A/B seam (physics-engine#330): one enum over both backends, compiled only with the
+/// test/bench-only `physics-ab` feature.
+#[cfg(feature = "physics-ab")]
+mod ab {
+    use std::cell::Cell;
+    use std::fmt;
+    use std::time::{Duration, Instant};
+
+    use rapier3d::math::Vector;
+
+    use super::{BodyKey, Motion, engine, rapier};
+    use crate::{GameError, Vec3i};
+
+    /// Which physics backend a new [`Physics`] world uses.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum Backend {
+        /// Rapier, the production authority (Atlas 2.3.1).
+        #[default]
+        Rapier,
+        /// physics-engine's `approximate::World`, through [`engine`]'s thin adapter.
+        Engine,
+    }
+
+    impl Backend {
+        pub const ALL: [Self; 2] = [Self::Rapier, Self::Engine];
+
+        pub fn name(self) -> &'static str {
+            match self {
+                Self::Rapier => "rapier",
+                Self::Engine => "physics-engine",
+            }
+        }
+    }
+
+    thread_local! {
+        static BACKEND: Cell<Backend> = const { Cell::new(Backend::Rapier) };
+        /// Whether physics calls add their wall-clock time to [`ELAPSED`].
+        static TIMING: Cell<bool> = const { Cell::new(false) };
+        static ELAPSED: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+        /// The part of [`ELAPSED`] spent in [`Physics::rebuild`].
+        static REBUILD: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    }
+
+    /// Runs `run` with every physics world it creates on this thread (games built, restored or
+    /// rebuilt from saves) on `backend`.
+    pub fn with_backend<R>(backend: Backend, run: impl FnOnce() -> R) -> R {
+        let previous = BACKEND.replace(backend);
+        let result = run();
+        BACKEND.set(previous);
+        result
+    }
+
+    /// Starts or stops timing every call into the physics module on this thread: the whole
+    /// physics path of the game, adapter conversions and bookkeeping included.
+    pub fn time_physics(on: bool) {
+        TIMING.set(on);
+    }
+
+    /// The physics time accumulated on this thread since the last call.
+    pub fn take_physics_time() -> Duration {
+        ELAPSED.replace(Duration::ZERO)
+    }
+
+    /// The part of the physics time spent rebuilding worlds since the last call.
+    pub fn take_rebuild_time() -> Duration {
+        REBUILD.replace(Duration::ZERO)
+    }
+
+    /// Adds the time until it drops to [`ELAPSED`] while timing is on.
+    struct Timer(Option<Instant>);
+
+    impl Timer {
+        fn start() -> Self {
+            Self(TIMING.get().then(Instant::now))
+        }
+
+        /// Stops the timer; the time also counts as rebuilding.
+        fn rebuilt(mut self) {
+            if let Some(start) = self.0.take() {
+                let elapsed = start.elapsed();
+                ELAPSED.set(ELAPSED.get() + elapsed);
+                REBUILD.set(REBUILD.get() + elapsed);
+            }
+        }
+    }
+
+    impl Drop for Timer {
+        fn drop(&mut self) {
+            if let Some(start) = self.0 {
+                let elapsed = start.elapsed();
+                ELAPSED.set(ELAPSED.get() + elapsed);
+            }
+        }
+    }
+
+    // One world per game, built once and never moved per tick: boxing would only add an
+    // indirection to every call of either backend.
+    #[allow(clippy::large_enum_variant)]
+    pub(crate) enum Physics {
+        Rapier(rapier::Physics),
+        Engine(engine::Physics),
+    }
+
+    impl fmt::Debug for Physics {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Self::Rapier(physics) => physics.fmt(formatter),
+                Self::Engine(physics) => physics.fmt(formatter),
+            }
+        }
+    }
+
+    /// Calls the same method on whichever backend this world uses, timed.
+    macro_rules! dispatch {
+        ($self:expr, $physics:ident => $call:expr) => {{
+            let _timer = Timer::start();
+            match $self {
+                Physics::Rapier($physics) => $call,
+                Physics::Engine($physics) => $call,
+            }
+        }};
+    }
+
+    impl Physics {
+        pub(crate) fn new() -> Self {
+            let _timer = Timer::start();
+            match BACKEND.get() {
+                Backend::Rapier => Self::Rapier(rapier::Physics::new()),
+                Backend::Engine => Self::Engine(engine::Physics::new()),
+            }
+        }
+
+        pub(crate) fn add_floor(&mut self, foot_height: f32) -> Result<(), GameError> {
+            dispatch!(self, physics => physics.add_floor(foot_height))
+        }
+
+        pub(crate) fn add_fixed(
+            &mut self,
+            key: BodyKey,
+            center: Vec3i,
+            half_extents: Vec3i,
+        ) -> Result<(), GameError> {
+            dispatch!(self, physics => physics.add_fixed(key, center, half_extents))
+        }
+
+        pub(crate) fn remove_fixed(&mut self, key: BodyKey) -> bool {
+            dispatch!(self, physics => physics.remove_fixed(key))
+        }
+
+        #[cfg(test)]
+        pub(crate) fn has_fixed(&self, key: BodyKey) -> bool {
+            dispatch!(self, physics => physics.has_fixed(key))
+        }
+
+        pub(crate) fn fixed_boxes(&self) -> impl Iterator<Item = (Vec3i, Vec3i)> + '_ {
+            dispatch!(self, physics => physics.fixed_boxes().collect::<Vec<_>>()).into_iter()
+        }
+
+        pub(crate) fn add_character(
+            &mut self,
+            key: BodyKey,
+            position: Vector,
+            half_extents: Vec3i,
+        ) -> Result<(), GameError> {
+            dispatch!(self, physics => physics.add_character(key, position, half_extents))
+        }
+
+        pub(crate) fn remove_character(&mut self, key: BodyKey) -> bool {
+            dispatch!(self, physics => physics.remove_character(key))
+        }
+
+        pub(crate) fn has_character(&self, key: BodyKey) -> bool {
+            dispatch!(self, physics => physics.has_character(key))
+        }
+
+        pub(crate) fn character_position(&self, key: BodyKey) -> Option<Vector> {
+            dispatch!(self, physics => physics.character_position(key))
+        }
+
+        pub(crate) fn place_character(
+            &mut self,
+            key: BodyKey,
+            position: Vector,
+        ) -> Result<(), GameError> {
+            dispatch!(self, physics => physics.place_character(key, position))
+        }
+
+        pub(crate) fn rebuild(&mut self) {
+            let timer = Timer::start();
+            match self {
+                Self::Rapier(physics) => physics.rebuild(),
+                Self::Engine(physics) => physics.rebuild(),
+            }
+            timer.rebuilt();
+        }
+
+        pub(crate) fn move_character(
+            &mut self,
+            key: BodyKey,
+            from: Vector,
+            desired: Vector,
+        ) -> Result<(Vector, Vector), GameError> {
+            dispatch!(self, physics => physics.move_character(key, from, desired))
+        }
+
+        pub(crate) fn move_player(
+            &mut self,
+            key: BodyKey,
+            from: Vector,
+            desired: Vector,
+        ) -> Result<Motion, GameError> {
+            dispatch!(self, physics => physics.move_player(key, from, desired))
+        }
+
+        pub(crate) fn ground_height(&self, position: Vector) -> Option<f32> {
+            dispatch!(self, physics => physics.ground_height(position))
+        }
+
+        pub(crate) fn segment_obstructed(&self, from: Vector, to: Vector) -> bool {
+            dispatch!(self, physics => physics.segment_obstructed(from, to))
+        }
+
+        pub(crate) fn first_fixed_hit(&self, origin: Vector, translation: Vector) -> Option<f32> {
+            dispatch!(self, physics => physics.first_fixed_hit(origin, translation))
+        }
+
+        pub(crate) fn penetrates_fixed(&self, position: Vector, half_extents: Vec3i) -> bool {
+            dispatch!(self, physics => physics.penetrates_fixed(position, half_extents))
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -108,12 +353,19 @@ mod tests {
 
     const BODY: Vec3i = Vec3i::new(30, 50, 30);
     const Y: i32 = 50;
-    /// How far a character pressed against something stands off it: Rapier's controller
-    /// keeps a 0.25 unit contact offset (plus its 0.01 unit normal nudge), never overlapping.
+    /// How far a character pressed against something stands off it: both backends keep a 0.25
+    /// unit contact offset (Rapier's controller adds its 0.01 unit normal nudge), never
+    /// overlapping.
     const GAP: std::ops::RangeInclusive<f32> = 0.2..=0.3;
 
-    /// Runs a contract test on the backend.
+    /// Runs a contract test on Rapier and, with `physics-ab`, on physics-engine as well.
     fn each_backend(test: impl Fn()) {
+        #[cfg(feature = "physics-ab")]
+        for backend in Backend::ALL {
+            eprintln!("physics contract on {backend:?}");
+            with_backend(backend, &test);
+        }
+        #[cfg(not(feature = "physics-ab"))]
         test();
     }
 
