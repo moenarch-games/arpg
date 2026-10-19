@@ -57,11 +57,13 @@ Child `- [x]` means **only the specifically named implemented capability** has c
     - **5.1.3** [decision] A player that falls out of the world respawns at its last supported position, with no damage. (Owner, 2026-10-19; [#211](https://github.com/moritzbrantner/arpg/issues/211))
       - [x] `crates/arpg-core/src/lib.rs::ArpgGame::recover_fallen_players` (`a_player_out_of_the_world_returns_to_its_last_supported_position_unharmed`, on both physics backends).
     - **5.1.4** [decision] Jump details from #191 stand: an action freezes horizontal motion mid-jump while gravity continues, every press is a full jump (no variable height), and hurt reactions do not block jumping. (Owner, 2026-10-19; [#191](https://github.com/moritzbrantner/arpg/pull/191))
+    - **5.1.5** [decision] Stairs are walkable without jumping: players climb steps of up to 25 units through Rapier's character-controller `autostep`; stairs belong to the region they lead into. Until physics-engine has autostep, the engine adapter's stairs A/B workload is marked unsupported, never substituted. (Owner, 2026-10-19; [#222](https://github.com/moritzbrantner/arpg/issues/222))
   - **5.2** Melee physics ([#90](https://github.com/moritzbrantner/arpg/issues/90))
     - **5.2.1** [decision] The skirmisher's `monster.lunge` becomes a short multi-tick lunge that moves the attacker, resolved as a swept strike with per-strike target deduplication. (Owner, 2026-10-19)
       - [x] `crates/arpg-core/src/lib.rs::ArpgGame::resolve_monster_attack` with `MonsterLunge` (`a_lunge_catches_a_target_beyond_its_reach_once_along_its_path`, `a_lunge_into_a_thin_wall_stops_at_it_and_is_obstructed`, on both physics backends).
     - **5.2.2** [decision] Damageable props are static crates with health and no drops, placed in combat rooms; they block movement and navigation until broken. Strike rays exclude the struck body through the `Physics` seam on both backends. (Owner, 2026-10-19)
       - [x] `crates/arpg-core/src/lib.rs::place_crates`, `::ArpgGame::damage_crate` and `Physics::segment_obstructed_except` (`strikes_break_a_crate_which_then_stops_blocking_and_drops_nothing`, `a_segment_can_ignore_one_static_body_but_not_the_others`, on both physics backends).
+    - **5.2.3** [decision] Player arrows damage crates through the shared strike path. (Owner, 2026-10-19; [#223](https://github.com/moritzbrantner/arpg/issues/223))
 
 ## Issue handoffs
 
