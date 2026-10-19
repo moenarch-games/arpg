@@ -1,5 +1,14 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "platformAutomerge": true,
-  "extends": ["github>moritzbrantner/coding-agent-conventions"]
+  "extends": ["github>moritzbrantner/coding-agent-conventions"],
+  "packageRules": [
+    {
+      "description": "physics-engine is pinned by commit; follow its main promptly so the physics A/B test checks every engine change",
+      "matchPackageNames": ["physics-engine"],
+      "groupName": "physics-engine",
+      "schedule": ["at any time"],
+      "automerge": true
+    }
+  ]
 }
