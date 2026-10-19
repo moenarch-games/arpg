@@ -153,6 +153,13 @@ apex over a gap within its reach, or any drop) without a declared connection rej
 level. The seeded A/B `traversal` workload climbs platform and bridge, drops off the bridge's
 side and walks the path beneath it on both backends.
 
+Fall recovery (Atlas 5.1.3, #211): each player keeps the position at which it last ended a
+tick supported (saved, schema 17). A body that ends a tick out of the world (its centre
+outside the rooms' combined extents, its feet a body height below the lowest floor, or a
+non-finite position) returns there at rest and supported, with no damage; actions, guard and
+buffered input carry on. Current geometry offers no hole to fall through, so only a body
+displaced out of the dungeon triggers it; the rule is tested on both physics backends.
+
 Combat and interaction are region-local by default. Abilities may explicitly
 opt into cross-region 3D range/line-of-sight checks. Authored and procedurally
 generated levels must both provide topology matching their geometry; undeclared

@@ -93,7 +93,8 @@ pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// jump-buffer ticks continue exactly after a load; schema 14 saves are refused.
 /// 16: walkable topology (#207): a player's region membership or transit; schema 15 saves
 /// are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 16;
+/// 17: fall recovery (#211): a player's last supported position; schema 16 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 17;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -1576,6 +1577,8 @@ pub struct PlayerSaveState {
     pub jump_buffer_ticks_remaining: u8,
     /// Walkable region membership or transit (#207).
     pub region: RegionMembership,
+    /// Where the player last ended a tick supported, in world units (#211).
+    pub last_supported: [f32; 3],
     pub movement: [i8; 2],
     pub facing: [i8; 2],
     pub action: Option<PlayerActionSnapshot>,
@@ -1804,6 +1807,8 @@ struct PlayerState {
     jump_buffer_ticks_remaining: u8,
     /// The walkable region it belongs to, or the connection it traverses (#207).
     region: RegionMembership,
+    /// Where it last ended a tick supported: a fall out of the world returns it here (#211).
+    last_supported: Vector,
     movement_x: i8,
     movement_z: i8,
     facing_x: i8,
@@ -2523,6 +2528,7 @@ impl ArpgGame {
                     coyote_ticks_remaining: state.coyote_ticks_remaining,
                     jump_buffer_ticks_remaining: state.jump_buffer_ticks_remaining,
                     region: state.region,
+                    last_supported: state.last_supported.to_array(),
                     movement: [state.movement_x, state.movement_z],
                     facing: [state.facing_x, state.facing_z],
                     action: state.action.map(ActionState::snapshot),
@@ -2794,6 +2800,15 @@ impl ArpgGame {
             if !region_valid {
                 return Err(GameError::new("saved player region is invalid"));
             }
+            // In the world and clear of fixed geometry. A supported body may round an edge,
+            // where no ground lies straight below, so support itself is not checked.
+            if game.out_of_world(Vector::from_array(player.last_supported))
+                || !game.character_fits(player.last_supported, PLAYER_HALF_EXTENTS)
+            {
+                return Err(GameError::new(
+                    "saved player last supported position is invalid",
+                ));
+            }
         }
 
         if save.monsters.len() != game.monsters.len() {
@@ -3041,6 +3056,7 @@ impl ArpgGame {
                 coyote_ticks_remaining: player.coyote_ticks_remaining,
                 jump_buffer_ticks_remaining: player.jump_buffer_ticks_remaining,
                 region: player.region,
+                last_supported: Vector::from_array(player.last_supported),
                 movement_x: player.movement[0],
                 movement_z: player.movement[1],
                 facing_x: player.facing[0],
@@ -5444,6 +5460,65 @@ impl ArpgGame {
         Ok(())
     }
 
+    /// Fall recovery (Atlas 5.1.3, #211): a player whose body ended the tick out of the world
+    /// returns, at rest and supported, to where it last ended a tick supported. It takes no
+    /// damage; its actions, guard and buffered jump carry on.
+    fn recover_fallen_players(&mut self) -> Result<(), GameError> {
+        let fallen = self
+            .players
+            .iter()
+            .filter(|(_, state)| self.out_of_world(state.position))
+            .map(|(&id, _)| id)
+            .collect::<Vec<_>>();
+        for player_id in fallen {
+            let state = self
+                .players
+                .get_mut(&player_id)
+                .expect("fallen player exists");
+            let to = state.last_supported;
+            state.position = to;
+            state.velocity = Vector::ZERO;
+            state.grounded = true;
+            state.coyote_ticks_remaining = 0;
+            state.region = self.topology.settle(
+                state.region,
+                to.x,
+                to.z,
+                to.y - PLAYER_HALF_EXTENTS.y as f32,
+                GROUNDED_HEIGHT_TOLERANCE,
+                PLAYER_HALF_EXTENTS.x as f32,
+            );
+            self.physics
+                .place_character(Self::player_body_id(player_id), to)?;
+        }
+        Ok(())
+    }
+
+    /// Whether a body centred on `position` has left the world: its centre outside the
+    /// dungeon's extents, or its feet a body height below the lowest floor (#211).
+    fn out_of_world(&self, position: Vector) -> bool {
+        let feet = position.y - PLAYER_HALF_EXTENTS.y as f32;
+        let depth = (2 * PLAYER_HALF_EXTENTS.y) as f32;
+        !position.is_finite()
+            || feet < self.topology.lowest_foot() as f32 - depth
+            || !self.inside_dungeon_extents(position)
+    }
+
+    /// Whether (`x`, `z`) of `position` lies within the rooms' combined extents.
+    fn inside_dungeon_extents(&self, position: Vector) -> bool {
+        let extent = |select: fn(&RoomSnapshot) -> i32, pick: fn(i32, i32) -> i32| {
+            self.rooms
+                .iter()
+                .map(select)
+                .reduce(pick)
+                .map(|value| value as f32)
+        };
+        extent(|room| room.min_x, i32::min).is_some_and(|min| position.x >= min)
+            && extent(|room| room.max_x, i32::max).is_some_and(|max| position.x <= max)
+            && extent(|room| room.min_z, i32::min).is_some_and(|min| position.z >= min)
+            && extent(|room| room.max_z, i32::max).is_some_and(|max| position.z <= max)
+    }
+
     /// This tick's vertical intent (world units): a takeoff when a buffered jump press meets
     /// a possible jump, gravity while airborne, nothing on the ground. A takeoff consumes the
     /// press and the coyote window and lowers the guard at once, since guarding needs the
@@ -5483,6 +5558,7 @@ impl ArpgGame {
         if grounded {
             state.velocity.y = 0.0;
             state.coyote_ticks_remaining = 0;
+            state.last_supported = state.position;
             state.region = topology.settle(
                 state.region,
                 x,
@@ -5590,6 +5666,7 @@ impl AuthoritativeGame for ArpgGame {
                 region: RegionMembership::Region {
                     id: self.topology.base(),
                 },
+                last_supported: spawn,
                 movement_x: 0,
                 movement_z: 0,
                 facing_x: 1,
@@ -5817,6 +5894,7 @@ impl AuthoritativeGame for ArpgGame {
         }
         let monster_motions = self.steer_monsters()?;
         self.resolve_motion(&monster_motions)?;
+        self.recover_fallen_players()?;
         self.reconcile_encounters()?;
         self.advance_actions()?;
         self.advance_arrows()?;
@@ -6634,6 +6712,7 @@ mod tests {
             region: RegionMembership::Region {
                 id: DUNGEON_FLOOR_REGION,
             },
+            last_supported: Vector::ZERO,
             movement_x: x,
             movement_z: z,
             facing_x: if x == 0 { 1 } else { x },
@@ -11590,7 +11669,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 16"
+            "unsupported ARPG save schema version 12; expected 17"
         );
     }
 
@@ -11605,7 +11684,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 13; expected 16"
+            "unsupported ARPG save schema version 13; expected 17"
         );
     }
 
@@ -13886,6 +13965,92 @@ mod tests {
         assert!(
             error.message().contains("region 2 can reach region 3"),
             "{error:?}"
+        );
+    }
+
+    /// Runs `test` on Rapier and, with `physics-ab`, on physics-engine as well.
+    fn on_each_backend(test: impl Fn()) {
+        #[cfg(feature = "physics-ab")]
+        for backend in physics::Backend::ALL {
+            physics::with_backend(backend, &test);
+        }
+        #[cfg(not(feature = "physics-ab"))]
+        test();
+    }
+
+    #[test]
+    fn a_player_out_of_the_world_returns_to_its_last_supported_position_unharmed() {
+        on_each_backend(|| {
+            let mut game = ArpgGame::new_with_seed(42).unwrap();
+            game.add_player(1).unwrap();
+            game.apply_command(
+                PlayerCommand::new(1, 1, ArpgCommand::SetMovement { x: 1, z: 0 }).unwrap(),
+            )
+            .unwrap();
+            for _ in 0..10 {
+                game.advance_tick().unwrap();
+            }
+            game.apply_command(PlayerCommand::new(1, 2, ArpgCommand::Jump).unwrap())
+                .unwrap();
+            game.advance_tick().unwrap();
+            game.advance_tick().unwrap();
+            let state = game.players[&1];
+            assert!(!state.grounded);
+            let takeoff = state.last_supported;
+            assert_eq!(takeoff.y, PLAYER_Y as f32);
+            let health = state.health;
+            // Mid-jump, the body ends up far outside the dungeon (as a tunnelling body
+            // would): the next tick brings it back.
+            let outside = Vector::new(100_000.0, state.position.y, state.position.z);
+            game.put_player(1, outside);
+            game.advance_tick().unwrap();
+            let state = game.players[&1];
+            assert_eq!(state.position, takeoff);
+            assert_eq!(
+                game.physics.character_position(ArpgGame::player_body_id(1)),
+                Some(takeoff)
+            );
+            assert!(state.grounded);
+            assert_eq!(state.velocity, Vector::ZERO);
+            assert_eq!(state.health, health);
+            assert_eq!(
+                state.region,
+                RegionMembership::Region {
+                    id: DUNGEON_FLOOR_REGION
+                }
+            );
+            // It plays on from there, and a save taken now continues exactly.
+            let save = game.save_state().unwrap();
+            let mut restored = ArpgGame::from_save_state(save).unwrap();
+            for _ in 0..30 {
+                game.advance_tick().unwrap();
+                restored.advance_tick().unwrap();
+                assert_eq!(restored.save_state().unwrap(), game.save_state().unwrap());
+            }
+            assert!(!game.out_of_world(game.players[&1].position));
+        });
+    }
+
+    #[test]
+    fn a_body_far_below_the_floor_is_out_of_the_world_and_one_on_it_is_not() {
+        let game = ArpgGame::new_with_seed(42).unwrap();
+        let (x, z) = game.rooms[0].center();
+        let at = |y: f32| Vector::new(x as f32, y, z as f32);
+        assert!(!game.out_of_world(at(PLAYER_Y as f32)));
+        assert!(!game.out_of_world(at(PLAYER_Y as f32 - 99.0)));
+        assert!(game.out_of_world(at(PLAYER_Y as f32 - 101.0)));
+        assert!(game.out_of_world(at(f32::NAN)));
+    }
+
+    #[test]
+    fn saves_reject_a_last_supported_position_out_of_the_world() {
+        let mut game = ArpgGame::new_with_seed(91).unwrap();
+        game.add_player(1).unwrap();
+        let mut save = game.save_state().unwrap();
+        save.players[0].last_supported = [100_000.0, PLAYER_Y as f32, 0.0];
+        assert_eq!(
+            ArpgGame::from_save_state(save).unwrap_err().message(),
+            "saved player last supported position is invalid"
         );
     }
 }
