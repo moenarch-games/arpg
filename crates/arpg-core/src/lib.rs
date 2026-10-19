@@ -852,6 +852,11 @@ const TRAVERSAL_PLATFORM_HALF_EXTENTS: Vec3i = Vec3i::new(100, 30, 100);
 /// The platform's walkable region and its connections to the floor: a jump both ways and a
 /// one-way drop.
 const TRAVERSAL_PLATFORM_REGION: RegionId = 2;
+/// The traversal scenario's low ceiling (#209), 250 units north of the spawn: its underside,
+/// 140 units up, clears a standing body (100 tall) but not a jump's 90-unit apex.
+const TRAVERSAL_CEILING_OFFSET: i32 = 250;
+const TRAVERSAL_CEILING_BOTTOM: i32 = 140;
+const TRAVERSAL_CEILING_HALF_EXTENTS: Vec3i = Vec3i::new(100, 20, 100);
 
 /// One resolved strike as published in a snapshot for diagnostics and feedback.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1640,6 +1645,8 @@ pub enum StaticColliderKind {
     Door,
     /// A walkable box top (#208): a floor of its own region, standing on the dungeon floor.
     Platform,
+    /// A low ceiling (#209): a box overhead that a jump bumps into and a body walks under.
+    Ceiling,
 }
 
 /// Speed changes per tick by which controlled horizontal velocity converges on the movement
@@ -2382,6 +2389,20 @@ impl ArpgGame {
             game.physics
                 .add_fixed(platform.id, array_to_vec(platform.position), half)?;
             game.static_colliders.push(platform);
+            let ceiling_half = TRAVERSAL_CEILING_HALF_EXTENTS;
+            let ceiling = StaticColliderSnapshot {
+                id: STATIC_BODY_BASE + index + 1,
+                position: [
+                    center_x,
+                    TRAVERSAL_CEILING_BOTTOM + ceiling_half.y,
+                    center_z - TRAVERSAL_CEILING_OFFSET,
+                ],
+                half_extents: vec_to_array(ceiling_half),
+                kind: StaticColliderKind::Ceiling,
+            };
+            game.physics
+                .add_fixed(ceiling.id, array_to_vec(ceiling.position), ceiling_half)?;
+            game.static_colliders.push(ceiling);
             game.topology = Topology::new(
                 vec![
                     WalkableRegion {
@@ -5116,9 +5137,13 @@ impl ArpgGame {
 
     /// XZ footprints of the world's fixed bodies (walls, pillars, locked doors), in body
     /// order: the navigation topology.
+    /// The footprints monsters must walk around: every fixed box except those entirely above
+    /// a monster body, such as a low ceiling (#209).
     fn fixed_footprints(&self) -> Vec<Rect> {
+        let monster_top = PLAYER_Y + MONSTER_BODY_HALF_EXTENTS.y;
         self.physics
             .fixed_boxes()
+            .filter(|(position, half)| position.y - half.y < monster_top)
             .map(|(position, half)| Rect::centered(position.x, position.z, half.x, half.z))
             .collect()
     }
@@ -13705,5 +13730,26 @@ mod tests {
                 "saved player region is invalid"
             );
         }
+    }
+
+    #[test]
+    fn monsters_walk_under_a_low_ceiling_but_around_a_platform() {
+        let game = ArpgGame::arranged_scenario(ScenarioId::Traversal, 42).unwrap();
+        let footprint = |kind| {
+            let collider = game
+                .static_colliders
+                .iter()
+                .find(|collider| collider.kind == kind)
+                .unwrap();
+            Rect::centered(
+                collider.position[0],
+                collider.position[2],
+                collider.half_extents[0],
+                collider.half_extents[2],
+            )
+        };
+        let obstacles = game.fixed_footprints();
+        assert!(obstacles.contains(&footprint(StaticColliderKind::Platform)));
+        assert!(!obstacles.contains(&footprint(StaticColliderKind::Ceiling)));
     }
 }

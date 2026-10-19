@@ -1,6 +1,7 @@
-//! Support on box tops, steps and ledges (#208), through the public authority, in the
-//! `traversal` scenario: a platform 60 units high, 160 units east of the player's spawn, that
-//! is its own walkable region (2) above the floor (1).
+//! Support on box tops, steps and ledges (#208) and low ceilings (#209), through the public
+//! authority, in the `traversal` scenario: a platform 60 units high, 160 units east of the
+//! player's spawn, that is its own walkable region (2) above the floor (1), and a ceiling
+//! 140 units up, 250 units north of the spawn.
 
 use arpg_core::{
     ArpgCommand, ArpgGame, ArpgSaveState, AuthoritativeGame, PlayerCommand, PlayerSnapshot,
@@ -172,5 +173,97 @@ fn a_saved_player_floating_above_the_platform_or_inside_it_is_rejected() {
         tampered.players[0].position[1] += dy;
         tampered.players[0].grounded = grounded;
         assert!(ArpgGame::from_save_state(tampered).is_err(), "dy {dy}");
+    }
+}
+
+const CEILING_BOTTOM: i32 = 140;
+
+/// Walks north under the ceiling and stops there.
+fn under_the_ceiling() -> Session {
+    let mut session = Session::new();
+    session.send(ArpgCommand::SetMovement { x: 0, z: -1 });
+    for _ in 0..36 {
+        session.tick();
+    }
+    session.send(ArpgCommand::SetMovement { x: 0, z: 0 });
+    for _ in 0..10 {
+        session.tick();
+    }
+    session
+}
+
+#[test]
+fn a_standing_body_walks_under_the_low_ceiling() {
+    let session = under_the_ceiling();
+    let snapshot = session.game.snapshot().unwrap();
+    let ceiling = snapshot
+        .static_colliders
+        .iter()
+        .find(|collider| collider.kind == StaticColliderKind::Ceiling)
+        .expect("the scenario has a ceiling");
+    assert_eq!(
+        ceiling.position[1] - ceiling.half_extents[1],
+        CEILING_BOTTOM
+    );
+    let player = &snapshot.players[0];
+    let (dx, dz) = (
+        player.position[0] - ceiling.position[0],
+        player.position[2] - ceiling.position[2],
+    );
+    assert!(
+        dx.abs() < ceiling.half_extents[0] && dz.abs() < ceiling.half_extents[2],
+        "{player:?}"
+    );
+    assert!(player.motion.grounded);
+    assert_eq!(player.motion.feet_y, 0);
+}
+
+#[test]
+fn a_jump_under_the_ceiling_stops_at_it_and_falls_back() {
+    let mut session = under_the_ceiling();
+    session.send(ArpgCommand::Jump);
+    let mut highest = 0;
+    let mut bumped_at = None;
+    for tick in 0..60 {
+        let player = session.tick();
+        // The head (100 above the feet) never enters the ceiling; it stops a contact offset
+        // short of it.
+        assert!(
+            player.motion.feet_y + 100 <= CEILING_BOTTOM,
+            "tick {tick}: {player:?}"
+        );
+        highest = highest.max(player.motion.feet_y);
+        if bumped_at.is_none() && player.motion.vertical_velocity <= 0 && !player.motion.grounded {
+            bumped_at = Some(tick);
+        }
+        if player.motion.grounded && tick > 0 {
+            assert_eq!(
+                highest,
+                CEILING_BOTTOM - 100,
+                "the head reached the ceiling"
+            );
+            // A free jump peaks after 18 ticks; the ceiling ends the rise early.
+            assert!(bumped_at.is_some_and(|tick| tick < 12), "{bumped_at:?}");
+            return;
+        }
+    }
+    panic!("the player never landed");
+}
+
+#[test]
+fn a_save_right_after_a_ceiling_bump_continues_exactly() {
+    let mut session = under_the_ceiling();
+    session.send(ArpgCommand::Jump);
+    for _ in 0..8 {
+        session.tick();
+    }
+    let save = session.game.save_state().unwrap();
+    assert!(!save.players[0].grounded);
+    let mut restored = Session {
+        game: ArpgGame::from_save_state(save.clone()).unwrap(),
+        sequence: session.sequence,
+    };
+    for tick in 0..40 {
+        assert_eq!(restored.tick(), session.tick(), "tick {tick}");
     }
 }

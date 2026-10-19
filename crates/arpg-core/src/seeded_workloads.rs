@@ -23,9 +23,11 @@ pub(super) enum Case {
     /// The traversal scenario (#208): jumping onto a platform, walking off its ledge and
     /// jumping back on from the other side.
     Ledge,
+    /// The traversal scenario's low ceiling (#209): walking under it and jumping into it.
+    Ceiling,
 }
 impl Case {
-    pub(super) const ALL: [Self; 12] = [
+    pub(super) const ALL: [Self; 13] = [
         Self::Quiet,
         Self::PartyQuiet,
         Self::Sparse,
@@ -38,11 +40,12 @@ impl Case {
         Self::Chase,
         Self::Jump,
         Self::Ledge,
+        Self::Ceiling,
     ];
     /// The workloads whose saves restore: the others move monsters out of their generated
     /// rooms, which a save rejects.
     #[cfg(test)]
-    pub(super) const SAVED: [Self; 8] = [
+    pub(super) const SAVED: [Self; 9] = [
         Self::Sparse,
         Self::Corner,
         Self::Door,
@@ -51,6 +54,7 @@ impl Case {
         Self::Lifecycle,
         Self::Jump,
         Self::Ledge,
+        Self::Ceiling,
     ];
     pub(super) fn name(self) -> &'static str {
         match self {
@@ -66,11 +70,12 @@ impl Case {
             Self::Chase => "chase",
             Self::Jump => "jump",
             Self::Ledge => "ledge",
+            Self::Ceiling => "ceiling",
         }
     }
 }
 pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
-    let mut game = if case == Case::Ledge {
+    let mut game = if matches!(case, Case::Ledge | Case::Ceiling) {
         ArpgGame::arranged_scenario(ScenarioId::Traversal, seed).unwrap()
     } else {
         ArpgGame::new_with_seed(seed).unwrap()
@@ -175,6 +180,11 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
         Case::Ledge if tick == 0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
         Case::Ledge if tick == 70 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
         Case::Ledge if tick == 7 || tick == 82 => Some(ArpgCommand::Jump),
+        // North under the ceiling, a standing jump into it, then jumps while walking out.
+        Case::Ceiling if tick == 0 => Some(ArpgCommand::SetMovement { x: 0, z: -1 }),
+        Case::Ceiling if tick == 36 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
+        Case::Ceiling if tick == 70 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
+        Case::Ceiling if tick == 40 || tick == 72 || tick == 100 => Some(ArpgCommand::Jump),
         Case::Combat if tick < 64 && tick.is_multiple_of(16) => {
             Some(ArpgCommand::PrimaryAttack { aim: None })
         }
