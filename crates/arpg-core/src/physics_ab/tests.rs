@@ -565,6 +565,37 @@ fn compare(case: Case, seed: u32) -> Comparison {
 /// rounded edge's drop (about a unit) higher for a tick; the engine follows the edge.
 const EDGE_POSITION: f32 = 2.0;
 
+/// A workload physics-engine cannot run yet, on Rapier alone: the shared invariants every
+/// tick, and that the stairs workload reaches the platform region by walking.
+fn rapier_only(case: Case, seed: u32) -> Vec<String> {
+    with_backend(Backend::Rapier, || {
+        let mut game = fixture(case, seed);
+        let mut before = bodies(&game);
+        let mut failures = Vec::new();
+        let mut raised = false;
+        for tick in 0..TICKS {
+            commands(&mut game, case, tick);
+            game.advance_tick().unwrap();
+            let now = bodies(&game);
+            failures.extend(
+                invariants(&game, &before, &now)
+                    .into_iter()
+                    .take(5)
+                    .map(|violation| format!("tick {tick}: {violation}")),
+            );
+            raised |= game
+                .players
+                .values()
+                .any(|state| state.region == crate::RegionMembership::Region { id: 2 });
+            before = now;
+        }
+        if case == Case::Stairs && !raised {
+            failures.push("the player never walked up onto the platform".to_owned());
+        }
+        failures
+    })
+}
+
 /// Bodies agree to this (world units) until two characters first touch: Rapier's controller
 /// adds a 0.01 unit normal nudge per contact (a body pressed into a corner drifts up to that
 /// 0.25 unit offset away) and pushes a body placed into a wall out to touching, where the
@@ -589,6 +620,19 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
     for seed in SEEDS {
         for case in Case::ALL {
             let context = format!("{} seed {seed}", case.name());
+            if let Some(reason) = case.engine_unsupported() {
+                // Rapier alone: its invariants and replay; the engine is reported unsupported.
+                writeln!(report, "{context}: UNSUPPORTED on physics-engine: {reason}").unwrap();
+                failures.extend(
+                    rapier_only(case, seed)
+                        .into_iter()
+                        .map(|failure| format!("{context} on rapier: {failure}")),
+                );
+                if replay(Backend::Rapier, case, seed) != replay(Backend::Rapier, case, seed) {
+                    failures.push(format!("{context}: rapier replay differs"));
+                }
+                continue;
+            }
             let comparison = compare(case, seed);
             writeln!(
                 report,

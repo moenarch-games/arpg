@@ -69,40 +69,41 @@ server or WASM build enables it.
 
   | workload | players | static boxes | peak monster bodies | backend | median | p95 | p99 | setup median | rebuild share | engine/rapier total |
   |---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
-  | quiet | 1 | 28 | 0 | rapier | 13.6 | 17.2 | 37.5 | 47.0 | 89% |  |
-  | quiet | 1 | 28 | 0 | physics-engine | 0.8 | 0.8 | 0.9 | 49.1 | 3% | 0.05 |
-  | party-quiet | 4 | 28 | 0 | rapier | 19.0 | 27.5 | 85.9 | 66.6 | 75% |  |
-  | party-quiet | 4 | 28 | 0 | physics-engine | 2.0 | 2.4 | 5.2 | 91.0 | 1% | 0.10 |
-  | sparse | 4 | 28 | 0 | rapier | 20.8 | 38.5 | 87.8 | 56.4 | 62% |  |
-  | sparse | 4 | 28 | 0 | physics-engine | 3.5 | 8.8 | 13.2 | 91.4 | 0% | 0.19 |
-  | corner | 1 | 28 | 0 | rapier | 18.9 | 36.2 | 85.7 | 55.6 | 63% |  |
-  | corner | 1 | 28 | 0 | physics-engine | 4.4 | 5.4 | 17.6 | 58.9 | 0% | 0.23 |
-  | door | 1 | 31 | 1 | rapier | 18.7 | 33.7 | 73.0 | 50.4 | 76% |  |
-  | door | 1 | 31 | 1 | physics-engine | 3.0 | 4.6 | 11.7 | 56.0 | 1% | 0.16 |
-  | correction | 1 | 28 | 0 | rapier | 12.5 | 15.5 | 31.7 | 43.1 | 88% |  |
-  | correction | 1 | 28 | 0 | physics-engine | 0.7 | 0.8 | 0.9 | 47.9 | 3% | 0.06 |
-  | combat | 1 | 28 | 1 | rapier | 12.5 | 18.7 | 38.7 | 51.2 | 87% |  |
-  | combat | 1 | 28 | 1 | physics-engine | 0.7 | 1.0 | 2.3 | 79.0 | 3% | 0.06 |
-  | crowd | 1 | 31 | 5 | rapier | 20.9 | 40.1 | 93.7 | 60.6 | 75% |  |
-  | crowd | 1 | 31 | 5 | physics-engine | 2.3 | 7.4 | 15.6 | 89.3 | 1% | 0.13 |
-  | lifecycle | 4 | 28 | 0 | rapier | 19.1 | 34.3 | 70.8 | 51.7 | 65% |  |
-  | lifecycle | 4 | 28 | 0 | physics-engine | 3.1 | 10.9 | 14.5 | 82.4 | 0% | 0.20 |
-  | chase | 1 | 31 | 5 | rapier | 25.4 | 47.6 | 111.5 | 72.3 | 64% |  |
-  | chase | 1 | 31 | 5 | physics-engine | 6.7 | 11.4 | 21.3 | 87.0 | 0% | 0.24 |
-  | jump | 1 | 28 | 0 | rapier | 14.9 | 18.9 | 42.1 | 44.1 | 70% |  |
-  | jump | 1 | 28 | 0 | physics-engine | 3.3 | 4.3 | 5.4 | 51.0 | 1% | 0.22 |
-  | ledge | 1 | 34 | 1 | rapier | 20.1 | 63.2 | 107.7 | 72.4 | 67% |  |
-  | ledge | 1 | 34 | 1 | physics-engine | 3.3 | 28.9 | 46.6 | 87.5 | 0% | 0.23 |
-  | ceiling | 1 | 34 | 1 | rapier | 17.0 | 29.0 | 74.1 | 63.3 | 74% |  |
-  | ceiling | 1 | 34 | 1 | physics-engine | 3.0 | 4.4 | 9.7 | 84.7 | 1% | 0.17 |
-  | traversal | 1 | 34 | 1 | rapier | 16.7 | 43.9 | 94.9 | 76.8 | 72% |  |
-  | traversal | 1 | 34 | 1 | physics-engine | 2.3 | 11.8 | 33.5 | 86.0 | 1% | 0.17 |
-  | lunge | 1 | 30 | 1 | rapier | 14.3 | 25.3 | 46.7 | 44.9 | 77% |  |
-  | lunge | 1 | 30 | 1 | physics-engine | 1.9 | 4.8 | 5.7 | 73.5 | 1% | 0.14 |
-  | crates | 1 | 30 | 1 | rapier | 16.3 | 32.4 | 105.3 | 59.3 | 75% |  |
-  | crates | 1 | 30 | 1 | physics-engine | 2.7 | 4.6 | 13.2 | 79.9 | 1% | 0.16 |
-  | all | | | | rapier | 18.2 | 36.1 | 82.1 | | | |
-  | all | | | | physics-engine | 2.7 | 7.7 | 23.0 | | | |
+  | quiet | 1 | 28 | 0 | rapier | 15.3 | 24.6 | 89.8 | 56.5 | 83% |  |
+  | quiet | 1 | 28 | 0 | physics-engine | 0.8 | 1.0 | 1.1 | 58.6 | 3% | 0.04 |
+  | party-quiet | 4 | 28 | 0 | rapier | 21.4 | 37.4 | 107.9 | 66.4 | 75% |  |
+  | party-quiet | 4 | 28 | 0 | physics-engine | 2.3 | 2.5 | 3.9 | 96.4 | 1% | 0.10 |
+  | sparse | 4 | 28 | 0 | rapier | 23.8 | 60.2 | 138.5 | 72.2 | 60% |  |
+  | sparse | 4 | 28 | 0 | physics-engine | 4.0 | 9.9 | 14.6 | 102.3 | 0% | 0.17 |
+  | corner | 1 | 28 | 0 | rapier | 22.7 | 42.2 | 129.9 | 69.6 | 58% |  |
+  | corner | 1 | 28 | 0 | physics-engine | 4.9 | 5.5 | 15.4 | 61.0 | 1% | 0.19 |
+  | door | 1 | 31 | 1 | rapier | 21.1 | 41.8 | 103.5 | 69.7 | 76% |  |
+  | door | 1 | 31 | 1 | physics-engine | 3.3 | 5.2 | 19.0 | 59.3 | 1% | 0.16 |
+  | correction | 1 | 28 | 0 | rapier | 15.0 | 25.5 | 98.8 | 59.9 | 86% |  |
+  | correction | 1 | 28 | 0 | physics-engine | 0.8 | 1.0 | 1.6 | 58.2 | 2% | 0.05 |
+  | combat | 1 | 28 | 1 | rapier | 15.0 | 33.0 | 109.7 | 77.2 | 86% |  |
+  | combat | 1 | 28 | 1 | physics-engine | 0.8 | 1.2 | 4.7 | 96.4 | 2% | 0.05 |
+  | crowd | 1 | 31 | 5 | rapier | 24.1 | 48.5 | 140.2 | 75.5 | 76% |  |
+  | crowd | 1 | 31 | 5 | physics-engine | 2.6 | 8.5 | 22.9 | 98.1 | 1% | 0.13 |
+  | lifecycle | 4 | 28 | 0 | rapier | 22.9 | 52.2 | 137.9 | 73.4 | 66% |  |
+  | lifecycle | 4 | 28 | 0 | physics-engine | 3.5 | 12.2 | 17.1 | 91.4 | 0% | 0.18 |
+  | chase | 1 | 31 | 5 | rapier | 30.1 | 75.9 | 161.6 | 78.1 | 64% |  |
+  | chase | 1 | 31 | 5 | physics-engine | 7.7 | 14.7 | 39.2 | 98.4 | 0% | 0.24 |
+  | jump | 1 | 28 | 0 | rapier | 18.2 | 36.0 | 111.8 | 57.7 | 67% |  |
+  | jump | 1 | 28 | 0 | physics-engine | 3.8 | 5.1 | 13.0 | 57.7 | 1% | 0.18 |
+  | ledge | 1 | 36 | 1 | rapier | 24.7 | 88.2 | 164.7 | 82.5 | 68% |  |
+  | ledge | 1 | 36 | 1 | physics-engine | 3.6 | 35.3 | 60.2 | 98.8 | 0% | 0.22 |
+  | ceiling | 1 | 36 | 1 | rapier | 22.5 | 50.0 | 143.3 | 87.7 | 74% |  |
+  | ceiling | 1 | 36 | 1 | physics-engine | 3.6 | 6.0 | 17.1 | 104.3 | 1% | 0.15 |
+  | traversal | 1 | 36 | 1 | rapier | 20.7 | 73.8 | 136.7 | 86.0 | 71% |  |
+  | traversal | 1 | 36 | 1 | physics-engine | 2.8 | 20.3 | 46.4 | 99.1 | 0% | 0.19 |
+  | lunge | 1 | 30 | 1 | rapier | 17.4 | 39.7 | 136.6 | 55.6 | 78% |  |
+  | lunge | 1 | 30 | 1 | physics-engine | 2.2 | 5.8 | 15.0 | 88.6 | 1% | 0.13 |
+  | crates | 1 | 30 | 1 | rapier | 18.5 | 36.2 | 107.0 | 71.6 | 73% |  |
+  | crates | 1 | 30 | 1 | physics-engine | 3.1 | 5.3 | 17.6 | 88.9 | 1% | 0.15 |
+  | stairs | | | | physics-engine | unsupported: walking up stairs needs character-controller autostep, which physics-engine lacks (#222) | | | | | |
+  | all | | | | rapier | 21.4 | 52.8 | 129.4 | | | |
+  | all | | | | physics-engine | 3.0 | 9.0 | 31.6 | | | |
 
 ## Height and traversal topology
 
@@ -157,6 +158,18 @@ Each scenario layout is validated: a crossing the geometry permits (a rise withi
 apex over a gap within its reach, or any drop) without a declared connection rejects the
 level. The seeded A/B `traversal` workload climbs platform and bridge, drops off the bridge's
 side and walks the path beneath it on both backends.
+
+Stairs (Atlas 5.1.5, #222): a walking player (grounded, or inside its coyote window, which
+a step up briefly opens) climbs steps through Rapier's character-controller `autostep` with a
+25-unit step height; the capsule's rounded base climbs an edge about 9 units further as a
+slope (Rapier's 45 degree rule), so steps up to about 33 units climb and 35 block. Jumps and
+falls never step, so a jump keeps landing on a ledge only from above. Stairs belong to the
+region they lead into: standing on a step keeps the membership, and a saved grounded body is
+checked by a downward capsule cast (`supported_within`, edges and steps included) rather than
+the ground straight below. The `traversal` scenario's two 20-unit steps climb to the
+platform's north face (a declared walk connection). physics-engine has no autostep yet: its
+adapter ignores the walking flag, and the seeded A/B `stairs` workload is reported
+**unsupported** on it (Rapier's invariants and replay still run); its timing row says so.
 
 Fall recovery (Atlas 5.1.3, #211): each player keeps the position at which it last ended a
 tick supported (saved, schema 17). A body that ends a tick out of the world (its centre

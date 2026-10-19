@@ -885,6 +885,11 @@ const TRAVERSAL_BRIDGE_OFFSET: i32 = 510;
 const TRAVERSAL_BRIDGE_HALF_EXTENTS: Vec3i = Vec3i::new(150, 10, 60);
 const TRAVERSAL_BRIDGE_TOP: i32 = 140;
 const TRAVERSAL_BRIDGE_REGION: RegionId = 3;
+/// The traversal scenario's stairs (#222): two 20-unit steps, each 40 units deep, up to the
+/// platform's north face, walkable without jumping (Atlas 5.1.5).
+const TRAVERSAL_STEP_RISE: i32 = 20;
+const TRAVERSAL_STEP_DEPTH: i32 = 40;
+const TRAVERSAL_STAIRS_HALF_WIDTH: i32 = 60;
 
 /// One resolved strike as published in a snapshot for diagnostics and feedback.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1714,6 +1719,8 @@ pub enum StaticColliderKind {
     Ceiling,
     /// A damageable crate (#90), while it stands.
     Crate,
+    /// A stair step (#222): walkable ground a walking player climbs without jumping.
+    Step,
 }
 
 /// Speed changes per tick by which controlled horizontal velocity converges on the movement
@@ -2534,6 +2541,29 @@ impl ArpgGame {
             let platform_area = area(&game.static_colliders[game.static_colliders.len() - 2]);
             let bridge_area = area(&bridge);
             game.static_colliders.push(bridge);
+            // Steps north of the platform, the higher one against its face.
+            for step in 1..=2 {
+                let top = FLOOR_FOOT_Y + (3 - step) * TRAVERSAL_STEP_RISE;
+                let near_face = center_z - half.z - (step - 1) * TRAVERSAL_STEP_DEPTH;
+                let step_half = Vec3i::new(
+                    TRAVERSAL_STAIRS_HALF_WIDTH,
+                    (top - FLOOR_FOOT_Y) / 2,
+                    TRAVERSAL_STEP_DEPTH / 2,
+                );
+                let stair = StaticColliderSnapshot {
+                    id: STATIC_BODY_BASE + index + 2 + u64::try_from(step).expect("step fits u64"),
+                    position: [
+                        center_x + TRAVERSAL_PLATFORM_OFFSET,
+                        FLOOR_FOOT_Y + step_half.y,
+                        near_face - step_half.z,
+                    ],
+                    half_extents: vec_to_array(step_half),
+                    kind: StaticColliderKind::Step,
+                };
+                game.physics
+                    .add_fixed(stair.id, array_to_vec(stair.position), step_half)?;
+                game.static_colliders.push(stair);
+            }
             game.topology = Topology::new(
                 vec![
                     WalkableRegion {
@@ -2576,6 +2606,13 @@ impl ArpgGame {
                         kind: ConnectionKind::Drop,
                         from: TRAVERSAL_BRIDGE_REGION,
                         to: DUNGEON_FLOOR_REGION,
+                    },
+                    // The stairs (#222): a walk both ways.
+                    TraversalConnection {
+                        id: 5,
+                        kind: ConnectionKind::Walk,
+                        from: DUNGEON_FLOOR_REGION,
+                        to: TRAVERSAL_PLATFORM_REGION,
                     },
                 ],
             )?;
@@ -2895,9 +2932,15 @@ impl ArpgGame {
                 .ground_height(Vector::from_array(player.position))
                 .map(|ground| feet - ground);
             let support_valid = if player.grounded {
+                // Support under the capsule, edges and steps included (#222).
                 velocity_y == 0.0
                     && player.coyote_ticks_remaining == 0
-                    && above_ground.is_some_and(|height| height.abs() <= GROUNDED_HEIGHT_TOLERANCE)
+                    && above_ground.is_some_and(|height| height >= -GROUNDED_HEIGHT_TOLERANCE)
+                    && game.physics.supported_within(
+                        Vector::from_array(player.position),
+                        PLAYER_HALF_EXTENTS,
+                        GROUNDED_HEIGHT_TOLERANCE,
+                    )
             } else {
                 player.coyote_ticks_remaining <= jump.data.coyote_ticks
                     && above_ground.is_some_and(|height| height >= -GROUNDED_HEIGHT_TOLERANCE)
@@ -2909,6 +2952,8 @@ impl ArpgGame {
             {
                 return Err(GameError::new("saved player jump state is invalid"));
             }
+            // A grounded body on a step stands on no region's floor: stairs belong to the
+            // region they lead into, and the membership stays (#222).
             let region_valid = game.topology.knows(player.region)
                 && (!player.grounded
                     || game
@@ -2920,8 +2965,7 @@ impl ArpgGame {
                             GROUNDED_HEIGHT_TOLERANCE,
                             PLAYER_HALF_EXTENTS.x as f32,
                         )
-                        .map(|id| RegionMembership::Region { id })
-                        == Some(player.region));
+                        .is_none_or(|id| RegionMembership::Region { id } == player.region));
             if !region_valid {
                 return Err(GameError::new("saved player region is invalid"));
             }
@@ -5726,10 +5770,15 @@ impl ArpgGame {
             let vertical = Self::takeoff_or_fall(&jump, state);
             let horizontal = Self::controlled_movement_velocity(state.velocity, *state, control);
             let intended = Vector::new(horizontal.x, vertical, horizontal.z);
+            // A grounded body that is not taking off walks, and walking climbs stairs; so
+            // does one inside its coyote window, which a step up briefly lifts off the ground.
+            // A jump clears that window: jumps and falls never step (#222).
+            let walking = state.grounded || state.coyote_ticks_remaining > 0;
             let motion = self.physics.move_player(
                 Self::player_body_id(player_id),
                 state.position,
                 intended,
+                walking,
             )?;
             let allowed =
                 |moved: f32, intended: f32| moved.clamp(intended.min(0.0), intended.max(0.0));

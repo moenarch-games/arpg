@@ -45,7 +45,7 @@ use std::fmt;
 
 use physics_engine::approximate::{
     Body, CharacterMove, CharacterMoveResult, CharacterSettings, Config, QueryFilter, QueryHit,
-    QueryPose, RayCast, Shape, Vector as EngineVector, World,
+    QueryPose, RayCast, Shape, ShapeCast, Vector as EngineVector, World,
 };
 use physics_engine::{BodyId, CollisionLayers3d};
 use rapier3d::math::Vector;
@@ -371,11 +371,14 @@ impl Physics {
         Ok((to, translation))
     }
 
+    /// `walking` would climb steps; physics-engine has no autostep yet, so a walking player
+    /// is blocked by a step as by a wall (unsupported, #222).
     pub(crate) fn move_player(
         &mut self,
         key: BodyKey,
         from: Vector,
         desired: Vector,
+        _walking: bool,
     ) -> Result<Motion, GameError> {
         let (moved, supported) = self.step(key, Kind::Vertical, from, desired)?;
         let to = from + moved;
@@ -454,6 +457,23 @@ impl Physics {
             )
             .expect("physics-engine ray")
             .map(|hit| hit.fraction)
+    }
+
+    pub(crate) fn supported_within(
+        &self,
+        position: Vector,
+        half_extents: Vec3i,
+        reach: f32,
+    ) -> bool {
+        let mut hits = self.hits.borrow_mut();
+        let cast = ShapeCast::new(
+            QueryPose::new(character_shape(half_extents), engine(position)),
+            EngineVector(0.0, -reach * super::METRES_PER_UNIT, 0.0),
+        );
+        self.world
+            .cast_shape(cast, self.statics(), &mut hits)
+            .expect("physics-engine support cast");
+        !hits.is_empty()
     }
 
     pub(crate) fn penetrates_fixed(&self, position: Vector, half_extents: Vec3i) -> bool {
