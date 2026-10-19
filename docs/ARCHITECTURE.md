@@ -29,7 +29,8 @@ server or WASM build enables it.
   world is created. Call sites do not change.
 - **Adapter.** The same metre conversion as Rapier (`Config::length_unit` stays 1); the 0.25
   unit contact offset; the floor a static half-space, excluded from planar moves and rays and
-  counted by `penetrates_fixed`; only static ground is support; players snap within the support
+  counted by `penetrates_fixed` (on its own collision layer in the adapter); only static
+  ground is support; players snap within the support
   reach; monsters move planar; each game move is its own one-element `move_characters` batch,
   in the game's order; doors are added and removed as static boxes; positions are mirrored as
   the game computes them, so a restored save continues exactly. `rebuild` does nothing: the
@@ -68,38 +69,40 @@ server or WASM build enables it.
 
   | workload | players | static boxes | peak monster bodies | backend | median | p95 | p99 | setup median | rebuild share | engine/rapier total |
   |---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
-  | quiet | 1 | 18 | 0 | rapier | 15.0 | 19.9 | 43.8 | 48.1 | 87% |  |
-  | quiet | 1 | 18 | 0 | physics-engine | 1.1 | 1.2 | 1.5 | 49.4 | 3% | 0.07 |
-  | party-quiet | 4 | 18 | 0 | rapier | 21.2 | 32.6 | 70.5 | 57.4 | 73% |  |
-  | party-quiet | 4 | 18 | 0 | physics-engine | 3.0 | 3.1 | 5.5 | 59.9 | 1% | 0.14 |
-  | sparse | 4 | 18 | 0 | rapier | 23.2 | 45.6 | 77.7 | 64.3 | 64% |  |
-  | sparse | 4 | 18 | 0 | physics-engine | 5.2 | 15.5 | 28.9 | 67.6 | 0% | 0.27 |
-  | corner | 1 | 18 | 0 | rapier | 21.5 | 29.9 | 76.0 | 48.7 | 58% |  |
-  | corner | 1 | 18 | 0 | physics-engine | 6.1 | 7.4 | 26.0 | 60.5 | 0% | 0.29 |
-  | door | 1 | 21 | 1 | rapier | 20.7 | 30.5 | 59.8 | 57.2 | 72% |  |
-  | door | 1 | 21 | 1 | physics-engine | 3.8 | 5.7 | 9.6 | 55.2 | 1% | 0.18 |
-  | correction | 1 | 18 | 0 | rapier | 14.4 | 19.6 | 44.1 | 44.6 | 86% |  |
-  | correction | 1 | 18 | 0 | physics-engine | 1.0 | 1.1 | 2.3 | 56.2 | 3% | 0.07 |
-  | combat | 1 | 18 | 1 | rapier | 14.1 | 21.6 | 48.5 | 51.7 | 84% |  |
-  | combat | 1 | 18 | 1 | physics-engine | 1.0 | 1.5 | 3.8 | 53.9 | 3% | 0.07 |
-  | crowd | 1 | 21 | 5 | rapier | 23.5 | 37.6 | 74.3 | 59.1 | 72% |  |
-  | crowd | 1 | 21 | 5 | physics-engine | 3.1 | 9.7 | 19.5 | 59.9 | 1% | 0.16 |
-  | lifecycle | 4 | 18 | 0 | rapier | 20.9 | 42.4 | 100.0 | 57.0 | 63% |  |
-  | lifecycle | 4 | 18 | 0 | physics-engine | 4.5 | 16.2 | 22.7 | 61.0 | 0% | 0.26 |
-  | chase | 1 | 21 | 5 | rapier | 31.2 | 56.8 | 119.3 | 73.2 | 58% |  |
-  | chase | 1 | 21 | 5 | physics-engine | 9.0 | 15.5 | 31.9 | 62.8 | 0% | 0.27 |
-  | jump | 1 | 18 | 0 | rapier | 17.7 | 26.3 | 75.0 | 42.7 | 65% |  |
-  | jump | 1 | 18 | 0 | physics-engine | 4.9 | 6.3 | 15.9 | 47.2 | 1% | 0.27 |
-  | ledge | 1 | 24 | 1 | rapier | 24.2 | 87.5 | 141.6 | 82.8 | 64% |  |
-  | ledge | 1 | 24 | 1 | physics-engine | 4.7 | 46.2 | 73.7 | 72.7 | 0% | 0.28 |
-  | ceiling | 1 | 24 | 1 | rapier | 22.8 | 41.0 | 80.2 | 82.3 | 70% |  |
-  | ceiling | 1 | 24 | 1 | physics-engine | 4.5 | 6.8 | 17.4 | 72.7 | 1% | 0.19 |
-  | traversal | 1 | 24 | 1 | rapier | 21.1 | 64.6 | 120.6 | 82.3 | 67% |  |
-  | traversal | 1 | 24 | 1 | physics-engine | 3.6 | 24.1 | 56.9 | 69.6 | 1% | 0.21 |
-  | lunge | 1 | 20 | 1 | rapier | 17.6 | 35.0 | 68.5 | 48.8 | 73% |  |
-  | lunge | 1 | 20 | 1 | physics-engine | 3.0 | 7.4 | 8.7 | 51.1 | 1% | 0.17 |
-  | all | | | | rapier | 21.1 | 44.0 | 95.2 | | | |
-  | all | | | | physics-engine | 3.9 | 10.8 | 37.8 | | | |
+  | quiet | 1 | 28 | 0 | rapier | 13.6 | 17.2 | 37.5 | 47.0 | 89% |  |
+  | quiet | 1 | 28 | 0 | physics-engine | 0.8 | 0.8 | 0.9 | 49.1 | 3% | 0.05 |
+  | party-quiet | 4 | 28 | 0 | rapier | 19.0 | 27.5 | 85.9 | 66.6 | 75% |  |
+  | party-quiet | 4 | 28 | 0 | physics-engine | 2.0 | 2.4 | 5.2 | 91.0 | 1% | 0.10 |
+  | sparse | 4 | 28 | 0 | rapier | 20.8 | 38.5 | 87.8 | 56.4 | 62% |  |
+  | sparse | 4 | 28 | 0 | physics-engine | 3.5 | 8.8 | 13.2 | 91.4 | 0% | 0.19 |
+  | corner | 1 | 28 | 0 | rapier | 18.9 | 36.2 | 85.7 | 55.6 | 63% |  |
+  | corner | 1 | 28 | 0 | physics-engine | 4.4 | 5.4 | 17.6 | 58.9 | 0% | 0.23 |
+  | door | 1 | 31 | 1 | rapier | 18.7 | 33.7 | 73.0 | 50.4 | 76% |  |
+  | door | 1 | 31 | 1 | physics-engine | 3.0 | 4.6 | 11.7 | 56.0 | 1% | 0.16 |
+  | correction | 1 | 28 | 0 | rapier | 12.5 | 15.5 | 31.7 | 43.1 | 88% |  |
+  | correction | 1 | 28 | 0 | physics-engine | 0.7 | 0.8 | 0.9 | 47.9 | 3% | 0.06 |
+  | combat | 1 | 28 | 1 | rapier | 12.5 | 18.7 | 38.7 | 51.2 | 87% |  |
+  | combat | 1 | 28 | 1 | physics-engine | 0.7 | 1.0 | 2.3 | 79.0 | 3% | 0.06 |
+  | crowd | 1 | 31 | 5 | rapier | 20.9 | 40.1 | 93.7 | 60.6 | 75% |  |
+  | crowd | 1 | 31 | 5 | physics-engine | 2.3 | 7.4 | 15.6 | 89.3 | 1% | 0.13 |
+  | lifecycle | 4 | 28 | 0 | rapier | 19.1 | 34.3 | 70.8 | 51.7 | 65% |  |
+  | lifecycle | 4 | 28 | 0 | physics-engine | 3.1 | 10.9 | 14.5 | 82.4 | 0% | 0.20 |
+  | chase | 1 | 31 | 5 | rapier | 25.4 | 47.6 | 111.5 | 72.3 | 64% |  |
+  | chase | 1 | 31 | 5 | physics-engine | 6.7 | 11.4 | 21.3 | 87.0 | 0% | 0.24 |
+  | jump | 1 | 28 | 0 | rapier | 14.9 | 18.9 | 42.1 | 44.1 | 70% |  |
+  | jump | 1 | 28 | 0 | physics-engine | 3.3 | 4.3 | 5.4 | 51.0 | 1% | 0.22 |
+  | ledge | 1 | 34 | 1 | rapier | 20.1 | 63.2 | 107.7 | 72.4 | 67% |  |
+  | ledge | 1 | 34 | 1 | physics-engine | 3.3 | 28.9 | 46.6 | 87.5 | 0% | 0.23 |
+  | ceiling | 1 | 34 | 1 | rapier | 17.0 | 29.0 | 74.1 | 63.3 | 74% |  |
+  | ceiling | 1 | 34 | 1 | physics-engine | 3.0 | 4.4 | 9.7 | 84.7 | 1% | 0.17 |
+  | traversal | 1 | 34 | 1 | rapier | 16.7 | 43.9 | 94.9 | 76.8 | 72% |  |
+  | traversal | 1 | 34 | 1 | physics-engine | 2.3 | 11.8 | 33.5 | 86.0 | 1% | 0.17 |
+  | lunge | 1 | 30 | 1 | rapier | 14.3 | 25.3 | 46.7 | 44.9 | 77% |  |
+  | lunge | 1 | 30 | 1 | physics-engine | 1.9 | 4.8 | 5.7 | 73.5 | 1% | 0.14 |
+  | crates | 1 | 30 | 1 | rapier | 16.3 | 32.4 | 105.3 | 59.3 | 75% |  |
+  | crates | 1 | 30 | 1 | physics-engine | 2.7 | 4.6 | 13.2 | 79.9 | 1% | 0.16 |
+  | all | | | | rapier | 18.2 | 36.1 | 82.1 | | | |
+  | all | | | | physics-engine | 2.7 | 7.7 | 23.0 | | | |
 
 ## Height and traversal topology
 
@@ -178,6 +181,18 @@ and its strike sweeps the segment the body actually travelled that tick: reach a
 obstruction are measured from the segment's point nearest the target. The strike keeps the
 identity of the tick its window opened on and connects at most once. Saves (schema 18) carry
 the lunge in progress. The seeded A/B `lunge` workload runs it on both backends.
+
+Damageable crates (#90, Atlas 5.2.2; content `crate`) stand in the corners of every combat
+room, two per room, five units off the walls and taller than a jump's apex (so they are no
+walkable ground). A standing crate is a static box: it blocks movement and navigation, stops
+arrows and obstructs strikes at what lies behind it. Player melee strikes may target it like a
+monster, nearest first within the strike volume; the obstruction ray of a strike at a crate
+ignores that crate (`Physics::segment_obstructed_except`, on both backends: Rapier filters the
+collider out with a query predicate, the physics-engine adapter puts the floor on its own
+collision layer so `QueryFilter::exclude` is free for the crate). A broken crate leaves the
+physics world and drops nothing. Snapshots (schema 24) list standing crates and export them as
+`crate` colliders; saves (schema 19) keep every crate's health. The seeded A/B `crates`
+workload breaks one and walks through its spot on both backends.
 
 The browser's presentation snapshot boundary and React update ownership are
 documented in [ADR 0001](adr/0001-browser-snapshot-projection.md). Tick-dependent

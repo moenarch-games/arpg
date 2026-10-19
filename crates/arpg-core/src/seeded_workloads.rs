@@ -30,9 +30,11 @@ pub(super) enum Case {
     Traversal,
     /// A skirmisher chasing a player who keeps stepping away: its lunges sweep (#90).
     Lunge,
+    /// Breaking a crate in the corner of a combat room and walking through its spot (#90).
+    Crates,
 }
 impl Case {
-    pub(super) const ALL: [Self; 15] = [
+    pub(super) const ALL: [Self; 16] = [
         Self::Quiet,
         Self::PartyQuiet,
         Self::Sparse,
@@ -48,11 +50,12 @@ impl Case {
         Self::Ceiling,
         Self::Traversal,
         Self::Lunge,
+        Self::Crates,
     ];
     /// The workloads whose saves restore: the others move monsters out of their generated
     /// rooms, which a save rejects.
     #[cfg(test)]
-    pub(super) const SAVED: [Self; 10] = [
+    pub(super) const SAVED: [Self; 11] = [
         Self::Sparse,
         Self::Corner,
         Self::Door,
@@ -63,6 +66,7 @@ impl Case {
         Self::Ledge,
         Self::Ceiling,
         Self::Traversal,
+        Self::Crates,
     ];
     pub(super) fn name(self) -> &'static str {
         match self {
@@ -81,6 +85,7 @@ impl Case {
             Self::Ceiling => "ceiling",
             Self::Traversal => "traversal",
             Self::Lunge => "lunge",
+            Self::Crates => "crates",
         }
     }
 }
@@ -92,6 +97,16 @@ pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
     };
     match case {
         // Jumping into the outer wall the corner case presses into: airborne sliding, landing.
+        Case::Crates => {
+            // East of the north-west crate of room 2, facing it.
+            let placed = game
+                .crates
+                .iter()
+                .find(|placed| placed.room_id == 2)
+                .copied()
+                .unwrap();
+            game.player_spawns[0] = Vec3i::new(placed.position.x + 90, PLAYER_Y, placed.position.z);
+        }
         Case::Lunge => {
             // The player stands at the centre of the first skirmisher's room.
             let room_id = game
@@ -213,6 +228,11 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
         Case::Ceiling if tick == 36 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
         Case::Ceiling if tick == 70 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
         Case::Ceiling if tick == 40 || tick == 72 || tick == 100 => Some(ArpgCommand::Jump),
+        Case::Crates if tick == 0 || tick == 20 => Some(ArpgCommand::PrimaryAttack {
+            aim: Some([-1_000, 0]),
+        }),
+        Case::Crates if tick == 40 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
+        Case::Crates if tick == 60 => Some(ArpgCommand::SetMovement { x: 1, z: 1 }),
         // Stepping away and pausing, so lunges start both in and out of static reach.
         Case::Lunge if tick.is_multiple_of(20) => {
             let (x, z) =

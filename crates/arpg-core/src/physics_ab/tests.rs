@@ -199,7 +199,8 @@ fn invariants(
 }
 
 /// Game-visible outcomes that do not depend on exact positions: doors, encounters, health,
-/// progression, support, region membership and every strike and interaction decision.
+/// progression, support, region membership, standing crates and every strike and
+/// interaction decision.
 fn outcomes(game: &ArpgGame) -> String {
     let snapshot = game.snapshot().unwrap();
     let mut out = String::new();
@@ -242,6 +243,9 @@ fn outcomes(game: &ArpgGame) -> String {
     for event in &snapshot.interaction_events {
         write!(out, "interaction {event:?};").unwrap();
     }
+    for placed in &snapshot.crates {
+        write!(out, "crate {} {};", placed.id, placed.health).unwrap();
+    }
     write!(out, "loot {}", snapshot.ground_loot.len()).unwrap();
     out
 }
@@ -282,6 +286,8 @@ struct Comparison {
     raised_region_ticks: u32,
     /// Monster strikes of the `monster.lunge` definition resolved in either game.
     lunge_strikes: u32,
+    /// Crates broken in either game.
+    crates_broken: u32,
     /// Every region membership a player of either game held.
     memberships: std::collections::BTreeSet<String>,
     /// Ticks on which an airborne player's head touches a ceiling's underside, in either game.
@@ -490,6 +496,17 @@ fn compare(case: Case, seed: u32) -> Comparison {
             {
                 comparison.raised_region_ticks += 1;
             }
+            comparison.crates_broken += game
+                .strike_outcomes()
+                .iter()
+                .filter(|outcome| {
+                    matches!(outcome.target, crate::StrikeTarget::Crate(_))
+                        && matches!(
+                            outcome.result,
+                            crate::StrikeResult::Hit { defeated: true, .. }
+                        )
+                })
+                .count() as u32;
             comparison.lunge_strikes += game
                 .strike_outcomes()
                 .iter()
@@ -606,6 +623,9 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
                 for violation in violations.iter().take(5) {
                     failures.push(format!("{context} on {backend}: {violation}"));
                 }
+            }
+            if case == Case::Crates && comparison.crates_broken == 0 {
+                failures.push(format!("{context}: no crate was broken"));
             }
             if case == Case::Lunge && comparison.lunge_strikes == 0 {
                 failures.push(format!("{context}: no lunge strike resolved"));

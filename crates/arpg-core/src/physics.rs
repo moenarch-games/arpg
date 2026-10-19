@@ -337,6 +337,15 @@ mod ab {
             dispatch!(self, physics => physics.segment_obstructed(from, to))
         }
 
+        pub(crate) fn segment_obstructed_except(
+            &self,
+            from: Vector,
+            to: Vector,
+            except: Option<BodyKey>,
+        ) -> bool {
+            dispatch!(self, physics => physics.segment_obstructed_except(from, to, except))
+        }
+
         pub(crate) fn first_fixed_hit(&self, origin: Vector, translation: Vector) -> Option<f32> {
             dispatch!(self, physics => physics.first_fixed_hit(origin, translation))
         }
@@ -707,6 +716,38 @@ mod tests {
                 .move_player(2, above, Vector::new(0.0, -1.0, 0.0))
                 .unwrap();
             assert!(!motion.supported, "{motion:?}");
+        });
+    }
+
+    #[test]
+    fn a_segment_can_ignore_one_static_body_but_not_the_others() {
+        each_backend(|| {
+            let mut physics = floored();
+            // A crate-like box at x = 100 and a wall behind it at x = 200.
+            physics
+                .add_fixed(1, Vec3i::new(100, Y, 0), Vec3i::new(25, 50, 25))
+                .unwrap();
+            physics
+                .add_fixed(2, Vec3i::new(200, Y, 0), Vec3i::new(10, 100, 100))
+                .unwrap();
+            let (from, crate_centre, beyond) = (at(0, 0), at(100, 0), at(300, 0));
+            assert!(physics.segment_obstructed(from, crate_centre));
+            assert!(!physics.segment_obstructed_except(from, crate_centre, Some(1)));
+            // Excluding the crate never excludes the wall, the floor stays out of the way, and
+            // excluding an unknown body changes nothing.
+            assert!(physics.segment_obstructed_except(from, beyond, Some(1)));
+            assert!(physics.segment_obstructed_except(from, crate_centre, Some(9)));
+            assert!(!physics.segment_obstructed_except(
+                from,
+                Vector::new(0.0, -200.0, 0.0),
+                Some(1)
+            ));
+            // Ground queries still see the floor.
+            assert!(
+                physics
+                    .ground_height(at(0, 0))
+                    .is_some_and(|ground| ground.abs() < 1.0e-3)
+            );
         });
     }
 

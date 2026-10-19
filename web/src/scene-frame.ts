@@ -169,7 +169,9 @@ export function buildFrame(
             ? "#5d5142"
             : collider.kind === "platform" || collider.kind === "ceiling"
               ? "#6b5e4b"
-              : "#403a33",
+              : collider.kind === "crate"
+                ? "#7a5a36"
+                : "#403a33",
         transform: { translation },
       };
     }),
