@@ -385,6 +385,10 @@ export function TrainingDiagnostics({ store, playerId }) {
         <dd>{player?.motion ? `feet ${player.motion.feetY}` : "none"}</dd>
       </div>
       <div>
+        <dt>Poison</dt>
+        <dd>{player?.poison ? `poison ${player.poison.ticksRemaining}` : "none"}</dd>
+      </div>
+      <div>
         <dt>Region</dt>
         <dd>
           {player?.region?.kind === "transit"

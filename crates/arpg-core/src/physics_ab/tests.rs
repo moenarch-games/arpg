@@ -298,6 +298,8 @@ struct Comparison {
     raised_region_ticks: u32,
     /// Monster strikes of the `monster.lunge` definition resolved in either game.
     lunge_strikes: u32,
+    /// Poison damage dealt in either game (#64).
+    poison_hits: u32,
     /// Most players one burst struck in either game (#64).
     burst_targets: usize,
     /// Crates broken in either game.
@@ -431,6 +433,26 @@ fn compare_area_queries(
     comparison: &mut Comparison,
 ) {
     const RADIUS: f32 = 220.0;
+    // Every poison pool's floor sphere as well (#64).
+    let pool_radius = f32::from(rapier.content.poison.pool_radius);
+    for pool in &rapier.pools {
+        let centre = vector(pool.position);
+        let (a, b) = (
+            rapier
+                .physics
+                .characters_in_column(centre, pool_radius, 0.0),
+            engine
+                .physics
+                .characters_in_column(centre, pool_radius, 0.0),
+        );
+        comparison.queries += 1;
+        if a != b {
+            comparison.query_differences.push(format!(
+                "tick {tick}: pool {}: rapier {a:?}, engine {b:?}",
+                pool.id
+            ));
+        }
+    }
     for (key, body) in bodies {
         let centre = body.position;
         let (a, b) = (
@@ -562,6 +584,11 @@ fn compare(case: Case, seed: u32) -> Comparison {
             {
                 comparison.raised_region_ticks += 1;
             }
+            comparison.poison_hits += game
+                .strike_outcomes()
+                .iter()
+                .filter(|outcome| &*outcome.definition == "hazard.poison")
+                .count() as u32;
             comparison.burst_targets = comparison.burst_targets.max(
                 game.strike_outcomes()
                     .iter()
@@ -732,6 +759,9 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
                 failures.push(format!(
                     "{context}: the player never walked up onto the platform"
                 ));
+            }
+            if case == Case::Poison && comparison.poison_hits == 0 {
+                failures.push(format!("{context}: no poison damage landed"));
             }
             if case == Case::Slam && comparison.burst_targets < 2 {
                 failures.push(format!("{context}: no burst struck two players at once"));

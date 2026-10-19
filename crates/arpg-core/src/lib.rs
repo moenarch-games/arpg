@@ -110,7 +110,8 @@ pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// 18: lunging attacks (#90): a monster action's lunge; schema 17 saves are refused.
 /// 19: damageable crates (#90): every crate's health; schema 18 saves are refused.
 /// 20: stairs (#222): a player's last ground contact; schema 19 saves are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 20;
+/// 21: poison (#64): a player's poison status; schema 20 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 21;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -139,6 +140,12 @@ const DOOR_BODY_BASE: u64 = 20_000;
 const GROUND_LOOT_ID_BASE: u64 = 30_000;
 /// Crate ids and body keys (#90).
 const CRATE_ID_BASE: u32 = 40_000;
+/// Poison pool ids (#64).
+const POOL_ID_BASE: u32 = 50_000;
+/// How far (world units) a pool's centre stands from its corner's two walls (#64).
+const POOL_INSET: i32 = 120;
+/// The strike definition id of poison damage (#64).
+static POISON_DEFINITION: LazyLock<DefinitionId> = LazyLock::new(|| "hazard.poison".into());
 /// How far (in units of an arrow's per-tick translation) a crate's own box may lie beyond
 /// the wall ray's hit and still be the crate the ray met (#223).
 const CRATE_ARROW_TIE: f32 = 1.0e-3;
@@ -1244,6 +1251,8 @@ pub struct ArpgSnapshot {
     pub chests: Vec<ChestSnapshot>,
     /// Crates still standing (#90).
     pub crates: Vec<CrateSnapshot>,
+    /// Poison pools (#64).
+    pub hazards: Vec<HazardSnapshot>,
     /// Interaction attempts resolved during the tick that produced this snapshot.
     pub interaction_events: Vec<InteractionEventSnapshot>,
 }
@@ -1344,6 +1353,8 @@ pub struct PlayerSnapshot {
     pub motion: PlayerMotionSnapshot,
     /// Walkable region membership or transit (#207).
     pub region: RegionMembership,
+    /// Poison from a pool (#64).
+    pub poison: Option<PoisonStatus>,
 }
 
 /// A player body's height and support (#59), for presentation and animation: they place
@@ -1612,6 +1623,8 @@ pub struct PlayerSaveState {
     pub region: RegionMembership,
     /// Last tick's controller ground contact, edges included (#222).
     pub ground_contact: bool,
+    /// Poison from a pool (#64).
+    pub poison: Option<PoisonStatus>,
     /// Where the player last ended a tick supported, in world units (#211).
     pub last_supported: [f32; 3],
     pub movement: [i8; 2],
@@ -1673,6 +1686,35 @@ pub struct MonsterSaveState {
     pub retreating: bool,
     /// Shield guard (#92): present exactly for a shield monster.
     pub guard: Option<GuardState>,
+}
+
+/// A poison pool on a combat room's floor (#64, Atlas 5.3.2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HazardSnapshot {
+    pub id: u32,
+    pub room_id: RoomId,
+    /// The pool's centre on the floor.
+    pub position: [i32; 3],
+    pub radius: u16,
+}
+
+/// A player's poison (#64): the pool that last applied it, the ticks it lasts and the ticks
+/// until its next damage. Reapplying refreshes the duration and keeps the damage cadence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PoisonStatus {
+    pub source: u32,
+    pub ticks_remaining: u16,
+    pub next_damage_in: u8,
+}
+
+/// A generated poison pool.
+#[derive(Clone, Copy, Debug)]
+struct PoolState {
+    id: u32,
+    room_id: RoomId,
+    position: Vec3i,
 }
 
 /// A damageable crate (#90, Atlas 5.2.2), while it stands.
@@ -1820,6 +1862,8 @@ impl MonsterActionState {
 pub enum StrikeSource {
     Player(PlayerId),
     Monster(u32),
+    /// An environmental hazard, by id: a poison pool (#64).
+    Hazard(u32),
 }
 
 /// What a strike contacted. Ordering is the stable identity tie-break for equal distances.
@@ -1898,6 +1942,8 @@ struct PlayerState {
     /// Whether last tick's move ended with the controller touching ground below it, edges
     /// included: this tick's move walks (climbs steps) unless it takes off (#222).
     ground_contact: bool,
+    /// Poison from a pool (#64).
+    poison: Option<PoisonStatus>,
     /// Where it last ended a tick supported: a fall out of the world returns it here (#211).
     last_supported: Vector,
     movement_x: i8,
@@ -2276,6 +2322,8 @@ pub struct ArpgGame {
     chests: Vec<ChestSnapshot>,
     /// Generated crates, broken ones with no health (#90).
     crates: Vec<CrateState>,
+    /// Generated poison pools (#64).
+    pools: Vec<PoolState>,
     interaction_events: Vec<InteractionEventSnapshot>,
     /// Counter, guard and bow values this game runs: the content's, unless a workbench
     /// session tuned them.
@@ -2372,6 +2420,7 @@ impl ArpgGame {
             &chests,
             &player_spawns,
         );
+        let pools = place_pools(&content, &rooms);
         let crate_half = crate_half_extents(&content);
         for placed in &crates {
             physics.add_fixed(crate_body_id(placed.id), placed.position, crate_half)?;
@@ -2406,6 +2455,7 @@ impl ArpgGame {
             scenario: ScenarioId::Dungeon,
             chests,
             crates,
+            pools,
             interaction_events: Vec::new(),
             tuning,
             workbench: None,
@@ -2669,6 +2719,7 @@ impl ArpgGame {
                     jump_buffer_ticks_remaining: state.jump_buffer_ticks_remaining,
                     region: state.region,
                     ground_contact: state.ground_contact,
+                    poison: state.poison,
                     last_supported: state.last_supported.to_array(),
                     movement: [state.movement_x, state.movement_z],
                     facing: [state.facing_x, state.facing_z],
@@ -2982,6 +3033,15 @@ impl ArpgGame {
             if !region_valid {
                 return Err(GameError::new("saved player region is invalid"));
             }
+            let poison = content.poison;
+            if player.poison.is_some_and(|status| {
+                player.health == 0
+                    || !game.pools.iter().any(|pool| pool.id == status.source)
+                    || !(1..=poison.duration_ticks).contains(&status.ticks_remaining)
+                    || !(1..=poison.interval_ticks).contains(&status.next_damage_in)
+            }) {
+                return Err(GameError::new("saved player poison is invalid"));
+            }
             // In the world and clear of fixed geometry. A supported body may round an edge,
             // where no ground lies straight below, so support itself is not checked.
             if game.out_of_world(Vector::from_array(player.last_supported))
@@ -3202,6 +3262,8 @@ impl ArpgGame {
                                 ),
                         ))
                     }),
+                // No hazard shoots.
+                StrikeSource::Hazard(_) => None,
             };
             let Some((lifetime, unflown, possible)) = flight else {
                 return Err(GameError::new("save contains an invalid arrow"));
@@ -3257,6 +3319,7 @@ impl ArpgGame {
                 jump_buffer_ticks_remaining: player.jump_buffer_ticks_remaining,
                 region: player.region,
                 ground_contact: player.ground_contact,
+                poison: player.poison,
                 last_supported: Vector::from_array(player.last_supported),
                 movement_x: player.movement[0],
                 movement_z: player.movement[1],
@@ -4728,6 +4791,7 @@ impl ArpgGame {
                         )
                     })
                     .collect::<Vec<_>>(),
+                StrikeSource::Hazard(_) => Vec::new(),
             };
             let (from, translation) = (arrow.position, arrow.velocity);
             let wall = self.physics.first_fixed_hit(from, translation);
@@ -4748,7 +4812,7 @@ impl ArpgGame {
                         Some((time, StrikeTarget::Crate(placed.id)))
                     })
                     .collect::<Vec<_>>(),
-                StrikeSource::Monster(_) => Vec::new(),
+                StrikeSource::Monster(_) | StrikeSource::Hazard(_) => Vec::new(),
             };
             let hurt = hurtboxes
                 .into_iter()
@@ -5930,6 +5994,75 @@ impl ArpgGame {
         Ok(())
     }
 
+    /// Poison pools (#64): every living player whose body touches a pool (an overlap query
+    /// through the physics seam, a sphere of the pool's radius on the floor, so a jump clears
+    /// it) is poisoned for the content's duration. Reapplying refreshes the duration and keeps
+    /// the damage cadence; it never stacks.
+    fn apply_hazards(&mut self) {
+        let poison = self.content.poison;
+        for pool in &self.pools {
+            let touching = self.physics.characters_in_column(
+                vector(pool.position),
+                f32::from(poison.pool_radius),
+                0.0,
+            );
+            for (&player_id, state) in &mut self.players {
+                if state.health == 0 || !touching.contains(&Self::player_body_id(player_id)) {
+                    continue;
+                }
+                state.poison = Some(PoisonStatus {
+                    source: pool.id,
+                    ticks_remaining: poison.duration_ticks,
+                    next_damage_in: state
+                        .poison
+                        .map_or(poison.interval_ticks, |current| current.next_damage_in),
+                });
+            }
+        }
+    }
+
+    /// Poison runs down (#64): every `intervalTicks` it deals its damage through the shared
+    /// strike outcome path (a hazard's unblockable hit, with no hurt stagger), and it ends
+    /// when its duration does or its player is defeated.
+    fn advance_poison(&mut self) {
+        let poison = self.content.poison;
+        let tick = self.tick;
+        let mut outcomes = Vec::new();
+        for (&player_id, state) in &mut self.players {
+            let Some(mut status) = state.poison else {
+                continue;
+            };
+            if state.health == 0 {
+                state.poison = None;
+                continue;
+            }
+            status.next_damage_in -= 1;
+            if status.next_damage_in == 0 {
+                status.next_damage_in = poison.interval_ticks;
+                let previous = state.health;
+                state.health = state.health.saturating_sub(poison.damage);
+                outcomes.push(StrikeOutcome {
+                    order: 0,
+                    strike: StrikeId {
+                        source: StrikeSource::Hazard(status.source),
+                        tick,
+                    },
+                    definition: POISON_DEFINITION.clone(),
+                    target: StrikeTarget::Player(player_id),
+                    result: StrikeResult::Hit {
+                        damage: previous - state.health,
+                        defeated: state.health == 0,
+                    },
+                });
+            }
+            status.ticks_remaining -= 1;
+            state.poison = (status.ticks_remaining > 0 && state.health > 0).then_some(status);
+        }
+        for outcome in outcomes {
+            self.push_strike_outcome(outcome);
+        }
+    }
+
     /// Whether a body centred on `position` has left the world: its centre outside the
     /// dungeon's extents, or its feet a body height below the lowest floor (#211).
     fn out_of_world(&self, position: Vector) -> bool {
@@ -6103,6 +6236,7 @@ impl AuthoritativeGame for ArpgGame {
                     id: self.topology.base(),
                 },
                 ground_contact: true,
+                poison: None,
                 last_supported: spawn,
                 movement_x: 0,
                 movement_z: 0,
@@ -6332,6 +6466,8 @@ impl AuthoritativeGame for ArpgGame {
         let monster_motions = self.steer_monsters()?;
         self.resolve_motion(&monster_motions)?;
         self.recover_fallen_players()?;
+        self.apply_hazards();
+        self.advance_poison();
         self.reconcile_encounters()?;
         self.advance_actions()?;
         self.advance_arrows()?;
@@ -6408,6 +6544,7 @@ impl AuthoritativeGame for ArpgGame {
                             .map(|height| height.round() as i32),
                     },
                     region: state.region,
+                    poison: state.poison,
                 })
             })
             .collect::<Result<Vec<_>, GameError>>()?;
@@ -6436,7 +6573,7 @@ impl AuthoritativeGame for ArpgGame {
         }));
 
         Ok(ArpgSnapshot {
-            schema_version: 24,
+            schema_version: 25,
             run_seed: self.run_seed,
             tick: self.tick,
             world_units_per_meter: WORLD_UNITS_PER_METER,
@@ -6510,6 +6647,16 @@ impl AuthoritativeGame for ArpgGame {
                     half_extents: vec_to_array(crate_half_extents(&self.content)),
                     health: placed.health,
                     max_health: self.content.crate_prop.health,
+                })
+                .collect(),
+            hazards: self
+                .pools
+                .iter()
+                .map(|pool| HazardSnapshot {
+                    id: pool.id,
+                    room_id: pool.room_id,
+                    position: vec_to_array(pool.position),
+                    radius: self.content.poison.pool_radius,
                 })
                 .collect(),
             interaction_events: self.interaction_events.clone(),
@@ -6773,6 +6920,30 @@ const _: () = assert!(MONSTER_BODY_HALF_EXTENTS.x == MONSTER_BODY_HALF_EXTENTS.z
 /// collider. The first draw is the one a lone room monster takes; a conflicting draw is
 /// redrawn a bounded number of times, then the first free spot of a fixed grid over the
 /// spawn area is taken, so the result is always deterministic.
+/// One poison pool per combat room (#64, Atlas 5.3.2), in room order, on the floor of its
+/// south-west corner, 120 units in from both walls: away from the centre where play starts,
+/// the chest, the crates in the northern corners and every doorway (doors stand at least 250
+/// units from a corner).
+fn place_pools(content: &Content, rooms: &[RoomSnapshot]) -> Vec<PoolState> {
+    if content.poison.pools_per_combat_room == 0 {
+        return Vec::new();
+    }
+    rooms
+        .iter()
+        .filter(|room| room.kind == RoomKind::Combat)
+        .enumerate()
+        .map(|(index, room)| PoolState {
+            id: POOL_ID_BASE + u32::try_from(index).expect("pool count fits u32"),
+            room_id: room.id,
+            position: Vec3i::new(
+                room.min_x + POOL_INSET,
+                FLOOR_FOOT_Y,
+                room.max_z - POOL_INSET,
+            ),
+        })
+        .collect()
+}
+
 /// A crate's body key: crates take their own id range.
 fn crate_body_id(id: u32) -> BodyKey {
     u64::from(id)
@@ -7241,6 +7412,7 @@ mod tests {
                 id: DUNGEON_FLOOR_REGION,
             },
             ground_contact: true,
+            poison: None,
             last_supported: Vector::ZERO,
             movement_x: x,
             movement_z: z,
@@ -10490,7 +10662,7 @@ mod tests {
             .iter()
             .find_map(|event| match event.source {
                 StrikeSource::Monster(id) => Some(id),
-                StrikeSource::Player(_) => None,
+                StrikeSource::Player(_) | StrikeSource::Hazard(_) => None,
             })
             .unwrap()
     }
@@ -11816,7 +11988,7 @@ mod tests {
         game.add_player(1).unwrap();
         let snapshot = game.snapshot().unwrap();
         let generated = generate_dungeon(content(), snapshot.run_seed);
-        assert_eq!(snapshot.schema_version, 24);
+        assert_eq!(snapshot.schema_version, 25);
         assert_eq!(snapshot.run_seed, 0xDEAD_BEEF);
         assert_eq!(game.run_seed(), snapshot.run_seed);
         assert_eq!(snapshot.rooms, generated.rooms);
@@ -12222,7 +12394,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 20"
+            "unsupported ARPG save schema version 12; expected 21"
         );
     }
 
@@ -12237,7 +12409,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 13; expected 20"
+            "unsupported ARPG save schema version 13; expected 21"
         );
     }
 
@@ -15082,6 +15254,127 @@ mod tests {
                 "{events:?}"
             );
             assert_eq!(monster_health(&game, 77), brute().health);
+        });
+    }
+
+    /// Player 1 standing on the strike arena's poison pool (#64).
+    fn pool_arena() -> (ArpgGame, PoolState) {
+        let (mut game, ..) = strike_arena();
+        let pool = *game
+            .pools
+            .iter()
+            .find(|pool| pool.room_id == STRIKE_ROOM)
+            .unwrap();
+        game.put_player(1, Vec3i::new(pool.position.x, PLAYER_Y, pool.position.z));
+        (game, pool)
+    }
+
+    fn poison_hits(game: &ArpgGame) -> Vec<StrikeResult> {
+        game.strike_outcomes()
+            .iter()
+            .filter(|outcome| matches!(outcome.strike.source, StrikeSource::Hazard(_)))
+            .map(|outcome| outcome.result)
+            .collect()
+    }
+
+    #[test]
+    fn a_poison_pool_poisons_refreshes_and_expires_without_stacking() {
+        on_each_backend(|| {
+            let poison = content().poison;
+            let (mut game, pool) = pool_arena();
+            let health = game.players[&1].health;
+            // Standing in it: poisoned at once, 2 damage every 30 ticks, never more.
+            let mut damage = 0;
+            for tick in 1..=120 {
+                game.advance_tick().unwrap();
+                let status = game.players[&1].poison.unwrap();
+                assert_eq!(status.source, pool.id);
+                // Refreshed every tick, then run down by that tick's step.
+                assert_eq!(
+                    status.ticks_remaining,
+                    poison.duration_ticks - 1,
+                    "tick {tick}"
+                );
+                for hit in poison_hits(&game) {
+                    let StrikeResult::Hit { damage: dealt, .. } = hit else {
+                        panic!("{hit:?}");
+                    };
+                    damage += dealt;
+                }
+            }
+            let intervals = 120 / u16::from(poison.interval_ticks);
+            assert_eq!(damage, intervals * poison.damage);
+            assert_eq!(game.players[&1].health, health - damage);
+            // Out of it: the refreshed duration runs down, still dealing its damage, then ends.
+            game.put_player(
+                1,
+                Vec3i::new(pool.position.x + 400, PLAYER_Y, pool.position.z - 400),
+            );
+            let mut lasted = 0;
+            let mut later = 0;
+            while game.players[&1].poison.is_some() {
+                game.advance_tick().unwrap();
+                lasted += 1;
+                later += poison_hits(&game).len() as u16 * poison.damage;
+                assert!(lasted < poison.duration_ticks);
+            }
+            assert_eq!(lasted, poison.duration_ticks - 1);
+            assert!(later > 0);
+            assert_eq!(game.players[&1].health, health - damage - later);
+        });
+    }
+
+    #[test]
+    fn jumping_over_a_poison_pool_clears_it() {
+        on_each_backend(|| {
+            let (mut game, pool) = pool_arena();
+            // Lift the body above the pool, as at a jump's apex.
+            game.put_player(
+                1,
+                Vec3i::new(pool.position.x, PLAYER_Y + 80, pool.position.z),
+            );
+            let touching = game.physics.characters_in_column(
+                vector(pool.position),
+                f32::from(content().poison.pool_radius),
+                0.0,
+            );
+            assert!(!touching.contains(&ArpgGame::player_body_id(1)));
+            game.put_player(1, Vec3i::new(pool.position.x, PLAYER_Y, pool.position.z));
+            let touching = game.physics.characters_in_column(
+                vector(pool.position),
+                f32::from(content().poison.pool_radius),
+                0.0,
+            );
+            assert!(touching.contains(&ArpgGame::player_body_id(1)));
+        });
+    }
+
+    #[test]
+    fn a_save_mid_poison_continues_exactly() {
+        on_each_backend(|| {
+            let mut game = ArpgGame::new_with_seed(42).unwrap();
+            game.add_player(1).unwrap();
+            let pool = game.pools[0];
+            game.put_player(1, Vec3i::new(pool.position.x, PLAYER_Y, pool.position.z));
+            for _ in 0..40 {
+                game.advance_tick().unwrap();
+            }
+            game.put_player(
+                1,
+                Vec3i::new(pool.position.x + 300, PLAYER_Y, pool.position.z - 300),
+            );
+            game.advance_tick().unwrap();
+            let save = game.save_state().unwrap();
+            assert!(save.players[0].poison.is_some());
+            let mut restored = ArpgGame::from_save_state(save.clone()).unwrap();
+            for _ in 0..200 {
+                game.advance_tick().unwrap();
+                restored.advance_tick().unwrap();
+                assert_eq!(restored.snapshot().unwrap(), game.snapshot().unwrap());
+            }
+            let mut tampered = save;
+            tampered.players[0].poison.as_mut().unwrap().next_damage_in = 0;
+            assert!(ArpgGame::from_save_state(tampered).is_err());
         });
     }
 }
