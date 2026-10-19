@@ -69,48 +69,48 @@ server or WASM build enables it.
 
   | workload | players | static boxes | peak monster bodies | backend | median | p95 | p99 | setup median | rebuild share | engine/rapier total |
   |---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
-  | quiet | 1 | 28 | 0 | rapier | 11.7 | 14.0 | 26.0 | 38.7 | 85% |  |
-  | quiet | 1 | 28 | 0 | physics-engine | 1.7 | 1.8 | 2.2 | 39.1 | 1% | 0.15 |
-  | party-quiet | 4 | 28 | 0 | rapier | 16.3 | 21.0 | 42.4 | 44.3 | 70% |  |
-  | party-quiet | 4 | 28 | 0 | physics-engine | 2.8 | 3.0 | 3.8 | 67.2 | 1% | 0.17 |
-  | sparse | 4 | 28 | 0 | rapier | 17.4 | 39.1 | 48.3 | 45.7 | 54% |  |
-  | sparse | 4 | 28 | 0 | physics-engine | 3.9 | 10.9 | 25.6 | 67.1 | 0% | 0.29 |
-  | corner | 1 | 28 | 0 | rapier | 15.7 | 18.7 | 30.7 | 37.3 | 57% |  |
-  | corner | 1 | 28 | 0 | physics-engine | 9.7 | 10.5 | 18.4 | 37.6 | 0% | 0.61 |
-  | door | 1 | 31 | 1 | rapier | 15.2 | 30.2 | 75.0 | 38.1 | 73% |  |
-  | door | 1 | 31 | 1 | physics-engine | 3.3 | 4.9 | 12.1 | 41.8 | 1% | 0.22 |
-  | correction | 1 | 28 | 0 | rapier | 10.7 | 13.9 | 29.0 | 38.2 | 84% |  |
-  | correction | 1 | 28 | 0 | physics-engine | 1.6 | 1.9 | 2.8 | 38.5 | 1% | 0.15 |
-  | combat | 1 | 28 | 1 | rapier | 11.1 | 15.8 | 31.4 | 44.0 | 82% |  |
-  | combat | 1 | 28 | 1 | physics-engine | 1.6 | 2.0 | 5.1 | 66.1 | 1% | 0.15 |
-  | crowd | 1 | 31 | 5 | rapier | 17.7 | 26.0 | 44.4 | 43.4 | 72% |  |
-  | crowd | 1 | 31 | 5 | physics-engine | 3.1 | 7.2 | 13.4 | 67.7 | 0% | 0.20 |
-  | lifecycle | 4 | 28 | 0 | rapier | 16.5 | 34.6 | 40.3 | 42.0 | 59% |  |
-  | lifecycle | 4 | 28 | 0 | physics-engine | 3.6 | 10.7 | 25.0 | 62.8 | 0% | 0.30 |
-  | chase | 1 | 31 | 5 | rapier | 21.4 | 37.4 | 70.6 | 44.3 | 62% |  |
-  | chase | 1 | 31 | 5 | physics-engine | 6.5 | 10.2 | 17.3 | 67.8 | 0% | 0.30 |
-  | jump | 1 | 28 | 0 | rapier | 14.2 | 18.8 | 46.1 | 39.6 | 67% |  |
-  | jump | 1 | 28 | 0 | physics-engine | 4.5 | 5.9 | 12.0 | 42.7 | 0% | 0.32 |
-  | ledge | 1 | 36 | 1 | rapier | 24.6 | 63.1 | 103.4 | 87.6 | 64% |  |
-  | ledge | 1 | 36 | 1 | physics-engine | 5.3 | 29.2 | 47.2 | 100.0 | 0% | 0.26 |
-  | ceiling | 1 | 36 | 1 | rapier | 15.3 | 21.9 | 32.4 | 45.2 | 72% |  |
-  | ceiling | 1 | 36 | 1 | physics-engine | 3.5 | 5.5 | 7.1 | 67.0 | 0% | 0.23 |
-  | traversal | 1 | 36 | 1 | rapier | 14.6 | 31.7 | 54.1 | 64.5 | 68% |  |
-  | traversal | 1 | 36 | 1 | physics-engine | 2.9 | 11.2 | 25.2 | 72.2 | 0% | 0.22 |
-  | lunge | 1 | 30 | 1 | rapier | 11.8 | 16.1 | 28.1 | 35.2 | 76% |  |
-  | lunge | 1 | 30 | 1 | physics-engine | 2.5 | 6.7 | 7.7 | 56.8 | 1% | 0.23 |
-  | crates | 1 | 29 | 1 | rapier | 15.2 | 20.0 | 36.3 | 40.0 | 62% |  |
-  | crates | 1 | 29 | 1 | physics-engine | 4.9 | 6.0 | 7.9 | 59.5 | 0% | 0.28 |
-  | stairs | 1 | 36 | 1 | rapier | 24.8 | 40.9 | 61.1 | 49.0 | 48% |  |
-  | stairs | 1 | 36 | 1 | physics-engine | 3.2 | 9.2 | 13.4 | 66.7 | 0% | 0.16 |
-  | slam | 3 | 31 | 1 | rapier | 14.0 | 17.6 | 27.0 | 39.9 | 70% |  |
-  | slam | 3 | 31 | 1 | physics-engine | 2.1 | 3.3 | 6.4 | 59.6 | 1% | 0.17 |
-  | poison | 1 | 31 | 1 | rapier | 13.2 | 16.9 | 26.8 | 37.6 | 74% |  |
-  | poison | 1 | 31 | 1 | physics-engine | 2.7 | 4.0 | 5.0 | 59.5 | 1% | 0.21 |
-  | slow | 1 | 31 | 1 | rapier | 12.0 | 15.3 | 26.3 | 38.3 | 77% |  |
-  | slow | 1 | 31 | 1 | physics-engine | 2.2 | 3.0 | 3.5 | 55.6 | 1% | 0.17 |
-  | all | | | | rapier | 15.3 | 30.9 | 55.3 | | | |
-  | all | | | | physics-engine | 3.1 | 9.7 | 22.3 | | | |
+  | quiet | 1 | 28 | 0 | rapier | 9.4 | 11.0 | 19.0 | 31.2 | 85% |  |
+  | quiet | 1 | 28 | 0 | physics-engine | 1.4 | 1.6 | 1.8 | 31.5 | 1% | 0.15 |
+  | party-quiet | 4 | 28 | 0 | rapier | 13.5 | 16.2 | 26.6 | 36.5 | 69% |  |
+  | party-quiet | 4 | 28 | 0 | physics-engine | 2.3 | 2.7 | 4.0 | 55.2 | 1% | 0.17 |
+  | sparse | 4 | 28 | 0 | rapier | 14.8 | 33.5 | 41.1 | 38.6 | 55% |  |
+  | sparse | 4 | 28 | 0 | physics-engine | 3.4 | 9.4 | 20.4 | 56.3 | 0% | 0.29 |
+  | corner | 1 | 28 | 0 | rapier | 14.2 | 17.9 | 30.9 | 33.0 | 57% |  |
+  | corner | 1 | 28 | 0 | physics-engine | 8.0 | 9.4 | 16.3 | 34.7 | 0% | 0.57 |
+  | door | 1 | 31 | 1 | rapier | 14.3 | 20.7 | 39.8 | 36.1 | 73% |  |
+  | door | 1 | 31 | 1 | physics-engine | 3.1 | 5.3 | 13.6 | 40.4 | 0% | 0.23 |
+  | correction | 1 | 28 | 0 | rapier | 9.5 | 11.8 | 23.6 | 35.2 | 84% |  |
+  | correction | 1 | 28 | 0 | physics-engine | 1.4 | 1.6 | 1.9 | 33.9 | 1% | 0.15 |
+  | combat | 1 | 28 | 1 | rapier | 9.9 | 13.5 | 24.0 | 35.9 | 82% |  |
+  | combat | 1 | 28 | 1 | physics-engine | 1.4 | 1.7 | 2.8 | 54.9 | 1% | 0.15 |
+  | crowd | 1 | 31 | 5 | rapier | 15.4 | 20.8 | 34.8 | 40.2 | 73% |  |
+  | crowd | 1 | 31 | 5 | physics-engine | 2.8 | 6.4 | 11.1 | 60.1 | 0% | 0.20 |
+  | lifecycle | 4 | 28 | 0 | rapier | 15.1 | 31.5 | 43.7 | 39.4 | 59% |  |
+  | lifecycle | 4 | 28 | 0 | physics-engine | 3.4 | 10.7 | 22.5 | 62.5 | 0% | 0.29 |
+  | chase | 1 | 31 | 5 | rapier | 19.6 | 32.4 | 59.1 | 45.2 | 62% |  |
+  | chase | 1 | 31 | 5 | physics-engine | 6.0 | 9.2 | 14.9 | 63.0 | 0% | 0.29 |
+  | jump | 1 | 28 | 0 | rapier | 11.5 | 14.1 | 24.8 | 30.9 | 68% |  |
+  | jump | 1 | 28 | 0 | physics-engine | 3.6 | 4.7 | 6.3 | 33.5 | 0% | 0.31 |
+  | ledge | 1 | 36 | 1 | rapier | 16.9 | 40.7 | 70.3 | 68.4 | 65% |  |
+  | ledge | 1 | 36 | 1 | physics-engine | 3.9 | 20.7 | 29.6 | 81.7 | 0% | 0.27 |
+  | ceiling | 1 | 36 | 1 | rapier | 14.8 | 21.8 | 35.6 | 45.1 | 72% |  |
+  | ceiling | 1 | 36 | 1 | physics-engine | 3.5 | 5.7 | 9.0 | 69.9 | 0% | 0.23 |
+  | traversal | 1 | 36 | 1 | rapier | 14.8 | 32.3 | 55.8 | 65.1 | 69% |  |
+  | traversal | 1 | 36 | 1 | physics-engine | 2.9 | 10.6 | 25.3 | 70.4 | 1% | 0.21 |
+  | lunge | 1 | 30 | 1 | rapier | 12.7 | 17.3 | 31.8 | 37.2 | 75% |  |
+  | lunge | 1 | 30 | 1 | physics-engine | 2.6 | 6.9 | 8.0 | 61.7 | 1% | 0.23 |
+  | crates | 1 | 29 | 1 | rapier | 15.4 | 20.5 | 40.9 | 43.7 | 62% |  |
+  | crates | 1 | 29 | 1 | physics-engine | 4.9 | 6.4 | 11.7 | 65.1 | 0% | 0.28 |
+  | stairs | 1 | 36 | 1 | rapier | 24.7 | 40.4 | 65.6 | 47.1 | 48% |  |
+  | stairs | 1 | 36 | 1 | physics-engine | 3.3 | 9.1 | 12.9 | 71.5 | 0% | 0.16 |
+  | slam | 3 | 31 | 1 | rapier | 13.9 | 17.9 | 28.2 | 40.5 | 71% |  |
+  | slam | 3 | 31 | 1 | physics-engine | 2.2 | 3.3 | 5.5 | 57.8 | 1% | 0.16 |
+  | poison | 1 | 31 | 1 | rapier | 13.0 | 16.1 | 25.5 | 36.6 | 74% |  |
+  | poison | 1 | 31 | 1 | physics-engine | 2.7 | 4.0 | 4.7 | 56.6 | 1% | 0.21 |
+  | slow | 1 | 31 | 1 | rapier | 11.8 | 14.5 | 24.5 | 35.9 | 77% |  |
+  | slow | 1 | 31 | 1 | physics-engine | 2.2 | 2.9 | 3.6 | 54.0 | 1% | 0.18 |
+  | all | | | | rapier | 14.1 | 27.3 | 44.7 | | | |
+  | all | | | | physics-engine | 2.9 | 8.3 | 18.7 | | | |
 
 ## Height and traversal topology
 
