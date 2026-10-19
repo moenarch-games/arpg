@@ -20,9 +20,12 @@ pub(super) enum Case {
     Lifecycle,
     Chase,
     Jump,
+    /// The traversal scenario (#208): jumping onto a platform, walking off its ledge and
+    /// jumping back on from the other side.
+    Ledge,
 }
 impl Case {
-    pub(super) const ALL: [Self; 11] = [
+    pub(super) const ALL: [Self; 12] = [
         Self::Quiet,
         Self::PartyQuiet,
         Self::Sparse,
@@ -34,11 +37,12 @@ impl Case {
         Self::Lifecycle,
         Self::Chase,
         Self::Jump,
+        Self::Ledge,
     ];
     /// The workloads whose saves restore: the others move monsters out of their generated
     /// rooms, which a save rejects.
     #[cfg(test)]
-    pub(super) const SAVED: [Self; 7] = [
+    pub(super) const SAVED: [Self; 8] = [
         Self::Sparse,
         Self::Corner,
         Self::Door,
@@ -46,6 +50,7 @@ impl Case {
         Self::Combat,
         Self::Lifecycle,
         Self::Jump,
+        Self::Ledge,
     ];
     pub(super) fn name(self) -> &'static str {
         match self {
@@ -60,11 +65,16 @@ impl Case {
             Self::Lifecycle => "lifecycle",
             Self::Chase => "chase",
             Self::Jump => "jump",
+            Self::Ledge => "ledge",
         }
     }
 }
 pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
-    let mut game = ArpgGame::new_with_seed(seed).unwrap();
+    let mut game = if case == Case::Ledge {
+        ArpgGame::arranged_scenario(ScenarioId::Traversal, seed).unwrap()
+    } else {
+        ArpgGame::new_with_seed(seed).unwrap()
+    };
     match case {
         // Jumping into the outer wall the corner case presses into: airborne sliding, landing.
         Case::Corner | Case::Jump => {
@@ -162,6 +172,9 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
         Case::Door if tick == 0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
         Case::Jump if tick == 0 => Some(ArpgCommand::SetMovement { x: -1, z: 1 }),
         Case::Jump if tick % 40 == 5 => Some(ArpgCommand::Jump),
+        Case::Ledge if tick == 0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
+        Case::Ledge if tick == 70 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
+        Case::Ledge if tick == 7 || tick == 82 => Some(ArpgCommand::Jump),
         Case::Combat if tick < 64 && tick.is_multiple_of(16) => {
             Some(ArpgCommand::PrimaryAttack { aim: None })
         }

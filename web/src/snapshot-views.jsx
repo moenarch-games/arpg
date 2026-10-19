@@ -381,6 +381,20 @@ export function TrainingDiagnostics({ store, playerId }) {
         <dd>{player?.aim ? `aim ${player.aim[0]}, ${player.aim[1]}` : "facing"}</dd>
       </div>
       <div>
+        <dt>Feet</dt>
+        <dd>{player?.motion ? `feet ${player.motion.feetY}` : "none"}</dd>
+      </div>
+      <div>
+        <dt>Region</dt>
+        <dd>
+          {player?.region?.kind === "transit"
+            ? `transit ${player.region.connection}`
+            : player?.region
+              ? `region ${player.region.id}`
+              : "none"}
+        </dd>
+      </div>
+      <div>
         <dt>Target</dt>
         <dd>
           {player?.lockedMonsterId != null ? `locked monster ${player.lockedMonsterId}` : "none"}

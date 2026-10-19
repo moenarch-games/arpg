@@ -115,6 +115,27 @@ fn segment_crosses_box(from: Vector, to: Vector, center: Vec3i, half_extents: Ve
     enter < leave
 }
 
+/// Gap (world units) between a body and the nearest ground: the floor or any static box,
+/// so a body rounding a platform's edge is still on it (#208).
+fn ground_gap(body: &Body, boxes: &[(Vec3i, Vec3i)]) -> f32 {
+    let feet = body.position.y - body.half_extents.y as f32;
+    boxes
+        .iter()
+        .map(|&(center, half)| capsule_box_gap(body, center, half))
+        .fold(feet - FLOOR_FOOT_Y as f32, f32::min)
+}
+
+/// Whether a grounded player rests on an edge rather than a top: the ground straight below
+/// is further than the support reach (#208).
+fn on_an_edge(game: &ArpgGame, body: &Body) -> bool {
+    let feet = body.position.y - body.half_extents.y as f32;
+    body.grounded == Some(true)
+        && game
+            .physics
+            .ground_height(body.position)
+            .is_none_or(|ground| feet - ground > SUPPORT_REACH_UNITS)
+}
+
 /// Penetration accepted by the invariants (world units): the backends keep a 0.25 unit gap,
 /// so a hundredth of a unit is far below any real overlap and well above `f32` rounding of
 /// dungeon-sized coordinates (about 2e-4 units at 3 000 units).
@@ -142,8 +163,11 @@ fn invariants(
             violations.push(format!("body {key} below the floor: feet {feet}"));
         }
         match body.grounded {
-            Some(true) if feet > FLOOR_FOOT_Y as f32 + SUPPORT_REACH_UNITS + PENETRATION => {
-                violations.push(format!("body {key} grounded in the air: feet {feet}"));
+            Some(true) if ground_gap(body, &boxes) > SUPPORT_REACH_UNITS + PENETRATION => {
+                violations.push(format!(
+                    "body {key} grounded in the air: {} above the ground",
+                    ground_gap(body, &boxes)
+                ));
             }
             None if p.y != PLAYER_Y as f32 => {
                 violations.push(format!("monster {key} left its plane: {p:?}"));
@@ -251,6 +275,11 @@ struct Comparison {
     /// The same after the first character contact, where the backends' character-character
     /// handling intentionally differs.
     max_position_after_contact: f32,
+    /// The same at ticks on which either body rounds a platform edge, where Rapier's
+    /// normal nudge can skip a snap (bounded by [`EDGE_POSITION`]).
+    max_position_on_edge: f32,
+    /// Ticks on which a player of either game belongs to a region above the floor.
+    raised_region_ticks: u32,
     /// First tick whose game-visible outcomes differ.
     first_outcome_difference: Option<(u32, String, String)>,
     /// Ticks whose static geometry (locked doors) differs, so queries are not compared.
@@ -434,7 +463,10 @@ fn compare(case: Case, seed: u32) -> Comparison {
         for (key, body) in &rapier_now {
             if let Some(other) = engine_now.get(key) {
                 let difference = (body.position - other.position).length();
-                if comparison.first_contact.is_some() {
+                if on_an_edge(&rapier, body) || on_an_edge(&engine, other) {
+                    comparison.max_position_on_edge =
+                        comparison.max_position_on_edge.max(difference);
+                } else if comparison.first_contact.is_some() {
                     comparison.max_position_after_contact =
                         comparison.max_position_after_contact.max(difference);
                 } else if difference > comparison.max_position {
@@ -445,6 +477,13 @@ fn compare(case: Case, seed: u32) -> Comparison {
         }
         for game in [&rapier, &engine] {
             doors_block(game, tick, &mut comparison);
+            if game
+                .players
+                .values()
+                .any(|state| state.region != crate::RegionMembership::Region { id: 1 })
+            {
+                comparison.raised_region_ticks += 1;
+            }
             for state in game.players.values() {
                 let feet = state.position.y - (PLAYER_HALF_EXTENTS.y + FLOOR_FOOT_Y) as f32;
                 comparison.max_height = comparison.max_height.max(feet);
@@ -466,6 +505,12 @@ fn compare(case: Case, seed: u32) -> Comparison {
     }
     comparison
 }
+
+/// Bodies rounding a platform edge agree to this (world units): when the contact with the edge
+/// nudges Rapier's body up by its 0.01 unit normal nudge, the move counts as rising and
+/// Rapier's controller skips that tick's snap to the ground, so the body stays up to the
+/// rounded edge's drop (about a unit) higher for a tick; the engine follows the edge.
+const EDGE_POSITION: f32 = 2.0;
 
 /// Bodies agree to this (world units) until two characters first touch: Rapier's controller
 /// adds a 0.01 unit normal nudge per contact (a body pressed into a corner drifts up to that
@@ -495,12 +540,13 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
             writeln!(
                 report,
                 "{context}: first character contact {:?}; highest feet {:.1}; max position difference \
-                 {:.3} before it (at {:?}), {:.3} after; {} queries compared",
+                 {:.3} before it (at {:?}), {:.3} after, {:.3} on edges; {} queries compared",
                 comparison.first_contact,
                 comparison.max_height,
                 comparison.max_position,
                 comparison.max_position_at,
                 comparison.max_position_after_contact,
+                comparison.max_position_on_edge,
                 comparison.queries,
             )
             .unwrap();
@@ -508,6 +554,12 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
                 failures.push(format!(
                     "{context}: positions differ by {} at {:?}",
                     comparison.max_position, comparison.max_position_at
+                ));
+            }
+            if comparison.max_position_on_edge > EDGE_POSITION {
+                failures.push(format!(
+                    "{context}: positions on an edge differ by {}",
+                    comparison.max_position_on_edge
                 ));
             }
             if comparison.geometry_differs > 0 {
@@ -528,6 +580,9 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
                 for violation in violations.iter().take(5) {
                     failures.push(format!("{context} on {backend}: {violation}"));
                 }
+            }
+            if case == Case::Ledge && comparison.raised_region_ticks == 0 {
+                failures.push(format!("{context}: the player never reached the platform"));
             }
             if case == Case::Jump && comparison.max_height < 50.0 {
                 failures.push(format!("{context}: the player never jumped"));

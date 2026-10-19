@@ -91,6 +91,25 @@ test("admits a player's authoritative height and support and rejects malformed m
   }
 });
 
+test("admits region membership and platforms and rejects malformed ones", () => {
+  for (const region of [
+    { kind: "region", id: 2 },
+    { kind: "transit", connection: 1 },
+  ]) {
+    const decoded = decodeSnapshot(encode({ ...payload, players: [{ ...player, region }] }));
+    expect(decoded.players[0].region).toEqual(region);
+  }
+  for (const region of [{ kind: "region" }, { kind: "transit", connection: -1 }, { kind: "air" }])
+    expect(() =>
+      decodeSnapshot(encode({ ...payload, players: [{ ...player, region }] })),
+    ).toThrow();
+  const platform = { id: 9, kind: "platform", position: [0, 30, 0], halfExtents: [100, 30, 100] };
+  const decoded = decodeSnapshot(
+    encode({ ...payload, scenario: "traversal", staticColliders: [platform] }),
+  );
+  expect(decoded.staticColliders).toEqual([platform]);
+});
+
 test("admits shield guard state and rejects malformed guard data", () => {
   expect(decodeSnapshot(encode({ ...payload, players: [player] })).players[0].guard.phase).toBe(
     "raised",

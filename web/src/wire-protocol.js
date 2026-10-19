@@ -28,6 +28,7 @@ const scenarios = new Set([
   "ranged",
   "heavy",
   "retreating",
+  "traversal",
 ]);
 const parties = new Set(["player", "monster"]);
 const strikeResults = new Set(["hit", "blocked", "guardBroken", "obstructed"]);
@@ -78,6 +79,10 @@ const motion = (value) =>
   integer(value.verticalVelocity) &&
   integer(value.feetY) &&
   optional(value.groundY, integer);
+// Walkable region membership or transit (#207): presentation shows it, never derives it.
+const region = (value) =>
+  (value?.kind === "region" && nonNegative(value.id)) ||
+  (value?.kind === "transit" && nonNegative(value.connection));
 const reaction = (value, kind) => value?.kind === kind && nonNegative(value.ticksRemaining);
 
 // A guest or dedicated client plays only against an authority running the same content
@@ -160,7 +165,8 @@ export function decodeSnapshot(encoded) {
         interactionPrompt(player.interaction) &&
         optional(player.aim, aimDirection) &&
         optional(player.lockedMonsterId, nonNegative) &&
-        motion(player.motion),
+        motion(player.motion) &&
+        optional(player.region, region),
     ) &&
     list(
       "chests",
@@ -241,7 +247,7 @@ export function decodeSnapshot(encoded) {
         vector(collider.position, 3) &&
         vector(collider.halfExtents, 3) &&
         collider.halfExtents.every((value) => value >= 0) &&
-        ["wall", "door", "pillar"].includes(collider.kind),
+        ["wall", "door", "pillar", "platform"].includes(collider.kind),
     ) &&
     list(
       "groundLoot",

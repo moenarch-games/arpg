@@ -137,6 +137,24 @@ impl Topology {
         &self.connections
     }
 
+    /// The highest walkable floor's foot height (world units).
+    pub fn highest_foot(&self) -> i32 {
+        self.regions
+            .iter()
+            .map(|region| region.foot_y)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The lowest walkable floor's foot height (world units).
+    pub fn lowest_foot(&self) -> i32 {
+        self.regions
+            .iter()
+            .map(|region| region.foot_y)
+            .min()
+            .unwrap_or(0)
+    }
+
     /// The base floor: where planar actors (monsters), loot and chests belong.
     pub fn base(&self) -> RegionId {
         self.regions[0].id

@@ -518,10 +518,13 @@ pub enum ScenarioId {
     /// A ranged enemy inside the light swing's reach and its own retreat range: it backs
     /// away at once, so a strike started now misses once its wind-up ends (#90, #94).
     Retreating,
+    /// A platform to jump onto and drop off, its own walkable region (#208), with the
+    /// room's enemy waiting on the floor.
+    Traversal,
 }
 
 impl ScenarioId {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Dungeon,
         Self::Dummy,
         Self::Enemy,
@@ -531,6 +534,7 @@ impl ScenarioId {
         Self::Ranged,
         Self::Heavy,
         Self::Retreating,
+        Self::Traversal,
     ];
 
     /// The URL/query name, identical to the serialised form.
@@ -545,6 +549,7 @@ impl ScenarioId {
             Self::Ranged => "ranged",
             Self::Heavy => "heavy",
             Self::Retreating => "retreating",
+            Self::Traversal => "traversal",
         }
     }
 
@@ -563,6 +568,7 @@ impl ScenarioId {
             Self::Archery | Self::ArcheryObstructed | Self::Ranged => Some(500),
             Self::Heavy => Some(150),
             Self::Retreating => Some(RETREATING_TARGET_OFFSET),
+            Self::Traversal => Some(-500),
         }
     }
 
@@ -839,6 +845,13 @@ const SCENARIO_ROOM: RoomId = 2;
 /// Inside the light swing's reach, so only the enemy's retreat makes the swing miss.
 const RETREATING_TARGET_OFFSET: i32 = 210;
 const SCENARIO_PILLAR_HALF_EXTENTS: Vec3i = Vec3i::new(20, WALL_HALF_HEIGHT, 60);
+/// The traversal scenario's platform (#208): its top, 60 units up, is within a jump's
+/// 90-unit apex; its near edge is 160 units east of the player's spawn.
+const TRAVERSAL_PLATFORM_OFFSET: i32 = 260;
+const TRAVERSAL_PLATFORM_HALF_EXTENTS: Vec3i = Vec3i::new(100, 30, 100);
+/// The platform's walkable region and its connections to the floor: a jump both ways and a
+/// one-way drop.
+const TRAVERSAL_PLATFORM_REGION: RegionId = 2;
 
 /// One resolved strike as published in a snapshot for diagnostics and feedback.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1625,6 +1638,8 @@ pub enum StaticColliderKind {
     Wall,
     Pillar,
     Door,
+    /// A walkable box top (#208): a floor of its own region, standing on the dungeon floor.
+    Platform,
 }
 
 /// Speed changes per tick by which controlled horizontal velocity converges on the movement
@@ -2350,6 +2365,50 @@ impl ArpgGame {
             )?;
             game.static_colliders.push(pillar);
         }
+        if scenario == ScenarioId::Traversal {
+            let index =
+                u64::try_from(game.static_colliders.len()).expect("collider count fits u64");
+            let half = TRAVERSAL_PLATFORM_HALF_EXTENTS;
+            let platform = StaticColliderSnapshot {
+                id: STATIC_BODY_BASE + index,
+                position: [
+                    center_x + TRAVERSAL_PLATFORM_OFFSET,
+                    FLOOR_FOOT_Y + half.y,
+                    center_z,
+                ],
+                half_extents: vec_to_array(half),
+                kind: StaticColliderKind::Platform,
+            };
+            game.physics
+                .add_fixed(platform.id, array_to_vec(platform.position), half)?;
+            game.static_colliders.push(platform);
+            game.topology = Topology::new(
+                vec![
+                    WalkableRegion {
+                        id: DUNGEON_FLOOR_REGION,
+                        foot_y: FLOOR_FOOT_Y,
+                    },
+                    WalkableRegion {
+                        id: TRAVERSAL_PLATFORM_REGION,
+                        foot_y: FLOOR_FOOT_Y + 2 * half.y,
+                    },
+                ],
+                vec![
+                    TraversalConnection {
+                        id: 1,
+                        kind: ConnectionKind::Jump,
+                        from: DUNGEON_FLOOR_REGION,
+                        to: TRAVERSAL_PLATFORM_REGION,
+                    },
+                    TraversalConnection {
+                        id: 2,
+                        kind: ConnectionKind::Drop,
+                        from: TRAVERSAL_PLATFORM_REGION,
+                        to: DUNGEON_FLOOR_REGION,
+                    },
+                ],
+            )?;
+        }
         Ok(game)
     }
 
@@ -2601,24 +2660,32 @@ impl ArpgGame {
             let [velocity_x, velocity_y, velocity_z] = player.velocity;
             let speed = PLAYER_SPEED as f32;
             let jump = &content.jump;
-            // The fastest fall on flat ground is the takeoff speed plus one gravity step.
-            let vertical = jump.takeoff_speed + jump.gravity;
-            if !(-vertical..=vertical).contains(&velocity_y)
+            // The fastest fall is one from a jump's apex above the highest floor to the lowest:
+            // the speed of that drop plus a takeoff and a gravity step of discrete integration.
+            let rising = jump.takeoff_speed + jump.gravity;
+            let falling = rising + (2.0 * jump.gravity * game.highest_reach(content)).sqrt();
+            if !(-falling..=rising).contains(&velocity_y)
                 || !(-speed..=speed).contains(&velocity_x)
                 || !(-speed..=speed).contains(&velocity_z)
             {
                 return Err(GameError::new("saved player velocity is out of range"));
             }
-            let height = player.position[1] - PLAYER_Y as f32;
+            // Heights are checked against the ground physics finds below the body (#208):
+            // the floor or the top of a platform.
+            let feet = player.position[1] - PLAYER_HALF_EXTENTS.y as f32;
+            let lowest = game.topology.lowest_foot() as f32;
+            let above_ground = game
+                .physics
+                .ground_height(Vector::from_array(player.position))
+                .map(|ground| feet - ground);
             let support_valid = if player.grounded {
                 velocity_y == 0.0
                     && player.coyote_ticks_remaining == 0
-                    && height.abs() <= GROUNDED_HEIGHT_TOLERANCE
+                    && above_ground.is_some_and(|height| height.abs() <= GROUNDED_HEIGHT_TOLERANCE)
             } else {
                 player.coyote_ticks_remaining <= jump.data.coyote_ticks
-                    && (-GROUNDED_HEIGHT_TOLERANCE
-                        ..=f32::from(jump.data.apex_height) + GROUNDED_HEIGHT_TOLERANCE)
-                        .contains(&height)
+                    && above_ground.is_some_and(|height| height >= -GROUNDED_HEIGHT_TOLERANCE)
+                    && feet - lowest <= game.highest_reach(content) + GROUNDED_HEIGHT_TOLERANCE
             };
             if !support_valid
                 || player.jump_buffer_ticks_remaining > jump.data.buffer_ticks
@@ -2626,7 +2693,6 @@ impl ArpgGame {
             {
                 return Err(GameError::new("saved player jump state is invalid"));
             }
-            let feet = player.position[1] - PLAYER_HALF_EXTENTS.y as f32;
             let region_valid = game.topology.knows(player.region)
                 && (!player.grounded
                     || game
@@ -2770,6 +2836,7 @@ impl ArpgGame {
         for loot in save.ground_loot {
             let position = Vector::from_array(loot.position);
             if loot.id < GROUND_LOOT_ID_BASE
+                || position.y != PLAYER_Y as f32
                 || !game.dungeon_contains(position, Vec3i::ZERO)
                 || loot.amount != content.loot.monster_gold
                 || !loot_ids.insert(loot.id)
@@ -2842,10 +2909,7 @@ impl ArpgGame {
                     != u64::from(lifetime - arrow.ticks_remaining) + unflown
                 || !possible
                 || !game.projectile_height_possible(content, arrow.position[1])
-                || !game.dungeon_contains(
-                    Vector::new(arrow.position[0], PLAYER_Y as f32, arrow.position[2]),
-                    Vec3i::ZERO,
-                )
+                || !game.dungeon_contains(Vector::from_array(arrow.position), Vec3i::ZERO)
             {
                 return Err(GameError::new("save contains an invalid arrow"));
             }
@@ -2978,8 +3042,8 @@ impl ArpgGame {
             && !self.physics.penetrates_fixed(position, half_extents)
     }
 
-    /// Whether a saved entity with `half_extents` lies on the gameplay plane
-    /// inside the generated dungeon without overlapping its walls or pillars.
+    /// Whether a saved entity with `half_extents` lies inside the generated dungeon without
+    /// overlapping its walls, pillars or platforms.
     /// Touching fixed geometry is allowed; penetrating it is not.
     fn dungeon_contains(&self, position: Vector, half_extents: Vec3i) -> bool {
         let extent = |select: fn(&RoomSnapshot) -> i32, pick: fn(i32, i32) -> i32| {
@@ -2987,7 +3051,6 @@ impl ArpgGame {
         };
         let [x, _, z] = position.to_array().map(f64::from);
         let inside_extents = position.is_finite()
-            && position.y == PLAYER_Y as f32
             && extent(|room| room.min_x, i32::min).is_some_and(|min| x >= min)
             && extent(|room| room.max_x, i32::max).is_some_and(|max| x <= max)
             && extent(|room| room.min_z, i32::min).is_some_and(|min| z >= min)
@@ -3006,11 +3069,17 @@ impl ArpgGame {
     }
 
     /// Whether a projectile can fly at `height`: shots leave from the shooter's body, which
-    /// is on the plane or up to a jump's apex above it.
+    /// stands on a walkable floor or is up to a jump's apex above the highest one.
     fn projectile_height_possible(&self, content: &Content, height: f32) -> bool {
         let above = height - PLAYER_Y as f32;
-        (0.0..=f32::from(content.jump.data.apex_height) + GROUNDED_HEIGHT_TOLERANCE)
-            .contains(&above)
+        (0.0..=self.highest_reach(content) + GROUNDED_HEIGHT_TOLERANCE).contains(&above)
+    }
+
+    /// How far (world units) a body's feet can rise above the lowest floor: a jump's apex
+    /// above the highest walkable floor (#208).
+    fn highest_reach(&self, content: &Content) -> f32 {
+        (self.topology.highest_foot() - self.topology.lowest_foot()) as f32
+            + f32::from(content.jump.data.apex_height)
     }
 
     fn validate_axis(axis: [i8; 2], label: &str) -> Result<(), GameError> {
