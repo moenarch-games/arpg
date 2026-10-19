@@ -18,6 +18,10 @@ pub use content::{
     base_bundle, content_revision,
 };
 use navigation::{Cell, FieldRoute, FieldWork, NAV_CELL_SIZE, Rect, RoomGrid, TargetField};
+pub use topology::{
+    ConnectionId, ConnectionKind, DUNGEON_FLOOR_REGION, RegionId, RegionMembership, Topology,
+    TraversalConnection, WalkableRegion,
+};
 pub use workbench::{
     MAX_WORKBENCH_MONSTERS, MAX_WORKBENCH_SPAWNS, TuningParameter, TuningValue, WorkbenchOperation,
 };
@@ -31,6 +35,7 @@ mod physics;
 pub mod physics_ab;
 #[cfg(any(test, feature = "physics-ab"))]
 mod seeded_workloads;
+mod topology;
 mod workbench;
 use operation_work::{Counter, count};
 #[cfg(feature = "operation-work")]
@@ -86,7 +91,9 @@ pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// are `f32` game state; schema 13 saves are refused.
 /// 15: jumping and support (#59): a player's vertical velocity, grounded state, coyote and
 /// jump-buffer ticks continue exactly after a load; schema 14 saves are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 15;
+/// 16: walkable topology (#207): a player's region membership or transit; schema 15 saves
+/// are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 16;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -1278,6 +1285,8 @@ pub struct PlayerSnapshot {
     pub locked_monster_id: Option<u32>,
     /// The body's physical height and support (#59).
     pub motion: PlayerMotionSnapshot,
+    /// Walkable region membership or transit (#207).
+    pub region: RegionMembership,
 }
 
 /// A player body's height and support (#59), for presentation and animation: they place
@@ -1540,6 +1549,8 @@ pub struct PlayerSaveState {
     pub coyote_ticks_remaining: u8,
     /// Ticks left in which a buffered jump press may still take off.
     pub jump_buffer_ticks_remaining: u8,
+    /// Walkable region membership or transit (#207).
+    pub region: RegionMembership,
     pub movement: [i8; 2],
     pub facing: [i8; 2],
     pub action: Option<PlayerActionSnapshot>,
@@ -1762,6 +1773,8 @@ struct PlayerState {
     coyote_ticks_remaining: u8,
     /// Jump buffer: ticks in which a jump press keeps waiting for a takeoff.
     jump_buffer_ticks_remaining: u8,
+    /// The walkable region it belongs to, or the connection it traverses (#207).
+    region: RegionMembership,
     movement_x: i8,
     movement_z: i8,
     facing_x: i8,
@@ -2138,6 +2151,9 @@ pub struct ArpgGame {
     tuning: Tuning,
     /// Present only in games created as workbench scenarios.
     workbench: Option<Workbench>,
+    /// Walkable regions and typed connections (#207): one floor region until elevation
+    /// exists (Atlas 5.1.2).
+    topology: Topology,
 }
 
 impl Default for ArpgGame {
@@ -2249,6 +2265,7 @@ impl ArpgGame {
             interaction_events: Vec::new(),
             tuning,
             workbench: None,
+            topology: Topology::single_floor(FLOOR_FOOT_Y),
         })
     }
 
@@ -2361,6 +2378,7 @@ impl ArpgGame {
                     grounded: state.grounded,
                     coyote_ticks_remaining: state.coyote_ticks_remaining,
                     jump_buffer_ticks_remaining: state.jump_buffer_ticks_remaining,
+                    region: state.region,
                     movement: [state.movement_x, state.movement_z],
                     facing: [state.facing_x, state.facing_z],
                     action: state.action.map(ActionState::snapshot),
@@ -2607,6 +2625,17 @@ impl ArpgGame {
                 || (player.health == 0 && player.jump_buffer_ticks_remaining > 0)
             {
                 return Err(GameError::new("saved player jump state is invalid"));
+            }
+            let feet = player.position[1] - PLAYER_HALF_EXTENTS.y as f32;
+            let region_valid = game.topology.knows(player.region)
+                && (!player.grounded
+                    || game
+                        .topology
+                        .supporting(feet, GROUNDED_HEIGHT_TOLERANCE)
+                        .map(|id| RegionMembership::Region { id })
+                        == Some(player.region));
+            if !region_valid {
+                return Err(GameError::new("saved player region is invalid"));
             }
         }
 
@@ -2856,6 +2885,7 @@ impl ArpgGame {
                 grounded: player.grounded,
                 coyote_ticks_remaining: player.coyote_ticks_remaining,
                 jump_buffer_ticks_remaining: player.jump_buffer_ticks_remaining,
+                region: player.region,
                 movement_x: player.movement[0],
                 movement_z: player.movement[1],
                 facing_x: player.facing[0],
@@ -3601,8 +3631,13 @@ impl ArpgGame {
     /// loot over chests and then the lower id. `usable` is false for a locked chest.
     fn interaction_candidates(
         &self,
+        membership: RegionMembership,
         position: Vector,
     ) -> Vec<(f64, InteractionTarget, Vector, bool)> {
+        // Loot and chests lie on the base floor; interaction is region-local (#207).
+        if !self.reaches_base(membership) {
+            return Vec::new();
+        }
         let distance_sq = |at: Vector| xz_distance_sq(position, at);
         let loot = self.ground_loot.iter().map(|loot| {
             (
@@ -3639,10 +3674,11 @@ impl ArpgGame {
     /// browser shows prompts from this, never from its own radius.
     fn interaction_choice(
         &self,
+        membership: RegionMembership,
         position: Vector,
     ) -> Result<Result<InteractionTarget, InteractionRefusal>, GameError> {
         let mut refusal = InteractionRefusal::NothingInRange;
-        for (_, target, at, usable) in self.interaction_candidates(position) {
+        for (_, target, at, usable) in self.interaction_candidates(membership, position) {
             if self.strike_obstructed(position, at)? {
                 if refusal == InteractionRefusal::NothingInRange {
                     refusal = InteractionRefusal::Obstructed;
@@ -3660,7 +3696,8 @@ impl ArpgGame {
 
     fn resolve_interaction(&mut self, player_id: PlayerId) -> Result<(), GameError> {
         let player_position = self.player_position(player_id)?;
-        let result = match self.interaction_choice(player_position)? {
+        let membership = self.membership(StrikeTarget::Player(player_id));
+        let result = match self.interaction_choice(membership, player_position)? {
             Err(reason) => InteractionResult::Refused { reason },
             Ok(target @ InteractionTarget::Loot(id)) => {
                 let index = self
@@ -3714,15 +3751,20 @@ impl ArpgGame {
 
     /// Orders the eligible candidates inside a strike volume nearest-first (stable target
     /// identity breaks ties) and resolves obstruction for each until `max_targets` connect.
+    /// Ordinary strikes are region-local (#207): a candidate in another region is not
+    /// eligible, whatever its horizontal distance.
     fn strike_contacts(
         &self,
         definition: StrikeDefinition,
+        source: StrikeTarget,
         origin: Vector,
         facing: (f64, f64),
         candidates: impl IntoIterator<Item = (StrikeTarget, Vector)>,
     ) -> Result<Vec<(StrikeTarget, bool)>, GameError> {
+        let source = self.membership(source);
         let mut inside = candidates
             .into_iter()
+            .filter(|&(target, _)| self.topology.local(source, self.membership(target)))
             .filter_map(|(target, position)| {
                 let distance_sq = xz_distance_sq(origin, position);
                 let in_arc = !definition.frontal
@@ -3761,6 +3803,29 @@ impl ArpgGame {
         Ok(self.physics.segment_obstructed(origin, to))
     }
 
+    /// Where an actor belongs (#207). Monsters move on the base floor; a missing player
+    /// counts as there too, since rules only ask about actors they found.
+    fn membership(&self, actor: StrikeTarget) -> RegionMembership {
+        let base = RegionMembership::Region {
+            id: self.topology.base(),
+        };
+        match actor {
+            StrikeTarget::Player(id) => self.players.get(&id).map_or(base, |state| state.region),
+            StrikeTarget::Monster(_) => base,
+        }
+    }
+
+    /// Whether ordinary rules let a player with `membership` reach what stands on the base
+    /// floor (monsters, loot, chests): region-local by default (#207).
+    fn reaches_base(&self, membership: RegionMembership) -> bool {
+        self.topology.local(
+            membership,
+            RegionMembership::Region {
+                id: self.topology.base(),
+            },
+        )
+    }
+
     /// The player's authoritative physical position, which gameplay rules read directly.
     fn player_position(&self, player_id: PlayerId) -> Result<Vector, GameError> {
         self.players
@@ -3769,10 +3834,18 @@ impl ArpgGame {
             .ok_or_else(|| GameError::new("unknown player"))
     }
 
-    /// Whether a target lock may hold `monster` from `origin`: the monster is alive, its
-    /// encounter is active and it is within `range` on the plane.
-    fn monster_lockable(&self, monster: &MonsterState, origin: Vector, range: i64) -> bool {
+    /// Whether a target lock may hold `monster` from `origin` for a player with
+    /// `membership`: the monster is alive, in the player's region, its encounter is active and
+    /// it is within `range` on the plane.
+    fn monster_lockable(
+        &self,
+        monster: &MonsterState,
+        membership: RegionMembership,
+        origin: Vector,
+        range: i64,
+    ) -> bool {
         monster.health > 0
+            && self.reaches_base(membership)
             && self.rooms.iter().any(|room| {
                 room.id == monster.room_id && room.encounter_state == RoomEncounterState::Active
             })
@@ -3795,7 +3868,12 @@ impl ArpgGame {
             .iter()
             .find(|monster| monster.id == monster_id)
             .filter(|monster| {
-                self.monster_lockable(monster, origin, self.content.targeting.break_range)
+                self.monster_lockable(
+                    monster,
+                    state.region,
+                    origin,
+                    self.content.targeting.break_range,
+                )
             })
             .map(|monster| monster.position))
     }
@@ -3869,8 +3947,12 @@ impl ArpgGame {
         let range = self.content.targeting.lock_range;
         let mut candidates = Vec::new();
         for monster in &self.monsters {
-            if self.monster_lockable(monster, origin, range)
-                && !self.strike_obstructed(origin, monster.position)?
+            if self.monster_lockable(
+                monster,
+                self.membership(StrikeTarget::Player(player_id)),
+                origin,
+                range,
+            ) && !self.strike_obstructed(origin, monster.position)?
             {
                 candidates.push((xz_distance_sq(origin, monster.position), monster.id));
             }
@@ -3970,7 +4052,13 @@ impl ArpgGame {
         let direction = aim.map_or((f64::from(facing_x), f64::from(facing_z)), |aim| {
             (f64::from(aim[0]), f64::from(aim[1]))
         });
-        let contacts = self.strike_contacts(definition, player_position, direction, candidates)?;
+        let contacts = self.strike_contacts(
+            definition,
+            StrikeTarget::Player(player_id),
+            player_position,
+            direction,
+            candidates,
+        )?;
         let strike = StrikeId {
             source: StrikeSource::Player(player_id),
             tick: self.tick,
@@ -4466,6 +4554,7 @@ impl ArpgGame {
 
         let contacts = self.strike_contacts(
             definition,
+            StrikeTarget::Monster(monster_id),
             monster_position,
             (0.0, 0.0),
             [(StrikeTarget::Player(target_player_id), target_position)],
@@ -4770,7 +4859,7 @@ impl ArpgGame {
     fn monster_targets(&self) -> Vec<(PlayerId, RoomId, Vector)> {
         self.players
             .iter()
-            .filter(|(_, state)| state.health > 0)
+            .filter(|(_, state)| state.health > 0 && self.reaches_base(state.region))
             .filter_map(|(&player_id, state)| {
                 let position = state.position;
                 let room_id = self.room_at_position(position)?;
@@ -5174,7 +5263,7 @@ impl ArpgGame {
                 allowed(moved.z, intended.z),
             );
             state.position = motion.to;
-            Self::settle_support(&jump, state, motion.supported);
+            Self::settle_support(&jump, &self.topology, state, motion.supported);
         }
         for &(index, velocity) in monster_motions {
             let monster = &mut self.monsters[index];
@@ -5215,12 +5304,23 @@ impl ArpgGame {
     }
 
     /// Support after this tick's motion. A rising body is never grounded; landing ends the
-    /// vertical motion, and leaving the ground without jumping opens the coyote window.
-    fn settle_support(jump: &JumpTuning, state: &mut PlayerState, supported: bool) {
+    /// vertical motion and settles the body's region membership (#207), and leaving the
+    /// ground without jumping opens the coyote window. Airborne motion keeps the membership.
+    fn settle_support(
+        jump: &JumpTuning,
+        topology: &Topology,
+        state: &mut PlayerState,
+        supported: bool,
+    ) {
         let grounded = supported && state.velocity.y <= 0.0;
         if grounded {
             state.velocity.y = 0.0;
             state.coyote_ticks_remaining = 0;
+            state.region = topology.settle(
+                state.region,
+                state.position.y - PLAYER_HALF_EXTENTS.y as f32,
+                GROUNDED_HEIGHT_TOLERANCE,
+            );
         } else if state.grounded {
             state.coyote_ticks_remaining = jump.data.coyote_ticks;
         }
@@ -5314,6 +5414,9 @@ impl AuthoritativeGame for ArpgGame {
                 grounded: true,
                 coyote_ticks_remaining: 0,
                 jump_buffer_ticks_remaining: 0,
+                region: RegionMembership::Region {
+                    id: self.topology.base(),
+                },
                 movement_x: 0,
                 movement_z: 0,
                 facing_x: 1,
@@ -5600,7 +5703,7 @@ impl AuthoritativeGame for ArpgGame {
                             reason: InteractionRefusal::Busy,
                         }
                     } else {
-                        match self.interaction_choice(state.position)? {
+                        match self.interaction_choice(state.region, state.position)? {
                             Ok(target) => InteractionPrompt::Available { target },
                             Err(reason) => InteractionPrompt::Unavailable { reason },
                         }
@@ -5616,6 +5719,7 @@ impl AuthoritativeGame for ArpgGame {
                             .ground_height(state.position)
                             .map(|height| height.round() as i32),
                     },
+                    region: state.region,
                 })
             })
             .collect::<Result<Vec<_>, GameError>>()?;
@@ -5636,7 +5740,7 @@ impl AuthoritativeGame for ArpgGame {
         }));
 
         Ok(ArpgSnapshot {
-            schema_version: 22,
+            schema_version: 23,
             run_seed: self.run_seed,
             tick: self.tick,
             world_units_per_meter: WORLD_UNITS_PER_METER,
@@ -6354,6 +6458,9 @@ mod tests {
             grounded: true,
             coyote_ticks_remaining: 0,
             jump_buffer_ticks_remaining: 0,
+            region: RegionMembership::Region {
+                id: DUNGEON_FLOOR_REGION,
+            },
             movement_x: x,
             movement_z: z,
             facing_x: if x == 0 { 1 } else { x },
@@ -7304,8 +7411,11 @@ mod tests {
         assert!(!game.can_strike(&monster_at(reach + 0.4), player).unwrap());
         let lock_range = content().targeting.lock_range;
         let lock = lock_range as f32;
-        assert!(game.monster_lockable(&monster_at(-lock), player, lock_range));
-        assert!(!game.monster_lockable(&monster_at(-lock - 0.4), player, lock_range));
+        let floor = RegionMembership::Region {
+            id: DUNGEON_FLOOR_REGION,
+        };
+        assert!(game.monster_lockable(&monster_at(-lock), floor, player, lock_range));
+        assert!(!game.monster_lockable(&monster_at(-lock - 0.4), floor, player, lock_range));
 
         // End to end: a brute that cannot move winds up only from within its reach.
         for (offset, winds_up) in [(reach, true), (reach + 0.4, false)] {
@@ -10914,7 +11024,7 @@ mod tests {
         game.add_player(1).unwrap();
         let snapshot = game.snapshot().unwrap();
         let generated = generate_dungeon(content(), snapshot.run_seed);
-        assert_eq!(snapshot.schema_version, 22);
+        assert_eq!(snapshot.schema_version, 23);
         assert_eq!(snapshot.run_seed, 0xDEAD_BEEF);
         assert_eq!(game.run_seed(), snapshot.run_seed);
         assert_eq!(snapshot.rooms, generated.rooms);
@@ -11307,7 +11417,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 15"
+            "unsupported ARPG save schema version 12; expected 16"
         );
     }
 
@@ -11322,7 +11432,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 13; expected 15"
+            "unsupported ARPG save schema version 13; expected 16"
         );
     }
 
@@ -13396,6 +13506,135 @@ mod tests {
             jump_for(&mut game, 1);
             let rising = game.players[&1].velocity.y > 0.0;
             assert_eq!(rising, late < COYOTE_TICKS, "pressed {late} ticks late");
+        }
+    }
+
+    /// A strike arena whose topology adds an upper region 2 above the floor and a drop (3)
+    /// from it, with player 1 in `membership` (#207).
+    fn two_region_arena(membership: RegionMembership) -> (ArpgGame, i32, i32) {
+        let (mut game, x, z) = strike_arena();
+        game.topology = Topology::new(
+            vec![
+                WalkableRegion {
+                    id: DUNGEON_FLOOR_REGION,
+                    foot_y: FLOOR_FOOT_Y,
+                },
+                WalkableRegion { id: 2, foot_y: 300 },
+            ],
+            vec![TraversalConnection {
+                id: 3,
+                kind: ConnectionKind::Drop,
+                from: 2,
+                to: DUNGEON_FLOOR_REGION,
+            }],
+        )
+        .unwrap();
+        // Player 1 stands on a platform whose top is region 2's floor.
+        game.physics
+            .add_fixed(
+                STATIC_BODY_BASE + 999,
+                Vec3i::new(x, 150, z),
+                Vec3i::new(40, 150, 40),
+            )
+            .unwrap();
+        game.put_player(1, Vec3i::new(x, 300 + PLAYER_HALF_EXTENTS.y, z));
+        game.players.get_mut(&1).unwrap().region = membership;
+        (game, x, z)
+    }
+
+    #[test]
+    fn the_generated_dungeon_is_one_floor_region_every_player_belongs_to() {
+        let mut game = ArpgGame::new_with_seed(42).unwrap();
+        game.add_player(1).unwrap();
+        assert_eq!(game.topology, Topology::single_floor(FLOOR_FOOT_Y));
+        let floor = RegionMembership::Region {
+            id: DUNGEON_FLOOR_REGION,
+        };
+        assert_eq!(game.snapshot().unwrap().players[0].region, floor);
+        // Jumping keeps the membership in the air and on landing.
+        game.apply_command(PlayerCommand::new(1, 1, ArpgCommand::Jump).unwrap())
+            .unwrap();
+        for _ in 0..60 {
+            game.advance_tick().unwrap();
+            assert_eq!(game.players[&1].region, floor);
+        }
+        assert!(game.players[&1].grounded);
+    }
+
+    #[test]
+    fn ordinary_combat_targeting_and_interaction_are_region_local() {
+        let upper = RegionMembership::Region { id: 2 };
+        let (mut game, x, z) = two_region_arena(upper);
+        place_monster(&mut game, 1, x + 100, z);
+        // The monster stands in reach on the plane, but in another region.
+        let outcomes = strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None });
+        assert!(targets(&outcomes).is_empty(), "{outcomes:?}");
+        assert_eq!(monster_health(&game, 1), 100);
+        let monster = game.monsters[0];
+        let origin = game.players[&1].position;
+        assert!(!game.monster_lockable(&monster, upper, origin, content().targeting.lock_range));
+        assert!(game.monster_targets().is_empty());
+        let contacts = game
+            .strike_contacts(
+                monster_claw(),
+                StrikeTarget::Monster(1),
+                monster.position,
+                (0.0, 0.0),
+                [(StrikeTarget::Player(1), origin)],
+            )
+            .unwrap();
+        assert!(contacts.is_empty());
+        assert!(game.interaction_candidates(upper, origin).is_empty());
+    }
+
+    #[test]
+    fn an_actor_in_transit_stays_reachable_from_both_ends() {
+        let transit = RegionMembership::Transit { connection: 3 };
+        let (mut game, x, z) = two_region_arena(transit);
+        place_monster(&mut game, 1, x + 100, z);
+        let origin = game.players[&1].position;
+        let monster = game.monsters[0];
+        let contacts = game
+            .strike_contacts(
+                monster_claw(),
+                StrikeTarget::Monster(1),
+                monster.position,
+                (0.0, 0.0),
+                [(StrikeTarget::Player(1), origin)],
+            )
+            .unwrap();
+        // Eligible from the floor end; the platform itself stands in the strike's way.
+        assert_eq!(contacts, [(StrikeTarget::Player(1), true)]);
+        assert_eq!(game.monster_targets().len(), 1);
+        assert!(game.monster_lockable(&monster, transit, origin, content().targeting.lock_range));
+        // Landing on the platform ends the transit in region 2.
+        game.advance_tick().unwrap();
+        assert_eq!(game.players[&1].region, RegionMembership::Region { id: 2 });
+    }
+
+    #[test]
+    fn saves_keep_the_region_and_reject_an_unknown_or_unsupported_one() {
+        let mut game = ArpgGame::new_with_seed(91).unwrap();
+        game.add_player(1).unwrap();
+        let save = game.save_state().unwrap();
+        assert_eq!(
+            save.players[0].region,
+            RegionMembership::Region {
+                id: DUNGEON_FLOOR_REGION
+            }
+        );
+        let restored = ArpgGame::from_save_state(save.clone()).unwrap();
+        assert_eq!(restored.save_state().unwrap(), save);
+        for region in [
+            RegionMembership::Region { id: 2 },
+            RegionMembership::Transit { connection: 1 },
+        ] {
+            let mut tampered = save.clone();
+            tampered.players[0].region = region;
+            assert_eq!(
+                ArpgGame::from_save_state(tampered).unwrap_err().message(),
+                "saved player region is invalid"
+            );
         }
     }
 }

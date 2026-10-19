@@ -175,7 +175,7 @@ fn invariants(
 }
 
 /// Game-visible outcomes that do not depend on exact positions: doors, encounters, health,
-/// progression, support and every strike and interaction decision.
+/// progression, support, region membership and every strike and interaction decision.
 fn outcomes(game: &ArpgGame) -> String {
     let snapshot = game.snapshot().unwrap();
     let mut out = String::new();
@@ -188,13 +188,14 @@ fn outcomes(game: &ArpgGame) -> String {
     for player in &snapshot.players {
         write!(
             out,
-            "player {} {} {} {} {} {};",
+            "player {} {} {} {} {} {} {:?};",
             player.id,
             player.health,
             player.experience,
             player.gold,
             player.alive,
-            player.motion.grounded
+            player.motion.grounded,
+            player.region
         )
         .unwrap();
     }

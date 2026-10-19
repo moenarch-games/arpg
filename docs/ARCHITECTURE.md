@@ -39,7 +39,8 @@ server or WASM build enables it.
   Both must keep finite state, no floor, wall or door penetration or tunnelling, planar
   monsters, grounded players on the ground, non-overlapping characters, blocking locked doors,
   bit-identical replay and exact save continuation. Across them, game-visible outcomes
-  (doors, encounters, health, progression, support, strikes, interactions) must be identical
+  (doors, encounters, health, progression, support, region membership, strikes,
+  interactions) must be identical
   every tick, sight, strike, ray, ground and placement queries from the same inputs must
   agree (ray distances within 0.01 units), and positions must agree within 0.5 units until two
   characters first touch. The [physics contract tests](../crates/arpg-core/src/physics.rs) run
@@ -102,8 +103,20 @@ static ground. Jump eligibility, the coyote and buffer windows, airborne control
 grounded-only guard and counter are `arpg-core` rules over that state; the tuning is
 content (`jump`). Snapshots publish each player's `motion` (support, vertical velocity,
 feet and ground height) for presentation, which places the humanoid at the feet and the
-ground ring on the ground, never correcting either. Walkable regions, typed connections
-and traversal geometry are later slices.
+ground ring on the ground, never correcting either.
+
+The walkable topology (#207, [`topology.rs`](../crates/arpg-core/src/topology.rs)) holds
+stable regions and typed connections (walk, jump, one-way drop, gated). Until elevation
+exists a level is one region per flat floor (Atlas 5.1.2): the generated dungeon is a single
+region and its doors are gated passages inside it. Each player belongs to a region or is in
+transit along a connection; landing settles it into the region whose floor supports it,
+airborne motion keeps it, and undeclared support changes nothing. Monsters, loot and chests
+belong to the base floor. Melee strikes, monster engagement, target locks and interaction are
+region-local; an actor in transit counts as present at both ends, so transit is no
+invulnerability. Arrows and monster projectiles stay physical and hit what they reach (the
+cross-region opt-in ADR 0002 names for arrows). Snapshots (schema 23) and saves (schema 16)
+carry the membership; a grounded saved player must belong to the region supporting it.
+Height-varying regions and traversal geometry follow in #208–#210.
 
 Combat and interaction are region-local by default. Abilities may explicitly
 opt into cross-region 3D range/line-of-sight checks. Authored and procedurally
