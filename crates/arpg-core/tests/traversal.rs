@@ -11,6 +11,10 @@ use arpg_core::{
 const PLATFORM_TOP: i32 = 60;
 const FLOOR: RegionMembership = RegionMembership::Region { id: 1 };
 const PLATFORM: RegionMembership = RegionMembership::Region { id: 2 };
+const BRIDGE: RegionMembership = RegionMembership::Region { id: 3 };
+/// The drop from the platform, and the jump between platform and bridge.
+const DROP: RegionMembership = RegionMembership::Transit { connection: 2 };
+const UP_TO_BRIDGE: RegionMembership = RegionMembership::Transit { connection: 3 };
 
 struct Session {
     game: ArpgGame,
@@ -100,17 +104,24 @@ fn a_jump_lands_on_the_platform_top_and_settles_in_its_region() {
 fn walking_off_the_ledge_drops_back_to_the_floor_region() {
     let mut session = Session::new();
     session.jump_east(7);
-    session.send(ArpgCommand::SetMovement { x: 1, z: 0 });
+    // South, off the platform's side (the bridge adjoins its far edge).
+    session.send(ArpgCommand::SetMovement { x: 0, z: 1 });
     let mut left_the_ledge = false;
+    let mut transit = false;
     for _ in 0..120 {
         let player = session.tick();
         if !player.motion.grounded {
             left_the_ledge = true;
-            // Airborne motion keeps the membership.
-            assert_eq!(player.region, PLATFORM);
+            // Over the platform the membership stays; past its edge the drop is in transit.
+            assert!(
+                player.region == PLATFORM || player.region == DROP,
+                "{player:?}"
+            );
+            transit |= player.region == DROP;
         }
         if left_the_ledge && player.motion.grounded {
             assert!((0..=5).contains(&player.motion.feet_y), "{player:?}");
+            assert!(transit, "the drop never entered transit");
             assert_eq!(player.region, FLOOR);
             assert_eq!(session.tick().motion.feet_y, 0);
             return;
@@ -139,7 +150,7 @@ fn saves_on_the_platform_and_during_the_drop_continue_exactly() {
     for save_after in [0_u32, 6] {
         let mut session = Session::new();
         session.jump_east(7);
-        session.send(ArpgCommand::SetMovement { x: 1, z: 0 });
+        session.send(ArpgCommand::SetMovement { x: 0, z: 1 });
         // On the top, then (with `save_after` 6 more ticks of walking) maybe in the air.
         for _ in 0..(save_after * 4) {
             session.tick();
@@ -266,4 +277,102 @@ fn a_save_right_after_a_ceiling_bump_continues_exactly() {
     for tick in 0..40 {
         assert_eq!(restored.tick(), session.tick(), "tick {tick}");
     }
+}
+
+const BRIDGE_TOP: i32 = 140;
+
+impl Session {
+    /// On the platform, then east into the bridge's face and a jump up onto it; returns once
+    /// grounded on the bridge, with every membership seen in the air.
+    fn onto_the_bridge(&mut self) -> Vec<RegionMembership> {
+        self.jump_east(7);
+        for _ in 0..12 {
+            self.tick();
+        }
+        self.send(ArpgCommand::Jump);
+        let mut seen = Vec::new();
+        for _ in 0..60 {
+            let player = self.tick();
+            if !player.motion.grounded {
+                seen.push(player.region);
+            } else if !seen.is_empty() {
+                assert_eq!(player.region, BRIDGE, "{player:?}");
+                self.send(ArpgCommand::SetMovement { x: 0, z: 0 });
+                self.tick();
+                return seen;
+            }
+        }
+        panic!("the player never landed on the bridge");
+    }
+}
+
+#[test]
+fn a_jump_from_the_platform_reaches_the_bridge_in_transit() {
+    let mut session = Session::new();
+    let seen = session.onto_the_bridge();
+    assert!(seen.contains(&UP_TO_BRIDGE), "{seen:?}");
+    let player = session.player();
+    assert_eq!(player.motion.feet_y, BRIDGE_TOP);
+    assert_eq!(player.region, BRIDGE);
+}
+
+#[test]
+fn the_floor_path_runs_under_the_bridge_in_the_floor_region() {
+    let mut session = Session::new();
+    let bridge = session
+        .game
+        .snapshot()
+        .unwrap()
+        .static_colliders
+        .into_iter()
+        .filter(|collider| collider.kind == StaticColliderKind::Platform)
+        .max_by_key(|collider| collider.position[1])
+        .unwrap();
+    // South past the platform, east to the bridge's middle, then north beneath it.
+    for (x, z, ticks) in [(0, 1, 24), (1, 0, 74), (0, -1, 24)] {
+        session.send(ArpgCommand::SetMovement { x, z });
+        for _ in 0..ticks {
+            session.tick();
+        }
+    }
+    session.send(ArpgCommand::SetMovement { x: 0, z: 0 });
+    let player = session.tick();
+    let (dx, dz) = (
+        player.position[0] - bridge.position[0],
+        player.position[2] - bridge.position[2],
+    );
+    // The same X/Z as the bridge above, on the floor below it.
+    assert!(
+        dx.abs() < bridge.half_extents[0] && dz.abs() < bridge.half_extents[2],
+        "{player:?}"
+    );
+    assert!(player.motion.grounded);
+    assert_eq!(player.motion.feet_y, 0);
+    assert_eq!(player.region, FLOOR);
+}
+
+#[test]
+fn walking_off_the_bridge_side_drops_in_transit_and_a_save_continues_it() {
+    let mut session = Session::new();
+    session.onto_the_bridge();
+    session.send(ArpgCommand::SetMovement { x: 0, z: 1 });
+    let off = RegionMembership::Transit { connection: 4 };
+    for _ in 0..40 {
+        if session.tick().region == off {
+            break;
+        }
+    }
+    assert_eq!(session.player().region, off);
+    let save = session.game.save_state().unwrap();
+    assert_eq!(save.players[0].region, off);
+    let mut restored = Session {
+        game: ArpgGame::from_save_state(save).unwrap(),
+        sequence: session.sequence,
+    };
+    for tick in 0..60 {
+        assert_eq!(restored.tick(), session.tick(), "tick {tick}");
+    }
+    let player = session.player();
+    assert!(player.motion.grounded);
+    assert_eq!(player.region, FLOOR);
 }

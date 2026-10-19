@@ -19,8 +19,8 @@ pub use content::{
 };
 use navigation::{Cell, FieldRoute, FieldWork, NAV_CELL_SIZE, Rect, RoomGrid, TargetField};
 pub use topology::{
-    ConnectionId, ConnectionKind, DUNGEON_FLOOR_REGION, RegionId, RegionMembership, Topology,
-    TraversalConnection, WalkableRegion,
+    ConnectionId, ConnectionKind, DUNGEON_FLOOR_REGION, RegionArea, RegionId, RegionMembership,
+    Topology, TraversalConnection, WalkableRegion,
 };
 pub use workbench::{
     MAX_WORKBENCH_MONSTERS, MAX_WORKBENCH_SPAWNS, TuningParameter, TuningValue, WorkbenchOperation,
@@ -857,6 +857,13 @@ const TRAVERSAL_PLATFORM_REGION: RegionId = 2;
 const TRAVERSAL_CEILING_OFFSET: i32 = 250;
 const TRAVERSAL_CEILING_BOTTOM: i32 = 140;
 const TRAVERSAL_CEILING_HALF_EXTENTS: Vec3i = Vec3i::new(100, 20, 100);
+/// The traversal scenario's bridge (#210), adjoining the platform's far edge: its top, 140
+/// units up, is a jump from the platform (80 up) but out of reach from the floor, and its
+/// underside, 120 units up, lets a body walk the floor path beneath it.
+const TRAVERSAL_BRIDGE_OFFSET: i32 = 510;
+const TRAVERSAL_BRIDGE_HALF_EXTENTS: Vec3i = Vec3i::new(150, 10, 60);
+const TRAVERSAL_BRIDGE_TOP: i32 = 140;
+const TRAVERSAL_BRIDGE_REGION: RegionId = 3;
 
 /// One resolved strike as published in a snapshot for diagnostics and feedback.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2403,15 +2410,49 @@ impl ArpgGame {
             game.physics
                 .add_fixed(ceiling.id, array_to_vec(ceiling.position), ceiling_half)?;
             game.static_colliders.push(ceiling);
+            let bridge_half = TRAVERSAL_BRIDGE_HALF_EXTENTS;
+            let bridge = StaticColliderSnapshot {
+                id: STATIC_BODY_BASE + index + 2,
+                position: [
+                    center_x + TRAVERSAL_BRIDGE_OFFSET,
+                    TRAVERSAL_BRIDGE_TOP - bridge_half.y,
+                    center_z,
+                ],
+                half_extents: vec_to_array(bridge_half),
+                kind: StaticColliderKind::Platform,
+            };
+            game.physics
+                .add_fixed(bridge.id, array_to_vec(bridge.position), bridge_half)?;
+            // A box top's area: its walkable surface.
+            let area = |collider: &StaticColliderSnapshot| {
+                let [x, _, z] = collider.position;
+                let [hx, _, hz] = collider.half_extents;
+                Some(RegionArea {
+                    min_x: x - hx,
+                    max_x: x + hx,
+                    min_z: z - hz,
+                    max_z: z + hz,
+                })
+            };
+            let platform_area = area(&game.static_colliders[game.static_colliders.len() - 2]);
+            let bridge_area = area(&bridge);
+            game.static_colliders.push(bridge);
             game.topology = Topology::new(
                 vec![
                     WalkableRegion {
                         id: DUNGEON_FLOOR_REGION,
                         foot_y: FLOOR_FOOT_Y,
+                        area: None,
                     },
                     WalkableRegion {
                         id: TRAVERSAL_PLATFORM_REGION,
                         foot_y: FLOOR_FOOT_Y + 2 * half.y,
+                        area: platform_area,
+                    },
+                    WalkableRegion {
+                        id: TRAVERSAL_BRIDGE_REGION,
+                        foot_y: TRAVERSAL_BRIDGE_TOP,
+                        area: bridge_area,
                     },
                 ],
                 vec![
@@ -2427,10 +2468,33 @@ impl ArpgGame {
                         from: TRAVERSAL_PLATFORM_REGION,
                         to: DUNGEON_FLOOR_REGION,
                     },
+                    TraversalConnection {
+                        id: 3,
+                        kind: ConnectionKind::Jump,
+                        from: TRAVERSAL_PLATFORM_REGION,
+                        to: TRAVERSAL_BRIDGE_REGION,
+                    },
+                    TraversalConnection {
+                        id: 4,
+                        kind: ConnectionKind::Drop,
+                        from: TRAVERSAL_BRIDGE_REGION,
+                        to: DUNGEON_FLOOR_REGION,
+                    },
                 ],
             )?;
         }
+        game.validate_topology()?;
         Ok(game)
+    }
+
+    /// Rejects a level whose geometry lets a body cross between regions no connection
+    /// joins (ADR 0002): within a jump's rise and its horizontal reach (the full run speed
+    /// for the whole airtime, plus a body's width).
+    fn validate_topology(&self) -> Result<(), GameError> {
+        let jump = &self.content.jump.data;
+        let reach = PLAYER_SPEED * i32::from(jump.airtime_ticks) + 2 * PLAYER_HALF_EXTENTS.x;
+        self.topology
+            .validate_crossings(f32::from(jump.apex_height), reach as f32)
     }
 
     pub fn scenario(&self) -> ScenarioId {
@@ -2718,7 +2782,13 @@ impl ArpgGame {
                 && (!player.grounded
                     || game
                         .topology
-                        .supporting(feet, GROUNDED_HEIGHT_TOLERANCE)
+                        .supporting(
+                            player.position[0],
+                            player.position[2],
+                            feet,
+                            GROUNDED_HEIGHT_TOLERANCE,
+                            PLAYER_HALF_EXTENTS.x as f32,
+                        )
                         .map(|id| RegionMembership::Region { id })
                         == Some(player.region));
             if !region_valid {
@@ -5399,7 +5469,8 @@ impl ArpgGame {
 
     /// Support after this tick's motion. A rising body is never grounded; landing ends the
     /// vertical motion and settles the body's region membership (#207), and leaving the
-    /// ground without jumping opens the coyote window. Airborne motion keeps the membership.
+    /// ground without jumping opens the coyote window. Airborne motion keeps the membership
+    /// until it traverses a declared connection, which puts the body in transit (#210).
     fn settle_support(
         jump: &JumpTuning,
         topology: &Topology,
@@ -5407,16 +5478,24 @@ impl ArpgGame {
         supported: bool,
     ) {
         let grounded = supported && state.velocity.y <= 0.0;
+        let (x, z) = (state.position.x, state.position.z);
+        let feet = state.position.y - PLAYER_HALF_EXTENTS.y as f32;
         if grounded {
             state.velocity.y = 0.0;
             state.coyote_ticks_remaining = 0;
             state.region = topology.settle(
                 state.region,
-                state.position.y - PLAYER_HALF_EXTENTS.y as f32,
+                x,
+                z,
+                feet,
                 GROUNDED_HEIGHT_TOLERANCE,
+                PLAYER_HALF_EXTENTS.x as f32,
             );
-        } else if state.grounded {
-            state.coyote_ticks_remaining = jump.data.coyote_ticks;
+        } else {
+            if state.grounded {
+                state.coyote_ticks_remaining = jump.data.coyote_ticks;
+            }
+            state.region = topology.airborne(state.region, x, z, feet, GROUNDED_HEIGHT_TOLERANCE);
         }
         state.grounded = grounded;
     }
@@ -13612,8 +13691,13 @@ mod tests {
                 WalkableRegion {
                     id: DUNGEON_FLOOR_REGION,
                     foot_y: FLOOR_FOOT_Y,
+                    area: None,
                 },
-                WalkableRegion { id: 2, foot_y: 300 },
+                WalkableRegion {
+                    id: 2,
+                    foot_y: 300,
+                    area: None,
+                },
             ],
             vec![TraversalConnection {
                 id: 3,
@@ -13751,5 +13835,57 @@ mod tests {
         let obstacles = game.fixed_footprints();
         assert!(obstacles.contains(&footprint(StaticColliderKind::Platform)));
         assert!(!obstacles.contains(&footprint(StaticColliderKind::Ceiling)));
+    }
+
+    #[test]
+    fn a_player_on_the_bridge_and_a_monster_on_the_path_below_never_meet_in_melee() {
+        let mut game = ArpgGame::arranged_scenario(ScenarioId::Traversal, 42).unwrap();
+        let [x, _, z] = game
+            .static_colliders
+            .iter()
+            .filter(|collider| collider.kind == StaticColliderKind::Platform)
+            .max_by_key(|collider| collider.position[1])
+            .unwrap()
+            .position;
+        game.add_player(1).unwrap();
+        game.put_player(
+            1,
+            Vec3i::new(x, TRAVERSAL_BRIDGE_TOP + PLAYER_HALF_EXTENTS.y, z),
+        );
+        game.advance_tick().unwrap();
+        assert_eq!(
+            game.players[&1].region,
+            RegionMembership::Region {
+                id: TRAVERSAL_BRIDGE_REGION
+            }
+        );
+        game.monsters.clear();
+        // Right below, on the floor path: in reach on the plane, in another region.
+        place_monster(&mut game, 1, x + 60, z);
+        let outcomes = strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: None });
+        assert!(targets(&outcomes).is_empty(), "{outcomes:?}");
+        assert_eq!(monster_health(&game, 1), 100);
+        assert!(game.monster_targets().is_empty());
+    }
+
+    #[test]
+    fn the_traversal_layout_rejects_an_undeclared_crossing() {
+        let mut game = ArpgGame::arranged_scenario(ScenarioId::Traversal, 42).unwrap();
+        assert!(game.validate_topology().is_ok());
+        // Without the jump between platform and bridge the geometry permits an undeclared
+        // crossing.
+        let connections = game
+            .topology
+            .connections()
+            .iter()
+            .copied()
+            .filter(|connection| connection.id != 3)
+            .collect();
+        game.topology = Topology::new(game.topology.regions().to_vec(), connections).unwrap();
+        let error = game.validate_topology().unwrap_err();
+        assert!(
+            error.message().contains("region 2 can reach region 3"),
+            "{error:?}"
+        );
     }
 }

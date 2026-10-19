@@ -68,34 +68,36 @@ server or WASM build enables it.
 
   | workload | players | static boxes | peak monster bodies | backend | median | p95 | p99 | setup median | rebuild share | engine/rapier total |
   |---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
-  | quiet | 1 | 18 | 0 | rapier | 12.6 | 16.4 | 36.9 | 39.5 | 87% |  |
-  | quiet | 1 | 18 | 0 | physics-engine | 0.9 | 1.0 | 1.2 | 41.3 | 3% | 0.07 |
-  | party-quiet | 4 | 18 | 0 | rapier | 17.5 | 23.0 | 55.0 | 44.9 | 72% |  |
-  | party-quiet | 4 | 18 | 0 | physics-engine | 2.5 | 2.7 | 5.8 | 45.1 | 1% | 0.14 |
-  | sparse | 4 | 18 | 0 | rapier | 18.7 | 36.1 | 64.8 | 45.6 | 64% |  |
-  | sparse | 4 | 18 | 0 | physics-engine | 4.2 | 10.2 | 15.7 | 51.6 | 0% | 0.28 |
-  | corner | 1 | 18 | 0 | rapier | 17.3 | 22.0 | 43.0 | 37.1 | 58% |  |
-  | corner | 1 | 18 | 0 | physics-engine | 5.0 | 5.7 | 8.3 | 41.0 | 0% | 0.29 |
-  | door | 1 | 21 | 1 | rapier | 16.0 | 23.3 | 44.8 | 36.2 | 70% |  |
-  | door | 1 | 21 | 1 | physics-engine | 3.0 | 4.4 | 7.2 | 39.8 | 1% | 0.19 |
-  | correction | 1 | 18 | 0 | rapier | 10.6 | 14.1 | 34.5 | 34.7 | 86% |  |
-  | correction | 1 | 18 | 0 | physics-engine | 0.8 | 0.8 | 1.0 | 34.5 | 3% | 0.07 |
-  | combat | 1 | 18 | 1 | rapier | 10.5 | 15.7 | 32.0 | 38.4 | 84% |  |
-  | combat | 1 | 18 | 1 | physics-engine | 0.8 | 1.1 | 2.6 | 40.9 | 3% | 0.08 |
-  | crowd | 1 | 21 | 5 | rapier | 17.2 | 25.3 | 47.0 | 42.4 | 75% |  |
-  | crowd | 1 | 21 | 5 | physics-engine | 1.5 | 3.9 | 6.8 | 45.7 | 1% | 0.12 |
-  | lifecycle | 4 | 18 | 0 | rapier | 15.5 | 30.4 | 42.3 | 40.0 | 64% |  |
-  | lifecycle | 4 | 18 | 0 | physics-engine | 3.4 | 10.1 | 15.1 | 42.3 | 0% | 0.27 |
-  | chase | 1 | 21 | 5 | rapier | 22.3 | 40.3 | 86.3 | 57.6 | 60% |  |
-  | chase | 1 | 21 | 5 | physics-engine | 5.8 | 10.9 | 20.8 | 44.9 | 0% | 0.26 |
-  | jump | 1 | 18 | 0 | rapier | 13.3 | 25.2 | 73.7 | 34.8 | 65% |  |
-  | jump | 1 | 18 | 0 | physics-engine | 3.6 | 4.6 | 6.0 | 35.5 | 1% | 0.26 |
-  | ledge | 1 | 23 | 1 | rapier | 24.1 | 66.5 | 107.5 | 62.2 | 58% |  |
-  | ledge | 1 | 23 | 1 | physics-engine | 4.2 | 32.8 | 50.8 | 57.0 | 0% | 0.26 |
-  | ceiling | 1 | 23 | 1 | rapier | 22.1 | 39.5 | 115.1 | 77.2 | 70% |  |
-  | ceiling | 1 | 23 | 1 | physics-engine | 4.3 | 6.7 | 12.9 | 64.0 | 1% | 0.19 |
-  | all | | | | rapier | 16.8 | 33.5 | 70.6 | | | |
-  | all | | | | physics-engine | 3.1 | 8.2 | 21.3 | | | |
+  | quiet | 1 | 18 | 0 | rapier | 12.8 | 15.1 | 32.0 | 37.9 | 87% |  |
+  | quiet | 1 | 18 | 0 | physics-engine | 1.0 | 1.0 | 1.3 | 42.0 | 3% | 0.07 |
+  | party-quiet | 4 | 18 | 0 | rapier | 17.8 | 23.8 | 62.3 | 48.9 | 73% |  |
+  | party-quiet | 4 | 18 | 0 | physics-engine | 2.6 | 2.9 | 3.4 | 53.9 | 1% | 0.14 |
+  | sparse | 4 | 18 | 0 | rapier | 19.1 | 36.7 | 58.8 | 60.6 | 64% |  |
+  | sparse | 4 | 18 | 0 | physics-engine | 4.3 | 12.6 | 18.8 | 53.1 | 1% | 0.28 |
+  | corner | 1 | 18 | 0 | rapier | 18.0 | 25.1 | 53.1 | 38.3 | 58% |  |
+  | corner | 1 | 18 | 0 | physics-engine | 5.1 | 6.1 | 9.4 | 46.4 | 0% | 0.28 |
+  | door | 1 | 21 | 1 | rapier | 17.1 | 26.9 | 57.2 | 45.0 | 73% |  |
+  | door | 1 | 21 | 1 | physics-engine | 3.2 | 4.8 | 8.4 | 45.7 | 1% | 0.18 |
+  | correction | 1 | 18 | 0 | rapier | 11.3 | 14.4 | 31.1 | 35.0 | 86% |  |
+  | correction | 1 | 18 | 0 | physics-engine | 0.8 | 0.9 | 1.1 | 37.3 | 3% | 0.07 |
+  | combat | 1 | 18 | 1 | rapier | 11.4 | 17.3 | 36.6 | 40.1 | 84% |  |
+  | combat | 1 | 18 | 1 | physics-engine | 0.8 | 1.2 | 3.1 | 43.6 | 3% | 0.07 |
+  | crowd | 1 | 21 | 5 | rapier | 18.0 | 28.5 | 60.4 | 43.7 | 74% |  |
+  | crowd | 1 | 21 | 5 | physics-engine | 1.6 | 4.6 | 17.2 | 50.9 | 1% | 0.12 |
+  | lifecycle | 4 | 18 | 0 | rapier | 17.6 | 34.8 | 55.8 | 49.3 | 63% |  |
+  | lifecycle | 4 | 18 | 0 | physics-engine | 3.7 | 13.5 | 18.8 | 51.2 | 0% | 0.27 |
+  | chase | 1 | 21 | 5 | rapier | 26.1 | 47.1 | 95.0 | 63.7 | 60% |  |
+  | chase | 1 | 21 | 5 | physics-engine | 6.8 | 12.7 | 26.0 | 57.9 | 0% | 0.26 |
+  | jump | 1 | 18 | 0 | rapier | 14.2 | 18.7 | 55.7 | 38.7 | 66% |  |
+  | jump | 1 | 18 | 0 | physics-engine | 3.9 | 5.1 | 13.6 | 43.1 | 1% | 0.27 |
+  | ledge | 1 | 24 | 1 | rapier | 17.3 | 61.9 | 125.5 | 66.0 | 65% |  |
+  | ledge | 1 | 24 | 1 | physics-engine | 3.3 | 31.3 | 57.4 | 50.0 | 0% | 0.28 |
+  | ceiling | 1 | 24 | 1 | rapier | 31.9 | 91.6 | 252.3 | 109.9 | 68% |  |
+  | ceiling | 1 | 24 | 1 | physics-engine | 5.6 | 12.2 | 36.6 | 92.2 | 0% | 0.16 |
+  | traversal | 1 | 24 | 1 | rapier | 24.7 | 78.4 | 160.7 | 87.5 | 67% |  |
+  | traversal | 1 | 24 | 1 | physics-engine | 4.0 | 24.7 | 74.7 | 85.6 | 1% | 0.21 |
+  | all | | | | rapier | 17.7 | 42.0 | 98.3 | | | |
+  | all | | | | physics-engine | 3.3 | 9.4 | 30.5 | | | |
 
 ## Height and traversal topology
 
@@ -137,7 +139,19 @@ The same scenario lays a low ceiling (#209) 140 units up: a standing body walks 
 jump stops with the head a contact offset short of it (the tick's vertical velocity becomes
 what physics allowed, so the body falls back at once), and monsters path under it, since
 navigation ignores boxes entirely above a monster body. The seeded A/B `ceiling` workload
-jumps into it on both backends. The overlapping bridge and typed transit follow in #210.
+jumps into it on both backends.
+
+The bridge (#210) adjoins the platform's far edge: its top, 140 units up, is a jump from the
+platform but out of reach from the floor, and its underside, 120 units up, leaves the floor
+path beneath it walkable, so two regions overlap in X/Z at different heights. Raised regions
+carry their area (the box top); support picks the region whose floor height and area (plus a
+body's radius, for edges) match. An airborne body enters transit along the declared
+connection when it rises over a higher region it can land on or its centre leaves its own
+region's area, and landing resolves it; a body in transit counts as present at both ends.
+Each scenario layout is validated: a crossing the geometry permits (a rise within a jump's
+apex over a gap within its reach, or any drop) without a declared connection rejects the
+level. The seeded A/B `traversal` workload climbs platform and bridge, drops off the bridge's
+side and walks the path beneath it on both backends.
 
 Combat and interaction are region-local by default. Abilities may explicitly
 opt into cross-region 3D range/line-of-sight checks. Authored and procedurally
