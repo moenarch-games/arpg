@@ -228,11 +228,23 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
         Case::Ceiling if tick == 36 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
         Case::Ceiling if tick == 70 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
         Case::Ceiling if tick == 40 || tick == 72 || tick == 100 => Some(ArpgCommand::Jump),
-        Case::Crates if tick == 0 || tick == 20 => Some(ArpgCommand::PrimaryAttack {
+        // A full-draw arrow east at the room's far crate (#223), then the sword on the near
+        // one, and a walk through its spot.
+        Case::Crates if tick == 0 => Some(ArpgCommand::EquipWeapon {
+            weapon: Weapon::Bow,
+        }),
+        Case::Crates if tick == 1 => Some(ArpgCommand::SetAim {
+            direction: Some([1_000, 0]),
+        }),
+        Case::Crates if tick == 2 => Some(ArpgCommand::DrawBow),
+        Case::Crates if tick == 34 => Some(ArpgCommand::ReleaseBow { aim: None }),
+        Case::Crates if tick == 70 => Some(ArpgCommand::EquipWeapon {
+            weapon: Weapon::SwordAndShield,
+        }),
+        Case::Crates if tick == 72 || tick == 88 => Some(ArpgCommand::PrimaryAttack {
             aim: Some([-1_000, 0]),
         }),
-        Case::Crates if tick == 40 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
-        Case::Crates if tick == 60 => Some(ArpgCommand::SetMovement { x: 1, z: 1 }),
+        Case::Crates if tick == 104 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
         // Stepping away and pausing, so lunges start both in and out of static reach.
         Case::Lunge if tick.is_multiple_of(20) => {
             let (x, z) =
