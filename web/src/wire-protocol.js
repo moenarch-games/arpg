@@ -247,7 +247,7 @@ export function decodeSnapshot(encoded) {
         vector(collider.position, 3) &&
         vector(collider.halfExtents, 3) &&
         collider.halfExtents.every((value) => value >= 0) &&
-        ["wall", "door", "pillar", "platform"].includes(collider.kind),
+        ["wall", "door", "pillar", "platform", "ceiling"].includes(collider.kind),
     ) &&
     list(
       "groundLoot",

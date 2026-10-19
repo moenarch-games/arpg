@@ -104,10 +104,11 @@ test("admits region membership and platforms and rejects malformed ones", () => 
       decodeSnapshot(encode({ ...payload, players: [{ ...player, region }] })),
     ).toThrow();
   const platform = { id: 9, kind: "platform", position: [0, 30, 0], halfExtents: [100, 30, 100] };
+  const ceiling = { id: 10, kind: "ceiling", position: [0, 160, 0], halfExtents: [100, 20, 100] };
   const decoded = decodeSnapshot(
-    encode({ ...payload, scenario: "traversal", staticColliders: [platform] }),
+    encode({ ...payload, scenario: "traversal", staticColliders: [platform, ceiling] }),
   );
-  expect(decoded.staticColliders).toEqual([platform]);
+  expect(decoded.staticColliders).toEqual([platform, ceiling]);
 });
 
 test("admits shield guard state and rejects malformed guard data", () => {

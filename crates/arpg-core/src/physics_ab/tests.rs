@@ -280,6 +280,8 @@ struct Comparison {
     max_position_on_edge: f32,
     /// Ticks on which a player of either game belongs to a region above the floor.
     raised_region_ticks: u32,
+    /// Ticks on which an airborne player's head touches a ceiling's underside, in either game.
+    ceiling_touches: u32,
     /// First tick whose game-visible outcomes differ.
     first_outcome_difference: Option<(u32, String, String)>,
     /// Ticks whose static geometry (locked doors) differs, so queries are not compared.
@@ -485,6 +487,18 @@ fn compare(case: Case, seed: u32) -> Comparison {
                 comparison.raised_region_ticks += 1;
             }
             for state in game.players.values() {
+                let head = state.position.y + PLAYER_HALF_EXTENTS.y as f32;
+                let touches = game.static_colliders.iter().any(|collider| {
+                    let [x, y, z] = collider.position.map(|value| value as f32);
+                    let [hx, hy, hz] = collider.half_extents.map(|value| value as f32);
+                    collider.kind == crate::StaticColliderKind::Ceiling
+                        && (state.position.x - x).abs() < hx
+                        && (state.position.z - z).abs() < hz
+                        && (y - hy - head).abs() <= 1.0
+                });
+                if touches && !state.grounded {
+                    comparison.ceiling_touches += 1;
+                }
                 let feet = state.position.y - (PLAYER_HALF_EXTENTS.y + FLOOR_FOOT_Y) as f32;
                 comparison.max_height = comparison.max_height.max(feet);
             }
@@ -580,6 +594,9 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
                 for violation in violations.iter().take(5) {
                     failures.push(format!("{context} on {backend}: {violation}"));
                 }
+            }
+            if case == Case::Ceiling && comparison.ceiling_touches == 0 {
+                failures.push(format!("{context}: no jump reached the ceiling"));
             }
             if case == Case::Ledge && comparison.raised_region_ticks == 0 {
                 failures.push(format!("{context}: the player never reached the platform"));

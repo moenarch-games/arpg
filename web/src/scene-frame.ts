@@ -167,7 +167,7 @@ export function buildFrame(
           ? "#62594e"
           : collider.kind === "pillar"
             ? "#5d5142"
-            : collider.kind === "platform"
+            : collider.kind === "platform" || collider.kind === "ceiling"
               ? "#6b5e4b"
               : "#403a33",
         transform: { translation },
