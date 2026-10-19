@@ -1,5 +1,5 @@
 {
-  "formatVersion": 13,
+  "formatVersion": 14,
   "counterWindowTicks": 30,
   "strikes": [
     { "id": "sword.lightSwing", "reach": 220, "frontal": true, "maxTargets": null, "blockable": true, "guardCost": 20 },
@@ -54,5 +54,6 @@
   "targeting": { "lockRange": 900, "breakRange": 1200 },
   "jump": { "apexHeight": 90, "airtimeTicks": 36, "coyoteTicks": 6, "bufferTicks": 6, "airAccelerationPerTick": 3, "airBrakingPerTick": 5, "airReversalPerTick": 5 },
   "crate": { "health": 30, "halfExtents": [25, 50, 25], "perCombatRoom": 2 },
-  "poison": { "poolRadius": 60, "poolsPerCombatRoom": 1, "durationTicks": 180, "intervalTicks": 30, "damage": 2 }
+  "poison": { "poolRadius": 60, "poolsPerCombatRoom": 1, "durationTicks": 180, "intervalTicks": 30, "damage": 2 },
+  "slow": { "durationTicks": 90, "speedPercent": 50 }
 }

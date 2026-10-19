@@ -112,6 +112,18 @@ test("admits region membership and platforms and rejects malformed ones", () => 
   expect(decoded.staticColliders).toEqual([platform, ceiling, step]);
 });
 
+test("admits a slowed monster and rejects a malformed slow", () => {
+  const slowed = { ...monster, slow: { ticksRemaining: 90 } };
+  expect(decodeSnapshot(encode({ ...payload, monsters: [slowed] })).monsters[0].slow).toEqual({
+    ticksRemaining: 90,
+  });
+  expect(() =>
+    decodeSnapshot(
+      encode({ ...payload, monsters: [{ ...monster, slow: { ticksRemaining: -1 } }] }),
+    ),
+  ).toThrow();
+});
+
 test("admits poison pools and poisoned players and rejects malformed ones", () => {
   const hazard = { id: 50000, roomId: 2, position: [0, 0, 0], radius: 60 };
   const poison = { source: 50000, ticksRemaining: 179, nextDamageIn: 29 };

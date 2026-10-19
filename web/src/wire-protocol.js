@@ -260,6 +260,8 @@ export function decodeSnapshot(encoded) {
         ) &&
         nonNegative(monster.guardPoints) &&
         nonNegative(monster.maxGuardPoints) &&
+        // Slowed by a player's arrow (#64).
+        optional(monster.slow, (value) => nonNegative(value?.ticksRemaining)) &&
         monster.guardPoints <= monster.maxGuardPoints,
     ) &&
     list(
