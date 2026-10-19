@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use rapier3d::control::{CharacterLength, KinematicCharacterController};
+use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
 use rapier3d::parry::query::{
     DefaultQueryDispatcher, QueryDispatcher, QueryDispatcherChain, ShapeCastOptions,
 };
@@ -21,7 +21,7 @@ use rapier3d::prelude::*;
 use super::queries::UprightShapes;
 use super::{
     BodyKey, CONTACT_OFFSET, CONTACT_OFFSET_UNITS, METRES_PER_UNIT, Motion, PENETRATION_TOLERANCE,
-    SUPPORT_REACH, capsule_dimensions, metres, missing, units, vector,
+    STEP_HEIGHT_UNITS, SUPPORT_REACH, capsule_dimensions, metres, missing, units, vector,
 };
 use crate::{GameError, TICK_HZ, Vec3i};
 
@@ -57,6 +57,10 @@ pub(crate) struct Physics {
     /// Players' motion with height: the same contact rules, snapping to the ground the
     /// controller found the body grounded on.
     vertical: KinematicCharacterController,
+    /// [`Self::vertical`] for a walking player, which also climbs steps up to
+    /// [`STEP_HEIGHT_UNITS`] (Rapier's `autostep`). Jumps and falls never step: Rapier's
+    /// autostep would otherwise lift an airborne body onto any ledge within a step of it.
+    walking: KinematicCharacterController,
     floor: Option<Floor>,
     fixed: BTreeMap<BodyKey, Fixed>,
     characters: BTreeMap<BodyKey, Character>,
@@ -133,6 +137,16 @@ impl Physics {
             world: empty_world(),
             queries: UprightShapes.chain(DefaultQueryDispatcher),
             controller,
+            walking: KinematicCharacterController {
+                // Walking players climb stairs without jumping (Atlas 5.1.5, #222).
+                autostep: Some(CharacterAutostep {
+                    max_height: CharacterLength::Absolute(STEP_HEIGHT_UNITS * METRES_PER_UNIT),
+                    min_width: CharacterLength::Absolute(0.1),
+                    include_dynamic_bodies: false,
+                }),
+                snap_to_ground: Some(CharacterLength::Absolute(SUPPORT_REACH)),
+                ..controller
+            },
             vertical: KinematicCharacterController {
                 // Settles a body the controller found grounded within its support reach, also
                 // over a platform's rounded edge (#208).
@@ -344,12 +358,14 @@ impl Physics {
     /// Moves a player from `from` by the game's `desired` translation for one tick, height
     /// included: Rapier's controller blocks and slides it as for [`Self::move_character`],
     /// lands it on the ground, settles it onto ground found within its support reach and
-    /// reports whether it ends supported.
+    /// reports whether it ends supported. A `walking` player (grounded, not taking off)
+    /// climbs steps.
     pub(crate) fn move_player(
         &mut self,
         key: BodyKey,
         from: Vector,
         desired: Vector,
+        walking: bool,
     ) -> Result<Motion, GameError> {
         let character = self.character(key)?;
         let filter = QueryFilter::default().exclude_rigid_body(character.body);
@@ -359,7 +375,12 @@ impl Physics {
             &self.world.colliders,
             filter,
         );
-        let movement = self.vertical.move_shape(
+        let controller = if walking {
+            &self.walking
+        } else {
+            &self.vertical
+        };
+        let movement = controller.move_shape(
             self.world.integration_parameters.dt,
             &queries,
             &character.shape,
@@ -375,6 +396,12 @@ impl Physics {
             to,
             moved,
             supported,
+            // Rapier's grounded, on static geometry: a step's edge counts, a character
+            // never (it would let a walk step onto another body).
+            ground_contact: movement.grounded
+                && self
+                    .static_below(&character.shape, to)
+                    .is_some_and(|normal| normal.y > 0.0),
         })
     }
 
@@ -382,6 +409,14 @@ impl Physics {
     /// `position`: Rapier's controller also calls a body grounded on top of another
     /// character, which is no ground (moving supports are not part of #59).
     fn ground_below(&self, shape: &Capsule, position: Vector) -> bool {
+        self.static_below(shape, position).is_some_and(|normal| {
+            normal.dot(Vector::Y) >= self.vertical.max_slope_climb_angle.cos()
+        })
+    }
+
+    /// The normal of the static geometry within the support reach below a body of `shape`
+    /// at `position`, at any angle: a step's rounded edge counts, another character never.
+    fn static_below(&self, shape: &Capsule, position: Vector) -> Option<Vector> {
         let queries = self.world.broad_phase.as_query_pipeline(
             &self.queries,
             &self.world.bodies,
@@ -400,10 +435,7 @@ impl Physics {
                     compute_impact_geometry_on_penetration: true,
                 },
             )
-            // Ground faces up within the controller's climbable slope.
-            .is_some_and(|(_, hit)| {
-                hit.normal1.dot(Vector::Y) >= self.vertical.max_slope_climb_angle.cos()
-            })
+            .map(|(_, hit)| hit.normal1)
     }
 
     /// The height (world units) at which a body above `position` would stand on the static
@@ -479,6 +511,37 @@ impl Physics {
         queries
             .cast_ray(&Ray::new(metres(origin), metres(translation)), 1.0, true)
             .map(|(_, time_of_impact)| time_of_impact)
+    }
+
+    /// Whether static ground (the floor or a box) lies within `reach` world units below a
+    /// character with `half_extents` at `position`, edges included: what a saved grounded
+    /// body must stand on (#222).
+    pub(crate) fn supported_within(
+        &self,
+        position: Vector,
+        half_extents: Vec3i,
+        reach: f32,
+    ) -> bool {
+        let shape = character_shape(half_extents);
+        let queries = self.world.broad_phase.as_query_pipeline(
+            &self.queries,
+            &self.world.bodies,
+            &self.world.colliders,
+            QueryFilter::only_fixed(),
+        );
+        queries
+            .cast_shape(
+                &Pose::from_translation(metres(position)),
+                -Vector::Y,
+                &shape,
+                ShapeCastOptions {
+                    target_distance: 0.0,
+                    stop_at_penetration: true,
+                    max_time_of_impact: reach * METRES_PER_UNIT,
+                    compute_impact_geometry_on_penetration: false,
+                },
+            )
+            .is_some()
     }
 
     /// Whether a character with `half_extents` at `position` would penetrate static

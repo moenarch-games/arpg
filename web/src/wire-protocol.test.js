@@ -105,10 +105,11 @@ test("admits region membership and platforms and rejects malformed ones", () => 
     ).toThrow();
   const platform = { id: 9, kind: "platform", position: [0, 30, 0], halfExtents: [100, 30, 100] };
   const ceiling = { id: 10, kind: "ceiling", position: [0, 160, 0], halfExtents: [100, 20, 100] };
+  const step = { id: 11, kind: "step", position: [0, 10, 0], halfExtents: [60, 10, 20] };
   const decoded = decodeSnapshot(
-    encode({ ...payload, scenario: "traversal", staticColliders: [platform, ceiling] }),
+    encode({ ...payload, scenario: "traversal", staticColliders: [platform, ceiling, step] }),
   );
-  expect(decoded.staticColliders).toEqual([platform, ceiling]);
+  expect(decoded.staticColliders).toEqual([platform, ceiling, step]);
 });
 
 test("admits damageable crates and strikes on them and rejects malformed ones", () => {

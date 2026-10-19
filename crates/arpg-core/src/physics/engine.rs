@@ -44,15 +44,15 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use physics_engine::approximate::{
-    Body, CharacterMove, CharacterMoveResult, CharacterSettings, Config, QueryFilter, QueryHit,
-    QueryPose, RayCast, Shape, Vector as EngineVector, World,
+    Autostep, Body, CharacterMove, CharacterMoveResult, CharacterSettings, Config, QueryFilter,
+    QueryHit, QueryPose, RayCast, Shape, ShapeCast, Vector as EngineVector, World,
 };
 use physics_engine::{BodyId, CollisionLayers3d};
 use rapier3d::math::Vector;
 
 use super::{
-    BodyKey, CONTACT_OFFSET, CONTACT_OFFSET_UNITS, Motion, PENETRATION_TOLERANCE, SUPPORT_REACH,
-    capsule_dimensions, metres, missing, units, vector,
+    BodyKey, CONTACT_OFFSET, CONTACT_OFFSET_UNITS, Motion, PENETRATION_TOLERANCE,
+    STEP_HEIGHT_UNITS, SUPPORT_REACH, capsule_dimensions, metres, missing, units, vector,
 };
 use crate::{GameError, Vec3i};
 
@@ -150,6 +150,13 @@ fn settings(kind: Kind, height: f32) -> CharacterSettings {
             // Settles a body grounded within the support reach, as the Rapier backend does.
             snap_to_ground: Some(SUPPORT_REACH),
             plane: None,
+            // Walking players climb stairs (Atlas 5.1.5, #222), with the Rapier backend's
+            // step height and free depth. The engine steps only on walking moves: ones that
+            // start on the ground and do not rise.
+            autostep: Some(Autostep {
+                max_height: STEP_HEIGHT_UNITS * super::METRES_PER_UNIT,
+                min_width: 0.1,
+            }),
             ..base
         },
     }
@@ -371,11 +378,14 @@ impl Physics {
         Ok((to, translation))
     }
 
+    /// The engine decides walking itself (on the ground at the move's start, not rising),
+    /// the game's own rule, so `walking` adds nothing here (#222).
     pub(crate) fn move_player(
         &mut self,
         key: BodyKey,
         from: Vector,
         desired: Vector,
+        _walking: bool,
     ) -> Result<Motion, GameError> {
         let (moved, supported) = self.step(key, Kind::Vertical, from, desired)?;
         let to = from + moved;
@@ -384,6 +394,8 @@ impl Physics {
             to,
             moved,
             supported,
+            // The engine gates its autostep on geometry at the move's start (#222).
+            ground_contact: supported,
         })
     }
 
@@ -454,6 +466,23 @@ impl Physics {
             )
             .expect("physics-engine ray")
             .map(|hit| hit.fraction)
+    }
+
+    pub(crate) fn supported_within(
+        &self,
+        position: Vector,
+        half_extents: Vec3i,
+        reach: f32,
+    ) -> bool {
+        let mut hits = self.hits.borrow_mut();
+        let cast = ShapeCast::new(
+            QueryPose::new(character_shape(half_extents), engine(position)),
+            EngineVector(0.0, -reach * super::METRES_PER_UNIT, 0.0),
+        );
+        self.world
+            .cast_shape(cast, self.statics(), &mut hits)
+            .expect("physics-engine support cast");
+        !hits.is_empty()
     }
 
     pub(crate) fn penetrates_fixed(&self, position: Vector, half_extents: Vec3i) -> bool {

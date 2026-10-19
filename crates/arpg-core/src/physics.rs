@@ -46,6 +46,11 @@ const PENETRATION_TOLERANCE: f32 = 1.0e-3 * METRES_PER_UNIT;
 /// the ground use the same reach, so a body that the controller calls grounded settles onto
 /// the ground in the next tick instead of hovering above it.
 const SUPPORT_REACH: f32 = CONTACT_OFFSET + 0.05;
+/// The highest step (world units) a walking player climbs without jumping (Atlas 5.1.5): a
+/// stair's rise. The capsule's rounded base climbs an edge up to about 9 units further as a
+/// slope, so steps up to about 33 units climb and 35 block. Both backends climb with their
+/// character controller's autostep, on walking moves only (#222).
+pub(crate) const STEP_HEIGHT_UNITS: f32 = 25.0;
 
 /// A game-chosen identity for a physical body (walls, doors, players and monsters each
 /// take their own id range).
@@ -61,6 +66,10 @@ pub(crate) struct Motion {
     /// Whether the body ends supported: the controller reports it grounded on static ground
     /// within its support reach below. Another character's body is not ground.
     pub supported: bool,
+    /// Whether the controller ends touching anything below it that faces up, a step's
+    /// rounded edge or another body included: Rapier's own `grounded`. The next tick's move
+    /// is a walk, which climbs steps, exactly when this held (#222).
+    pub ground_contact: bool,
 }
 
 /// `value` in world units as the game's vector type, still in world units.
@@ -325,8 +334,9 @@ mod ab {
             key: BodyKey,
             from: Vector,
             desired: Vector,
+            walking: bool,
         ) -> Result<Motion, GameError> {
-            dispatch!(self, physics => physics.move_player(key, from, desired))
+            dispatch!(self, physics => physics.move_player(key, from, desired, walking))
         }
 
         pub(crate) fn ground_height(&self, position: Vector) -> Option<f32> {
@@ -352,6 +362,15 @@ mod ab {
 
         pub(crate) fn penetrates_fixed(&self, position: Vector, half_extents: Vec3i) -> bool {
             dispatch!(self, physics => physics.penetrates_fixed(position, half_extents))
+        }
+
+        pub(crate) fn supported_within(
+            &self,
+            position: Vector,
+            half_extents: Vec3i,
+            reach: f32,
+        ) -> bool {
+            dispatch!(self, physics => physics.supported_within(position, half_extents, reach))
         }
     }
 }
@@ -562,7 +581,7 @@ mod tests {
         (0..ticks)
             .map(|tick| {
                 let motion = physics
-                    .move_player(key, position, step(tick, last))
+                    .move_player(key, position, step(tick, last), false)
                     .unwrap();
                 position = motion.to;
                 last = Some(motion);
@@ -585,7 +604,9 @@ mod tests {
                 assert!(motion.supported);
             }
             // Standing still is supported as well.
-            let rest = physics.move_player(1, at(300, -300), Vector::ZERO).unwrap();
+            let rest = physics
+                .move_player(1, at(300, -300), Vector::ZERO, true)
+                .unwrap();
             assert_eq!(rest.to, at(300, -300));
             assert!(rest.supported);
         });
@@ -694,7 +715,7 @@ mod tests {
                 let from = Vector::new(0.0, Y as f32 + feet, 0.0);
                 physics.add_character(1, from, BODY).unwrap();
                 let motion = physics
-                    .move_player(1, from, Vector::new(0.0, -down, 0.0))
+                    .move_player(1, from, Vector::new(0.0, -down, 0.0), false)
                     .unwrap();
                 assert_eq!(
                     motion.supported, supported,
@@ -702,6 +723,72 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn support_is_found_under_a_body_on_a_box_edge_but_not_in_the_air() {
+        each_backend(|| {
+            let mut physics = floored();
+            // A box 20 high whose east face is at x = 100.
+            physics
+                .add_fixed(1, Vec3i::new(50, 10, 0), Vec3i::new(50, 10, 50))
+                .unwrap();
+            let on = |x: f32, feet: f32| Vector::new(x, feet + 50.0, 0.0);
+            // Rounding the edge: the centre 20 units past it, the capsule still on it.
+            assert!(physics.supported_within(on(120.0, 20.0 - 2.0), BODY, 6.0));
+            assert!(physics.supported_within(on(300.0, 3.0), BODY, 6.0));
+            assert!(!physics.supported_within(on(300.0, 30.0), BODY, 6.0));
+            assert!(!physics.supported_within(on(40.0, 40.0), BODY, 6.0));
+        });
+    }
+
+    /// Walking climbs a step of up to [`STEP_HEIGHT_UNITS`]; a higher one, or any step met
+    /// in the air, blocks (#222).
+    #[test]
+    fn a_walking_body_climbs_a_low_step_but_not_a_high_one_or_in_the_air() {
+        let run = || {
+            let climb = |rise: i32, walking: bool| {
+                let mut physics = floored();
+                // A long step whose near face is at x = 100.
+                physics
+                    .add_fixed(
+                        1,
+                        Vec3i::new(400, rise / 2, 0),
+                        Vec3i::new(300, rise / 2, 60),
+                    )
+                    .unwrap();
+                let mut position = at(0, 0);
+                physics.add_character(2, position, BODY).unwrap();
+                for _ in 0..40 {
+                    position = physics
+                        .move_player(2, position, Vector::new(7.0, 0.0, 0.0), walking)
+                        .unwrap()
+                        .to;
+                }
+                position
+            };
+            let low = climb(20, true);
+            assert!(
+                low.x > 100.0 && (low.y - (Y + 20) as f32).abs() < 1.0,
+                "{low:?}"
+            );
+            // The capsule's rounded base also rides an edge as a slope (Rapier's 45 degree
+            // rule), about 9 units above the 25-unit autostep: 35 is too high.
+            let high = climb(35, true);
+            assert!(high.x < 75.0 && (high.y - Y as f32).abs() < 1.0, "{high:?}");
+            // A body falling into the step's face never steps up onto it.
+            let mut physics = floored();
+            physics
+                .add_fixed(1, Vec3i::new(400, 10, 0), Vec3i::new(300, 10, 60))
+                .unwrap();
+            let start = Vector::new(69.0, (Y + 5) as f32, 0.0);
+            physics.add_character(2, start, BODY).unwrap();
+            let fall = physics
+                .move_player(2, start, Vector::new(7.0, -1.0, 0.0), false)
+                .unwrap();
+            assert!(fall.to.y <= start.y && fall.to.x < 75.0, "{fall:?}");
+        };
+        each_backend(run);
     }
 
     #[test]
@@ -713,7 +800,7 @@ mod tests {
             let above = Vector::new(0.0, Y as f32 + 100.3, 0.0);
             physics.add_character(2, above, BODY).unwrap();
             let motion = physics
-                .move_player(2, above, Vector::new(0.0, -1.0, 0.0))
+                .move_player(2, above, Vector::new(0.0, -1.0, 0.0), false)
                 .unwrap();
             assert!(!motion.supported, "{motion:?}");
         });

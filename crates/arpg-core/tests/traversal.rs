@@ -376,3 +376,82 @@ fn walking_off_the_bridge_side_drops_in_transit_and_a_save_continues_it() {
     assert!(player.motion.grounded);
     assert_eq!(player.region, FLOOR);
 }
+
+impl Session {
+    /// North past the spawn, east to the stairs' line, then south up them (#222); every
+    /// player snapshot of the climb.
+    fn up_the_stairs(&mut self) -> Vec<PlayerSnapshot> {
+        for (x, z, ticks) in [(0, -1, 37), (1, 0, 37)] {
+            self.send(ArpgCommand::SetMovement { x, z });
+            for _ in 0..ticks {
+                self.tick();
+            }
+        }
+        self.send(ArpgCommand::SetMovement { x: 0, z: 1 });
+        (0..30).map(|_| self.tick()).collect()
+    }
+}
+
+#[test]
+fn a_walking_player_climbs_the_stairs_onto_the_platform_without_jumping() {
+    let mut session = Session::new();
+    let climb = session.up_the_stairs();
+    let heights = climb
+        .iter()
+        .map(|player| player.motion.feet_y)
+        .collect::<Vec<_>>();
+    // Up through both steps (20, 40) to the platform's top, never higher than a step above
+    // the ground it stood on, and never jumping.
+    for rise in [20, 40, PLATFORM_TOP] {
+        assert!(heights.contains(&rise), "{heights:?}");
+    }
+    assert!(
+        heights.windows(2).all(|pair| pair[1] - pair[0] <= 25),
+        "{heights:?}"
+    );
+    assert!(
+        climb
+            .iter()
+            .all(|player| player.motion.vertical_velocity <= 0),
+        "{climb:?}"
+    );
+    let top = climb.last().unwrap();
+    assert!(top.motion.grounded);
+    assert_eq!(top.motion.feet_y, PLATFORM_TOP);
+    assert_eq!(top.region, PLATFORM);
+    // On the steps it kept the floor's membership: stairs belong to the region they lead to.
+    assert!(
+        climb
+            .iter()
+            .filter(|player| (1..PLATFORM_TOP - 5).contains(&player.motion.feet_y))
+            .all(|player| player.region == FLOOR)
+    );
+}
+
+#[test]
+fn a_save_on_a_step_continues_exactly() {
+    let mut session = Session::new();
+    for (x, z, ticks) in [(0, -1, 37), (1, 0, 37), (0, 1, 12)] {
+        session.send(ArpgCommand::SetMovement { x, z });
+        for _ in 0..ticks {
+            session.tick();
+        }
+    }
+    session.send(ArpgCommand::SetMovement { x: 0, z: 0 });
+    for _ in 0..3 {
+        session.tick();
+    }
+    let player = session.player();
+    assert!(player.motion.grounded);
+    assert!((15..=45).contains(&player.motion.feet_y), "{player:?}");
+    let save = session.game.save_state().unwrap();
+    let mut restored = Session {
+        game: ArpgGame::from_save_state(save).unwrap(),
+        sequence: session.sequence,
+    };
+    session.send(ArpgCommand::SetMovement { x: 0, z: 1 });
+    restored.send(ArpgCommand::SetMovement { x: 0, z: 1 });
+    for tick in 0..30 {
+        assert_eq!(restored.tick(), session.tick(), "tick {tick}");
+    }
+}
