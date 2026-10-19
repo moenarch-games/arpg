@@ -14,7 +14,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: moritzbrantner/reusable-workflows/.github/workflows/validate-repo.yml@3b11729d5e98a27bb1fc9895aa9ca289bcfdddcf # main
+    uses: moritzbrantner/reusable-workflows/.github/workflows/validate-repo.yml@3f844af99f28f6324f3c0d41b3a89c45b4182c5a # main
     with:
       bun_version: ""
       node_version: ""
