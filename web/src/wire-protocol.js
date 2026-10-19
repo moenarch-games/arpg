@@ -31,7 +31,7 @@ const scenarios = new Set([
   "traversal",
 ]);
 // A strike may land on a damageable crate (#90) as well as a character.
-const parties = new Set(["player", "monster", "crate"]);
+const parties = new Set(["player", "monster", "crate", "hazard"]);
 const strikeResults = new Set(["hit", "blocked", "guardBroken", "obstructed"]);
 // Content definition ids (`monster.brute`, `sword.lightSwing`): 1..=64 characters.
 const definitionId = (value) => typeof value === "string" && value.length > 0 && value.length <= 64;
@@ -167,8 +167,24 @@ export function decodeSnapshot(encoded) {
         optional(player.aim, aimDirection) &&
         optional(player.lockedMonsterId, nonNegative) &&
         motion(player.motion) &&
-        optional(player.region, region),
+        optional(player.region, region) &&
+        optional(
+          player.poison,
+          (value) =>
+            nonNegative(value?.source) &&
+            nonNegative(value.ticksRemaining) &&
+            nonNegative(value.nextDamageIn),
+        ),
     ) &&
+    (snapshot.hazards === undefined ||
+      list(
+        "hazards",
+        (hazard) =>
+          nonNegative(hazard?.id) &&
+          nonNegative(hazard.roomId) &&
+          vector(hazard.position, 3) &&
+          nonNegative(hazard.radius),
+      )) &&
     (snapshot.crates === undefined ||
       list(
         "crates",

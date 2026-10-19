@@ -112,6 +112,21 @@ test("admits region membership and platforms and rejects malformed ones", () => 
   expect(decoded.staticColliders).toEqual([platform, ceiling, step]);
 });
 
+test("admits poison pools and poisoned players and rejects malformed ones", () => {
+  const hazard = { id: 50000, roomId: 2, position: [0, 0, 0], radius: 60 };
+  const poison = { source: 50000, ticksRemaining: 179, nextDamageIn: 29 };
+  const decoded = decodeSnapshot(
+    encode({ ...payload, hazards: [hazard], players: [{ ...player, poison }] }),
+  );
+  expect(decoded.hazards).toEqual([hazard]);
+  expect(decoded.players[0].poison).toEqual(poison);
+  for (const candidate of [
+    { ...payload, hazards: [{ ...hazard, radius: -1 }] },
+    { ...payload, players: [{ ...player, poison: { ...poison, ticksRemaining: "a" } }] },
+  ])
+    expect(() => decodeSnapshot(encode(candidate))).toThrow();
+});
+
 test("admits damageable crates and strikes on them and rejects malformed ones", () => {
   const crate = {
     id: 40000,

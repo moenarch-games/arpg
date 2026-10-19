@@ -177,6 +177,18 @@ export function buildFrame(
         transform: { translation },
       };
     }),
+    // Poison pools (#64): flat discs on the floor, drawn from the authority's hazards.
+    ...(snapshot.hazards ?? []).map((hazard) => {
+      const size = (hazard.radius * 2) / scale;
+      return {
+        id: `hazard-${hazard.id}`,
+        geometry: { kind: "box", size: [size, 0.02, size] },
+        color: "#4f7a2e",
+        transform: {
+          translation: [hazard.position[0] / scale, 0.011, hazard.position[2] / scale],
+        },
+      };
+    }),
     ...snapshot.players.flatMap((player) => {
       const position = player.position.map((value) => value / scale);
       // The exact committed or intended direction, as the humanoid faces it.

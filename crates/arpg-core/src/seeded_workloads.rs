@@ -36,9 +36,12 @@ pub(super) enum Case {
     Stairs,
     /// Three players inside a bruiser's telegraphed ground burst (#64): an area query.
     Slam,
+    /// Walking into a combat room's poison pool, lingering and walking out (#64): an area
+    /// query every tick.
+    Poison,
 }
 impl Case {
-    pub(super) const ALL: [Self; 18] = [
+    pub(super) const ALL: [Self; 19] = [
         Self::Quiet,
         Self::PartyQuiet,
         Self::Sparse,
@@ -57,11 +60,12 @@ impl Case {
         Self::Crates,
         Self::Stairs,
         Self::Slam,
+        Self::Poison,
     ];
     /// The workloads whose saves restore: the others move monsters out of their generated
     /// rooms, which a save rejects.
     #[cfg(test)]
-    pub(super) const SAVED: [Self; 13] = [
+    pub(super) const SAVED: [Self; 14] = [
         Self::Sparse,
         Self::Corner,
         Self::Door,
@@ -75,6 +79,7 @@ impl Case {
         Self::Crates,
         Self::Stairs,
         Self::Slam,
+        Self::Poison,
     ];
     pub(super) fn name(self) -> &'static str {
         match self {
@@ -96,6 +101,7 @@ impl Case {
             Self::Crates => "crates",
             Self::Stairs => "stairs",
             Self::Slam => "slam",
+            Self::Poison => "poison",
         }
     }
 }
@@ -112,6 +118,16 @@ pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
     };
     match case {
         // Jumping into the outer wall the corner case presses into: airborne sliding, landing.
+        Case::Poison => {
+            // East of room 2's pool, walking into it.
+            let pool = game
+                .pools
+                .iter()
+                .find(|pool| pool.room_id == 2)
+                .copied()
+                .unwrap();
+            game.player_spawns[0] = Vec3i::new(pool.position.x + 220, PLAYER_Y, pool.position.z);
+        }
         Case::Crates => {
             // East of the north-west crate of room 2, facing it.
             let placed = game
@@ -263,6 +279,9 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
         }),
         Case::Crates if tick == 104 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
         // North, east to the stairs' line, then south up them onto the platform.
+        Case::Poison if tick == 0 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
+        Case::Poison if tick == 30 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
+        Case::Poison if tick == 70 => Some(ArpgCommand::SetMovement { x: 1, z: -1 }),
         // A raised guard does not block the burst; stepping away makes the next one miss.
         Case::Slam if tick == 0 => Some(ArpgCommand::SetGuard { raised: true }),
         Case::Slam if tick == 50 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),

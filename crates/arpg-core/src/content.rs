@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ActionKind, ComboInput};
 
-pub const CONTENT_FORMAT_VERSION: u16 = 12;
+pub const CONTENT_FORMAT_VERSION: u16 = 13;
 /// Touching monster and player bodies keep their centres up to √2 times their
 /// combined XZ half extents apart (85 units), and pursuit stops one navigation
 /// cell inside strike reach, so a monster strike must reach past both.
@@ -78,6 +78,22 @@ pub struct ContentBundle {
     /// Damageable crates in combat rooms (#90).
     #[serde(rename = "crate")]
     pub crate_prop: CrateData,
+    /// Static poison pools in combat rooms and the poison they apply (#64).
+    pub poison: PoisonData,
+}
+
+/// Poison pools (#64, Atlas 5.3.2): a player whose body touches a pool is poisoned for
+/// `durationTicks`, taking `damage` every `intervalTicks`; touching it again refreshes the
+/// duration, never stacks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PoisonData {
+    /// The pool's radius on the floor, in world units.
+    pub pool_radius: u16,
+    pub pools_per_combat_room: u8,
+    pub duration_ticks: u16,
+    pub interval_ticks: u8,
+    pub damage: u16,
 }
 
 /// A damageable static crate (#90, Atlas 5.2.2): it blocks movement and navigation until
@@ -564,6 +580,7 @@ pub(crate) struct Resolved {
     pub targeting: TargetingData,
     pub jump: JumpTuning,
     pub crate_prop: CrateData,
+    pub poison: PoisonData,
 }
 
 impl Resolved {
@@ -1226,6 +1243,23 @@ impl ContentBundle {
                 "a crate must stand taller than a jump's apex",
             );
         }
+        let poison = self.poison;
+        if !(20..=200).contains(&poison.pool_radius) || poison.pools_per_combat_room > 1 {
+            fail(
+                "poison".into(),
+                "pools need a radius within 20..=200 and at most one per combat room",
+            );
+        }
+        if poison.interval_ticks == 0
+            || poison.duration_ticks < u16::from(poison.interval_ticks)
+            || poison.duration_ticks > 600
+            || poison.damage == 0
+        {
+            fail(
+                "poison".into(),
+                "poison needs positive damage and interval, and a duration of 1..=600 ticks spanning one interval",
+            );
+        }
         if crate_prop.per_combat_room > 4 {
             fail(
                 "crate.perCombatRoom".into(),
@@ -1251,6 +1285,7 @@ impl ContentBundle {
                 targeting,
                 jump: JumpTuning::new(jump),
                 crate_prop,
+                poison,
             })
         } else {
             Err(errors)
