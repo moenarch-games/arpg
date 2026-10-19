@@ -673,6 +673,29 @@ mod tests {
     }
 
     #[test]
+    fn a_falling_body_is_supported_within_the_grounded_prediction() {
+        // Rapier's controller predicts ground within its contact offset plus 5 cm below the
+        // body's end position (physics-engine#347): a fall ending 4 units above the floor is
+        // already supported, one ending 5.1 units above is not.
+        each_backend(|| {
+            for (feet, down, supported) in
+                [(12.0, 8.0, true), (10.0, 5.1, true), (10.0, 4.9, false)]
+            {
+                let mut physics = floored();
+                let from = Vector::new(0.0, Y as f32 + feet, 0.0);
+                physics.add_character(1, from, BODY).unwrap();
+                let motion = physics
+                    .move_player(1, from, Vector::new(0.0, -down, 0.0))
+                    .unwrap();
+                assert_eq!(
+                    motion.supported, supported,
+                    "feet {feet} down {down}: {motion:?}"
+                );
+            }
+        });
+    }
+
+    #[test]
     fn standing_on_another_body_is_not_support() {
         each_backend(|| {
             let mut physics = floored();
