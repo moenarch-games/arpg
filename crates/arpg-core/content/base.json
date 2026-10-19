@@ -1,5 +1,5 @@
 {
-  "formatVersion": 11,
+  "formatVersion": 12,
   "counterWindowTicks": 30,
   "strikes": [
     { "id": "sword.lightSwing", "reach": 220, "frontal": true, "maxTargets": null, "blockable": true, "guardCost": 20 },
@@ -10,7 +10,7 @@
     { "id": "monster.claw", "reach": 180, "frontal": false, "maxTargets": 1, "blockable": true, "guardCost": 30 },
     { "id": "monster.lunge", "reach": 150, "frontal": false, "maxTargets": 1, "blockable": true, "guardCost": 15 },
     { "id": "monster.bolt", "reach": 640, "frontal": false, "maxTargets": 1, "blockable": true, "guardCost": 10 },
-    { "id": "monster.slam", "reach": 220, "frontal": false, "maxTargets": 1, "blockable": true, "guardCost": 100 },
+    { "id": "monster.slam", "reach": 220, "frontal": false, "maxTargets": null, "blockable": false, "guardCost": 100 },
     { "id": "monster.bash", "reach": 140, "frontal": false, "maxTargets": 1, "blockable": true, "guardCost": 25 }
   ],
   "actions": [
@@ -30,11 +30,11 @@
     { "from": "sword.counter", "input": "light", "opensAt": 2, "closesAt": 10, "requiresHit": false, "to": "sword.lightFollowUp" }
   ],
   "monsters": [
-    { "id": "monster.brute", "health": 100, "strike": "monster.claw", "windupTicks": 18, "activeTicks": 1, "recoveryTicks": 30, "damage": 10, "experienceReward": 50, "pursuitSpeed": 4, "aggroRange": 1200, "leashRange": 1800, "targetSwitchMargin": 150, "reacquireTicks": 20, "separationRange": 120, "retreatRange": null, "projectile": null, "shield": false, "lunge": null },
-    { "id": "monster.skirmisher", "health": 60, "strike": "monster.lunge", "windupTicks": 10, "activeTicks": 5, "recoveryTicks": 20, "damage": 6, "experienceReward": 30, "pursuitSpeed": 6, "aggroRange": 1400, "leashRange": 2000, "targetSwitchMargin": 100, "reacquireTicks": 12, "separationRange": 140, "retreatRange": null, "projectile": null, "shield": false, "lunge": { "speed": 16 } },
-    { "id": "monster.archer", "health": 50, "strike": "monster.bolt", "windupTicks": 24, "activeTicks": 1, "recoveryTicks": 36, "damage": 8, "experienceReward": 40, "pursuitSpeed": 5, "aggroRange": 1200, "leashRange": 1800, "targetSwitchMargin": 150, "reacquireTicks": 20, "separationRange": 120, "retreatRange": 360, "projectile": { "speed": 20, "lifetimeTicks": 40 }, "shield": false, "lunge": null },
-    { "id": "monster.bruiser", "health": 160, "strike": "monster.slam", "windupTicks": 45, "activeTicks": 1, "recoveryTicks": 40, "damage": 28, "experienceReward": 80, "pursuitSpeed": 3, "aggroRange": 1000, "leashRange": 1600, "targetSwitchMargin": 200, "reacquireTicks": 30, "separationRange": 140, "retreatRange": null, "projectile": null, "shield": false, "lunge": null },
-    { "id": "monster.defender", "health": 140, "strike": "monster.bash", "windupTicks": 16, "activeTicks": 1, "recoveryTicks": 26, "damage": 9, "experienceReward": 60, "pursuitSpeed": 3, "aggroRange": 1000, "leashRange": 1600, "targetSwitchMargin": 150, "reacquireTicks": 20, "separationRange": 130, "retreatRange": null, "projectile": null, "shield": true, "lunge": null }
+    { "id": "monster.brute", "health": 100, "strike": "monster.claw", "windupTicks": 18, "activeTicks": 1, "recoveryTicks": 30, "damage": 10, "experienceReward": 50, "pursuitSpeed": 4, "aggroRange": 1200, "leashRange": 1800, "targetSwitchMargin": 150, "reacquireTicks": 20, "separationRange": 120, "retreatRange": null, "projectile": null, "shield": false, "lunge": null, "burst": false },
+    { "id": "monster.skirmisher", "health": 60, "strike": "monster.lunge", "windupTicks": 10, "activeTicks": 5, "recoveryTicks": 20, "damage": 6, "experienceReward": 30, "pursuitSpeed": 6, "aggroRange": 1400, "leashRange": 2000, "targetSwitchMargin": 100, "reacquireTicks": 12, "separationRange": 140, "retreatRange": null, "projectile": null, "shield": false, "lunge": { "speed": 16 }, "burst": false },
+    { "id": "monster.archer", "health": 50, "strike": "monster.bolt", "windupTicks": 24, "activeTicks": 1, "recoveryTicks": 36, "damage": 8, "experienceReward": 40, "pursuitSpeed": 5, "aggroRange": 1200, "leashRange": 1800, "targetSwitchMargin": 150, "reacquireTicks": 20, "separationRange": 120, "retreatRange": 360, "projectile": { "speed": 20, "lifetimeTicks": 40 }, "shield": false, "lunge": null, "burst": false },
+    { "id": "monster.bruiser", "health": 160, "strike": "monster.slam", "windupTicks": 45, "activeTicks": 1, "recoveryTicks": 40, "damage": 28, "experienceReward": 80, "pursuitSpeed": 3, "aggroRange": 1000, "leashRange": 1600, "targetSwitchMargin": 200, "reacquireTicks": 30, "separationRange": 140, "retreatRange": null, "projectile": null, "shield": false, "lunge": null, "burst": true },
+    { "id": "monster.defender", "health": 140, "strike": "monster.bash", "windupTicks": 16, "activeTicks": 1, "recoveryTicks": 26, "damage": 9, "experienceReward": 60, "pursuitSpeed": 3, "aggroRange": 1000, "leashRange": 1600, "targetSwitchMargin": 150, "reacquireTicks": 20, "separationRange": 130, "retreatRange": null, "projectile": null, "shield": true, "lunge": null, "burst": false }
   ],
   "encounters": [
     { "id": "encounter.brute", "spawnGroup": [{ "monster": "monster.brute", "count": 1 }], "activation": "playerEntersRoom", "completion": "spawnGroupDefeated", "reward": "reward.roomChest" },

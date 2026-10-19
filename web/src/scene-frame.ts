@@ -364,7 +364,8 @@ export function buildFrame(
             }
         } else if (
           (phase === "windup" || phase === "active") &&
-          monster.action?.delivery === "strike" &&
+          // A burst (#64) telegraphs the same ring: it lands on everyone inside it.
+          (monster.action?.delivery === "strike" || monster.action?.delivery === "burst") &&
           monster.action.range
         ) {
           const radius = monster.action.range / scale;

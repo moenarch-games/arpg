@@ -1215,6 +1215,9 @@ pub enum AttackDelivery {
     Strike,
     /// Launches a projectile at the target when the active phase opens.
     Projectile,
+    /// Bursts around the monster when the active phase opens, striking every player in
+    /// range (#64).
+    Burst,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1802,6 +1805,8 @@ impl MonsterActionState {
                 .expect("monster attack range must fit i32"),
             delivery: if definition.projectile.is_some() {
                 AttackDelivery::Projectile
+            } else if definition.burst {
+                AttackDelivery::Burst
             } else {
                 AttackDelivery::Strike
             },
@@ -4963,6 +4968,70 @@ impl ArpgGame {
         Ok(())
     }
 
+    /// A ground burst around the monster (#64, Atlas 5.3.1): its strike lands on every living
+    /// player within reach, never on monsters. The candidates come from an overlap query
+    /// through the physics seam (a column of the strike's reach around the monster); the
+    /// shared strike path then applies reach, region, obstruction and the strike's own rules
+    /// (the slam is unblockable).
+    fn resolve_monster_burst(&mut self, monster_id: u32) -> Result<(), GameError> {
+        let Some(monster) = self
+            .monsters
+            .iter()
+            .find(|monster| monster.id == monster_id && monster.health > 0)
+            .copied()
+        else {
+            return Ok(());
+        };
+        let definition = monster.definition().strike;
+        let bodies = self.physics.characters_in_column(
+            monster.position,
+            definition.reach as f32,
+            (2 * PLAYER_HALF_EXTENTS.y) as f32,
+        );
+        let candidates = self
+            .players
+            .iter()
+            .filter(|&(&id, state)| state.health > 0 && bodies.contains(&Self::player_body_id(id)))
+            .map(|(&id, state)| (StrikeTarget::Player(id), state.position))
+            .collect::<Vec<_>>();
+        let contacts = self.strike_contacts(
+            definition,
+            StrikeTarget::Monster(monster_id),
+            monster.position,
+            (0.0, 0.0),
+            candidates,
+        )?;
+        let strike = StrikeId {
+            source: StrikeSource::Monster(monster_id),
+            tick: self.tick,
+        };
+        for (target, obstructed) in contacts {
+            let StrikeTarget::Player(player_id) = target else {
+                continue;
+            };
+            if obstructed {
+                self.push_strike_outcome(StrikeOutcome {
+                    order: 0,
+                    strike,
+                    definition: self.content.id(definition.id).clone(),
+                    target,
+                    result: StrikeResult::Obstructed,
+                });
+            } else {
+                let defender = self.player_position(player_id)?;
+                self.land_monster_hit(
+                    strike,
+                    definition,
+                    monster.definition().damage,
+                    player_id,
+                    defender,
+                    monster.position,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Resolves the shield before damage: a valid block or guard break never touches health.
     /// Players and shield monsters share it; `facing` is the guard's front direction.
     fn guard_outcome(
@@ -5693,8 +5762,14 @@ impl ArpgGame {
             let shoots = self.monsters.iter().any(|monster| {
                 monster.id == monster_id && monster.definition().projectile.is_some()
             });
+            let burst = self
+                .monsters
+                .iter()
+                .any(|monster| monster.id == monster_id && monster.definition().burst);
             if shoots {
                 self.launch_monster_projectile(monster_id, target_player_id)?;
+            } else if burst {
+                self.resolve_monster_burst(monster_id)?;
             } else {
                 self.resolve_monster_attack(monster_id, target_player_id, None)?;
             }
@@ -13440,11 +13515,11 @@ mod tests {
         // Heavy arrives last and telegraphs far longer than melee.
         assert!(bruiser_start > brute_start, "{first_windups:?}");
         assert!(bruiser_distance <= bruiser().strike.reach as f64);
-        assert_eq!(bruiser_action.delivery, AttackDelivery::Strike);
+        assert_eq!(bruiser_action.delivery, AttackDelivery::Burst);
         assert_eq!(bruiser_action.ticks_remaining, bruiser().windup_ticks);
         assert!(bruiser().windup_ticks >= 2 * brute().windup_ticks);
         assert!(bruiser().damage >= 2 * brute().damage);
-        assert!(bruiser().strike.guard_cost >= content().guard.max_points);
+        assert!(!bruiser().strike.blockable);
     }
 
     #[test]
@@ -13809,7 +13884,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bruiser_commits_to_its_long_telegraph_and_breaks_a_raised_guard() {
+    fn a_bruiser_commits_to_its_long_telegraph_and_its_burst_ignores_a_raised_guard() {
         let definition = bruiser();
         let (mut game, id) = heavy_scenario();
         command_as(&mut game, 1, ArpgCommand::SetGuard { raised: true });
@@ -13820,7 +13895,7 @@ mod tests {
         assert_eq!(action.phase, ActionPhase::Windup);
         assert_eq!(action.ticks_remaining, definition.windup_ticks);
         assert_eq!(i64::from(action.range), definition.strike.reach);
-        assert_eq!(action.delivery, AttackDelivery::Strike);
+        assert_eq!(action.delivery, AttackDelivery::Burst);
         // The whole wind-up holds still and lands nothing.
         for _ in 1..definition.windup_ticks {
             game.advance_tick().unwrap();
@@ -13832,12 +13907,20 @@ mod tests {
         }
         game.advance_tick().unwrap();
         let impact = game.snapshot().unwrap();
+        // The burst is unblockable (Atlas 5.3.1): the raised guard neither blocks nor
+        // spends points, and the hit lands.
         assert_eq!(
             monster_shots(&impact, id)[0].result,
-            StrikeResult::GuardBroken
+            StrikeResult::Hit {
+                damage: definition.damage,
+                defeated: false
+            }
         );
-        assert_eq!(impact.players[0].health, BASE_MAX_HEALTH);
-        assert_eq!(impact.players[0].guard_points, 0);
+        assert_eq!(
+            impact.players[0].health,
+            BASE_MAX_HEALTH - definition.damage
+        );
+        assert_eq!(impact.players[0].guard_points, content().guard.max_points);
     }
 
     #[test]
@@ -14941,5 +15024,64 @@ mod tests {
                 "rise {rise}: highest feet {highest}"
             );
         }
+    }
+
+    /// The bruiser's slam bursts around it (#64, Atlas 5.3.1): every player within its reach,
+    /// through an area query on the physics seam, unblockable, never a monster, and stopped by
+    /// a wall like any strike.
+    #[test]
+    fn a_bruiser_burst_strikes_every_player_in_reach_but_no_monster() {
+        on_each_backend(|| {
+            let (mut game, id) = heavy_scenario();
+            for player in 2..=4 {
+                game.add_player(player).unwrap();
+            }
+            let at = game
+                .monsters
+                .iter()
+                .find(|monster| monster.id == id)
+                .unwrap()
+                .position;
+            let around = |dx: f32, dz: f32| Vector::new(at.x + dx, at.y, at.z + dz);
+            game.put_player(2, around(0.0, 150.0));
+            game.put_player(3, around(300.0, 0.0));
+            game.put_player(4, around(0.0, -170.0));
+            // A wall between the bruiser and player 4.
+            place_blocker_box(
+                &mut game,
+                1,
+                Vec3i::new(at.x as i32, PLAYER_Y, at.z as i32 - 100),
+                Vec3i::new(60, 100, 5),
+            );
+            // Another monster right beside it is never struck.
+            place_monster_of(&mut game, 77, BRUTE, at.x as i32 - 80, at.z as i32 + 80);
+            let mut events = Vec::new();
+            for _ in 0..=bruiser().windup_ticks + 1 {
+                game.advance_tick().unwrap();
+                events.extend(monster_shots(&game.snapshot().unwrap(), id));
+            }
+            let mut targets = events
+                .iter()
+                .map(|event| {
+                    let landed = match event.result {
+                        StrikeResult::Hit { .. } => "hit",
+                        StrikeResult::Obstructed => "obstructed",
+                        _ => "other",
+                    };
+                    (event.target, landed)
+                })
+                .collect::<Vec<_>>();
+            targets.sort_unstable();
+            assert_eq!(
+                targets,
+                [
+                    (StrikeTarget::Player(1), "hit"),
+                    (StrikeTarget::Player(2), "hit"),
+                    (StrikeTarget::Player(4), "obstructed"),
+                ],
+                "{events:?}"
+            );
+            assert_eq!(monster_health(&game, 77), brute().health);
+        });
     }
 }

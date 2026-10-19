@@ -298,6 +298,8 @@ struct Comparison {
     raised_region_ticks: u32,
     /// Monster strikes of the `monster.lunge` definition resolved in either game.
     lunge_strikes: u32,
+    /// Most players one burst struck in either game (#64).
+    burst_targets: usize,
     /// Crates broken in either game.
     crates_broken: u32,
     /// Arrow hits on crates in either game (#223).
@@ -418,6 +420,45 @@ fn compare_queries(
     comparison.queries += queries;
 }
 
+/// Area queries (#64) from every body on both backends: the characters an area column of
+/// the slam's reach around it overlaps. Compared only while the backends' bodies agree (before
+/// any character contact), ignoring a body within a unit of the column's edge.
+fn compare_area_queries(
+    tick: u32,
+    rapier: &ArpgGame,
+    engine: &ArpgGame,
+    bodies: &BTreeMap<BodyKey, Body>,
+    comparison: &mut Comparison,
+) {
+    const RADIUS: f32 = 220.0;
+    for (key, body) in bodies {
+        let centre = body.position;
+        let (a, b) = (
+            rapier.physics.characters_in_column(centre, RADIUS, 100.0),
+            engine.physics.characters_in_column(centre, RADIUS, 100.0),
+        );
+        comparison.queries += 1;
+        let borderline = |other: &BodyKey| {
+            bodies.get(other).is_some_and(|other| {
+                let (radius, _) = crate::physics::capsule_dimensions(other.half_extents);
+                let d = other.position - centre;
+                (Vector::new(d.x, 0.0, d.z).length() - (RADIUS + radius)).abs() < 1.0
+            })
+        };
+        let differing = a
+            .iter()
+            .filter(|other| !b.contains(other))
+            .chain(b.iter().filter(|other| !a.contains(other)))
+            .filter(|other| !borderline(other))
+            .collect::<Vec<_>>();
+        if !differing.is_empty() {
+            comparison.query_differences.push(format!(
+                "tick {tick}: area around {key}: rapier {a:?}, engine {b:?}"
+            ));
+        }
+    }
+}
+
 /// Accepted difference (world units) between the backends' ray distances: both solve the
 /// same closed forms in `f32` metres, so they agree to rounding of dungeon-sized coordinates.
 const RAY_DISTANCE: f32 = 1.0e-2;
@@ -521,6 +562,12 @@ fn compare(case: Case, seed: u32) -> Comparison {
             {
                 comparison.raised_region_ticks += 1;
             }
+            comparison.burst_targets = comparison.burst_targets.max(
+                game.strike_outcomes()
+                    .iter()
+                    .filter(|outcome| &*outcome.definition == "monster.slam")
+                    .count(),
+            );
             comparison.crate_arrow_hits += game
                 .strike_outcomes()
                 .iter()
@@ -578,6 +625,9 @@ fn compare(case: Case, seed: u32) -> Comparison {
         let geometry = |game: &ArpgGame| game.physics.fixed_boxes().collect::<Vec<_>>();
         if geometry(&rapier) == geometry(&engine) {
             compare_queries(tick, &rapier, &engine, &rapier_now, &mut comparison);
+            if comparison.first_contact.is_none() {
+                compare_area_queries(tick, &rapier, &engine, &rapier_now, &mut comparison);
+            }
         } else {
             comparison.geometry_differs += 1;
         }
@@ -682,6 +732,9 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
                 failures.push(format!(
                     "{context}: the player never walked up onto the platform"
                 ));
+            }
+            if case == Case::Slam && comparison.burst_targets < 2 {
+                failures.push(format!("{context}: no burst struck two players at once"));
             }
             if case == Case::Crates && comparison.crates_broken == 0 {
                 failures.push(format!("{context}: no crate was broken"));

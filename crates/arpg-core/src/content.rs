@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ActionKind, ComboInput};
 
-pub const CONTENT_FORMAT_VERSION: u16 = 11;
+pub const CONTENT_FORMAT_VERSION: u16 = 12;
 /// Touching monster and player bodies keep their centres up to √2 times their
 /// combined XZ half extents apart (85 units), and pursuit stops one navigation
 /// cell inside strike reach, so a monster strike must reach past both.
@@ -340,6 +340,10 @@ pub struct MonsterData {
     /// its target stood when the window opened, and the strike sweeps the path it travels.
     /// `null` strikes in place.
     pub lunge: Option<LungeData>,
+    /// The attack is a ground burst around the monster (#64, Atlas 5.3.1): its strike lands
+    /// on every player within reach (an area query through the physics seam), never on
+    /// monsters, instead of on its engaged target alone.
+    pub burst: bool,
 }
 
 /// A lunging attack's motion (#90).
@@ -486,6 +490,8 @@ pub(crate) struct MonsterDef {
     pub shield: bool,
     /// Lunge speed in world units per active tick (#90).
     pub lunge_speed: Option<f32>,
+    /// A ground burst around the monster (#64).
+    pub burst: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -953,6 +959,16 @@ impl ContentBundle {
                     );
                 }
             }
+            if monster.burst && (monster.lunge.is_some() || monster.projectile.is_some()) {
+                fail(path.clone(), "a burst can neither lunge nor shoot");
+            }
+            if monster.burst
+                && strike_by_id
+                    .get(monster.strike.as_str())
+                    .is_some_and(|(_, strike)| strike.frontal)
+            {
+                fail(path.clone(), "a burst strike cannot be frontal");
+            }
             if let Some(lunge) = monster.lunge {
                 if !(1..=MAX_LUNGE_SPEED).contains(&lunge.speed) {
                     fail(
@@ -999,6 +1015,7 @@ impl ContentBundle {
                         }),
                         shield: monster.shield,
                         lunge_speed: monster.lunge.map(|lunge| f32::from(lunge.speed)),
+                        burst: monster.burst,
                     });
                 }
                 None => fail(path, "references an unknown strike"),

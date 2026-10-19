@@ -34,9 +34,11 @@ pub(super) enum Case {
     Crates,
     /// Walking up the traversal scenario's stairs onto the platform without jumping (#222).
     Stairs,
+    /// Three players inside a bruiser's telegraphed ground burst (#64): an area query.
+    Slam,
 }
 impl Case {
-    pub(super) const ALL: [Self; 17] = [
+    pub(super) const ALL: [Self; 18] = [
         Self::Quiet,
         Self::PartyQuiet,
         Self::Sparse,
@@ -54,11 +56,12 @@ impl Case {
         Self::Lunge,
         Self::Crates,
         Self::Stairs,
+        Self::Slam,
     ];
     /// The workloads whose saves restore: the others move monsters out of their generated
     /// rooms, which a save rejects.
     #[cfg(test)]
-    pub(super) const SAVED: [Self; 12] = [
+    pub(super) const SAVED: [Self; 13] = [
         Self::Sparse,
         Self::Corner,
         Self::Door,
@@ -71,6 +74,7 @@ impl Case {
         Self::Traversal,
         Self::Crates,
         Self::Stairs,
+        Self::Slam,
     ];
     pub(super) fn name(self) -> &'static str {
         match self {
@@ -91,6 +95,7 @@ impl Case {
             Self::Lunge => "lunge",
             Self::Crates => "crates",
             Self::Stairs => "stairs",
+            Self::Slam => "slam",
         }
     }
 }
@@ -100,6 +105,8 @@ pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
         Case::Ledge | Case::Ceiling | Case::Traversal | Case::Stairs
     ) {
         ArpgGame::arranged_scenario(ScenarioId::Traversal, seed).unwrap()
+    } else if case == Case::Slam {
+        ArpgGame::arranged_scenario(ScenarioId::Heavy, seed).unwrap()
     } else {
         ArpgGame::new_with_seed(seed).unwrap()
     };
@@ -191,6 +198,8 @@ pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
     }
     let count = if matches!(case, Case::PartyQuiet | Case::Sparse | Case::Lifecycle) {
         4
+    } else if case == Case::Slam {
+        3
     } else {
         1
     };
@@ -254,6 +263,10 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
         }),
         Case::Crates if tick == 104 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
         // North, east to the stairs' line, then south up them onto the platform.
+        // A raised guard does not block the burst; stepping away makes the next one miss.
+        Case::Slam if tick == 0 => Some(ArpgCommand::SetGuard { raised: true }),
+        Case::Slam if tick == 50 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
+        Case::Slam if tick == 90 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
         Case::Stairs if tick == 0 => Some(ArpgCommand::SetMovement { x: 0, z: -1 }),
         Case::Stairs if tick == 37 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
         Case::Stairs if tick == 74 => Some(ArpgCommand::SetMovement { x: 0, z: 1 }),

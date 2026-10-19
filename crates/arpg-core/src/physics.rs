@@ -364,6 +364,15 @@ mod ab {
             dispatch!(self, physics => physics.penetrates_fixed(position, half_extents))
         }
 
+        pub(crate) fn characters_in_column(
+            &self,
+            center: Vector,
+            radius: f32,
+            half_height: f32,
+        ) -> Vec<BodyKey> {
+            dispatch!(self, physics => physics.characters_in_column(center, radius, half_height))
+        }
+
         pub(crate) fn supported_within(
             &self,
             position: Vector,
@@ -789,6 +798,31 @@ mod tests {
             assert!(fall.to.y <= start.y && fall.to.x < 75.0, "{fall:?}");
         };
         each_backend(run);
+    }
+
+    #[test]
+    fn an_area_column_finds_the_characters_it_overlaps_in_key_order() {
+        each_backend(|| {
+            let mut physics = floored();
+            for (key, x, z) in [(5, 0, 0), (3, 245, 0), (7, 0, 260), (9, 400, 0)] {
+                physics.add_character(key, at(x, z), BODY).unwrap();
+            }
+            physics
+                .add_fixed(1, Vec3i::new(100, Y, 100), Vec3i::new(20, 100, 20))
+                .unwrap();
+            // A 220-unit column: bodies whose capsule (radius 30) reaches within it.
+            assert_eq!(physics.characters_in_column(at(0, 0), 220.0, 100.0), [3, 5]);
+            assert_eq!(
+                physics.characters_in_column(at(0, 0), 240.0, 100.0),
+                [3, 5, 7]
+            );
+            // Far above, nothing.
+            assert!(
+                physics
+                    .characters_in_column(Vector::new(0.0, 1_000.0, 0.0), 220.0, 100.0)
+                    .is_empty()
+            );
+        });
     }
 
     #[test]
