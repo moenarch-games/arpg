@@ -396,6 +396,12 @@ impl Physics {
             to,
             moved,
             supported,
+            // Rapier's grounded, on static geometry: a step's edge counts, a character
+            // never (it would let a walk step onto another body).
+            ground_contact: movement.grounded
+                && self
+                    .static_below(&character.shape, to)
+                    .is_some_and(|normal| normal.y > 0.0),
         })
     }
 
@@ -403,6 +409,14 @@ impl Physics {
     /// `position`: Rapier's controller also calls a body grounded on top of another
     /// character, which is no ground (moving supports are not part of #59).
     fn ground_below(&self, shape: &Capsule, position: Vector) -> bool {
+        self.static_below(shape, position).is_some_and(|normal| {
+            normal.dot(Vector::Y) >= self.vertical.max_slope_climb_angle.cos()
+        })
+    }
+
+    /// The normal of the static geometry within the support reach below a body of `shape`
+    /// at `position`, at any angle: a step's rounded edge counts, another character never.
+    fn static_below(&self, shape: &Capsule, position: Vector) -> Option<Vector> {
         let queries = self.world.broad_phase.as_query_pipeline(
             &self.queries,
             &self.world.bodies,
@@ -421,10 +435,7 @@ impl Physics {
                     compute_impact_geometry_on_penetration: true,
                 },
             )
-            // Ground faces up within the controller's climbable slope.
-            .is_some_and(|(_, hit)| {
-                hit.normal1.dot(Vector::Y) >= self.vertical.max_slope_climb_angle.cos()
-            })
+            .map(|(_, hit)| hit.normal1)
     }
 
     /// The height (world units) at which a body above `position` would stand on the static

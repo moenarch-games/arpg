@@ -66,6 +66,10 @@ pub(crate) struct Motion {
     /// Whether the body ends supported: the controller reports it grounded on static ground
     /// within its support reach below. Another character's body is not ground.
     pub supported: bool,
+    /// Whether the controller ends touching anything below it that faces up, a step's
+    /// rounded edge or another body included: Rapier's own `grounded`. The next tick's move
+    /// is a walk, which climbs steps, exactly when this held (#222).
+    pub ground_contact: bool,
 }
 
 /// `value` in world units as the game's vector type, still in world units.

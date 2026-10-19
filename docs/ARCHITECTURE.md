@@ -159,9 +159,14 @@ apex over a gap within its reach, or any drop) without a declared connection rej
 level. The seeded A/B `traversal` workload climbs platform and bridge, drops off the bridge's
 side and walks the path beneath it on both backends.
 
-Stairs (Atlas 5.1.5, #222): a walking player (grounded, or inside its coyote window, which
-a step up briefly opens) climbs steps through Rapier's character-controller `autostep` with a
-25-unit step height; the capsule's rounded base climbs an edge about 9 units further as a
+Stairs (Atlas 5.1.5, #222): a walking player climbs steps through Rapier's
+character-controller `autostep` with a 25-unit step height. A move walks when the previous
+move ended in ground contact (Rapier's `grounded`, confirmed on static geometry at any angle,
+so a step's rounded edge counts and another character never does; saved as `groundContact`,
+schema 20) and the move does not take off. Gating on walkable support instead would drop a
+body half up a rounded edge out of walking and stall it there. Stair rises stay at about 0.8
+of the step height or less (the scenario's are 20), where climbing a rounded edge clearly
+outpaces gravity; the capsule's rounded base climbs an edge about 9 units further as a
 slope (Rapier's 45 degree rule), so steps up to about 33 units climb and 35 block. Jumps and
 falls never step, so a jump keeps landing on a ledge only from above. Stairs belong to the
 region they lead into: standing on a step keeps the membership, and a saved grounded body is

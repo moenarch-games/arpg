@@ -387,6 +387,9 @@ impl Physics {
             to,
             moved,
             supported,
+            // The engine's grounded already counts any walkable contact; it has no
+            // autostep to gate yet (#222).
+            ground_contact: supported,
         })
     }
 

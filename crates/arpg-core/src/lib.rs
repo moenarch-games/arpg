@@ -109,7 +109,8 @@ pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// 17: fall recovery (#211): a player's last supported position; schema 16 saves are refused.
 /// 18: lunging attacks (#90): a monster action's lunge; schema 17 saves are refused.
 /// 19: damageable crates (#90): every crate's health; schema 18 saves are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 19;
+/// 20: stairs (#222): a player's last ground contact; schema 19 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 20;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -1606,6 +1607,8 @@ pub struct PlayerSaveState {
     pub jump_buffer_ticks_remaining: u8,
     /// Walkable region membership or transit (#207).
     pub region: RegionMembership,
+    /// Last tick's controller ground contact, edges included (#222).
+    pub ground_contact: bool,
     /// Where the player last ended a tick supported, in world units (#211).
     pub last_supported: [f32; 3],
     pub movement: [i8; 2],
@@ -1887,6 +1890,9 @@ struct PlayerState {
     jump_buffer_ticks_remaining: u8,
     /// The walkable region it belongs to, or the connection it traverses (#207).
     region: RegionMembership,
+    /// Whether last tick's move ended with the controller touching ground below it, edges
+    /// included: this tick's move walks (climbs steps) unless it takes off (#222).
+    ground_contact: bool,
     /// Where it last ended a tick supported: a fall out of the world returns it here (#211).
     last_supported: Vector,
     movement_x: i8,
@@ -2657,6 +2663,7 @@ impl ArpgGame {
                     coyote_ticks_remaining: state.coyote_ticks_remaining,
                     jump_buffer_ticks_remaining: state.jump_buffer_ticks_remaining,
                     region: state.region,
+                    ground_contact: state.ground_contact,
                     last_supported: state.last_supported.to_array(),
                     movement: [state.movement_x, state.movement_z],
                     facing: [state.facing_x, state.facing_z],
@@ -2934,6 +2941,7 @@ impl ArpgGame {
             let support_valid = if player.grounded {
                 // Support under the capsule, edges and steps included (#222).
                 velocity_y == 0.0
+                    && player.ground_contact
                     && player.coyote_ticks_remaining == 0
                     && above_ground.is_some_and(|height| height >= -GROUNDED_HEIGHT_TOLERANCE)
                     && game.physics.supported_within(
@@ -3243,6 +3251,7 @@ impl ArpgGame {
                 coyote_ticks_remaining: player.coyote_ticks_remaining,
                 jump_buffer_ticks_remaining: player.jump_buffer_ticks_remaining,
                 region: player.region,
+                ground_contact: player.ground_contact,
                 last_supported: Vector::from_array(player.last_supported),
                 movement_x: player.movement[0],
                 movement_z: player.movement[1],
@@ -5770,10 +5779,11 @@ impl ArpgGame {
             let vertical = Self::takeoff_or_fall(&jump, state);
             let horizontal = Self::controlled_movement_velocity(state.velocity, *state, control);
             let intended = Vector::new(horizontal.x, vertical, horizontal.z);
-            // A grounded body that is not taking off walks, and walking climbs stairs; so
-            // does one inside its coyote window, which a step up briefly lifts off the ground.
-            // A jump clears that window: jumps and falls never step (#222).
-            let walking = state.grounded || state.coyote_ticks_remaining > 0;
+            // A body whose last move ended touching ground below it (a step's rounded edge
+            // included) walks unless it takes off, and walking climbs stairs. Support alone
+            // would drop a body half up a rounded edge out of walking, and it would stall
+            // there; jumps and falls never step (#222).
+            let walking = state.ground_contact && vertical <= 0.0;
             let motion = self.physics.move_player(
                 Self::player_body_id(player_id),
                 state.position,
@@ -5789,6 +5799,7 @@ impl ArpgGame {
                 allowed(moved.z, intended.z),
             );
             state.position = motion.to;
+            state.ground_contact = motion.ground_contact;
             Self::settle_support(&jump, &self.topology, state, motion.supported);
         }
         for monster in &mut self.monsters {
@@ -5828,6 +5839,7 @@ impl ArpgGame {
             state.position = to;
             state.velocity = Vector::ZERO;
             state.grounded = true;
+            state.ground_contact = true;
             state.coyote_ticks_remaining = 0;
             state.region = self.topology.settle(
                 state.region,
@@ -6015,6 +6027,7 @@ impl AuthoritativeGame for ArpgGame {
                 region: RegionMembership::Region {
                     id: self.topology.base(),
                 },
+                ground_contact: true,
                 last_supported: spawn,
                 movement_x: 0,
                 movement_z: 0,
@@ -7152,6 +7165,7 @@ mod tests {
             region: RegionMembership::Region {
                 id: DUNGEON_FLOOR_REGION,
             },
+            ground_contact: true,
             last_supported: Vector::ZERO,
             movement_x: x,
             movement_z: z,
@@ -7924,6 +7938,13 @@ mod tests {
                 Vec3i::new(x, PLAYER_Y, z),
                 half_extents,
             )
+            .unwrap();
+    }
+
+    /// A static box of any height (stairs and the like) in the arena.
+    fn place_blocker_box(game: &mut ArpgGame, index: u64, center: Vec3i, half_extents: Vec3i) {
+        game.physics
+            .add_fixed(STATIC_BODY_BASE + 800 + index, center, half_extents)
             .unwrap();
     }
 
@@ -12126,7 +12147,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 19"
+            "unsupported ARPG save schema version 12; expected 20"
         );
     }
 
@@ -12141,7 +12162,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 13; expected 19"
+            "unsupported ARPG save schema version 13; expected 20"
         );
     }
 
@@ -14889,5 +14910,36 @@ mod tests {
             // The next arrow flies on through where it stood, to the room's wall.
             assert!(crate_hits(&shoot(&mut game)).is_empty());
         });
+    }
+
+    /// A walking player climbs a whole staircase of low steps without stalling on a step's
+    /// rounded edge (#222): walking is gated on the controller's own ground contact, which
+    /// counts an edge, not on walkable support.
+    #[test]
+    fn a_walking_player_climbs_a_staircase_of_low_steps_without_stalling() {
+        for rise in [8, 14, 20] {
+            let (mut game, x, z) = strike_arena();
+            // Six steps, each `rise` higher and 40 deep, starting 100 east of the player.
+            for step in 0..6 {
+                let top = rise * (step + 1);
+                place_blocker_box(
+                    &mut game,
+                    u64::try_from(step).unwrap(),
+                    Vec3i::new(x + 120 + 40 * step + 200, top / 2, z),
+                    Vec3i::new(20 + 200, top / 2, 60),
+                );
+            }
+            command(&mut game, ArpgCommand::SetMovement { x: 1, z: 0 });
+            let mut highest = 0;
+            for _ in 0..90 {
+                game.advance_tick().unwrap();
+                let feet = (game.players[&1].position.y - PLAYER_HALF_EXTENTS.y as f32) as i32;
+                highest = highest.max(feet);
+            }
+            assert!(
+                highest >= rise * 6 - 1,
+                "rise {rise}: highest feet {highest}"
+            );
+        }
     }
 }
