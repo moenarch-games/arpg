@@ -1,8 +1,11 @@
 //! Seeded whole-game workloads on the actual game tick: replay determinism for wall, corner,
-//! door, correction, combat, crowd, lifecycle and chase play, and the chase's navigation
+//! door, correction, combat, crowd, lifecycle, chase and jump play, and the chase's navigation
 //! work against the per-tick reference planner (#110).
 use super::*;
 use std::time::{Duration, Instant};
+
+// The test-only replay below; `fixture`, `commands` and `Case` also drive the `physics-ab`
+// comparison and timing (physics-engine#330).
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Case {
@@ -16,9 +19,10 @@ pub(super) enum Case {
     Crowd,
     Lifecycle,
     Chase,
+    Jump,
 }
 impl Case {
-    const ALL: [Self; 10] = [
+    pub(super) const ALL: [Self; 11] = [
         Self::Quiet,
         Self::PartyQuiet,
         Self::Sparse,
@@ -29,8 +33,21 @@ impl Case {
         Self::Crowd,
         Self::Lifecycle,
         Self::Chase,
+        Self::Jump,
     ];
-    fn name(self) -> &'static str {
+    /// The workloads whose saves restore: the others move monsters out of their generated
+    /// rooms, which a save rejects.
+    #[cfg(test)]
+    pub(super) const SAVED: [Self; 7] = [
+        Self::Sparse,
+        Self::Corner,
+        Self::Door,
+        Self::Correction,
+        Self::Combat,
+        Self::Lifecycle,
+        Self::Jump,
+    ];
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::Quiet => "quiet",
             Self::PartyQuiet => "party-quiet",
@@ -42,13 +59,17 @@ impl Case {
             Self::Crowd => "crowd",
             Self::Lifecycle => "lifecycle",
             Self::Chase => "chase",
+            Self::Jump => "jump",
         }
     }
 }
 pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
     let mut game = ArpgGame::new_with_seed(seed).unwrap();
     match case {
-        Case::Corner => game.player_spawns[0] = Vec3i::new(-2945, PLAYER_Y, -1745),
+        // Jumping into the outer wall the corner case presses into: airborne sliding, landing.
+        Case::Corner | Case::Jump => {
+            game.player_spawns[0] = Vec3i::new(-2945, PLAYER_Y, -1745);
+        }
         Case::Correction => game.player_spawns[0] = Vec3i::new(-2970, PLAYER_Y, -1600),
         Case::Door => {
             let door = game
@@ -139,6 +160,8 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
         }
         Case::Corner if tick == 0 => Some(ArpgCommand::SetMovement { x: -1, z: -1 }),
         Case::Door if tick == 0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
+        Case::Jump if tick == 0 => Some(ArpgCommand::SetMovement { x: -1, z: 1 }),
+        Case::Jump if tick % 40 == 5 => Some(ArpgCommand::Jump),
         Case::Combat if tick < 64 && tick.is_multiple_of(16) => {
             Some(ArpgCommand::PrimaryAttack { aim: None })
         }
@@ -174,13 +197,15 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
     }
     (outcomes, elapsed)
 }
+#[cfg(test)]
 fn timed_tick(game: &mut ArpgGame) -> Duration {
     let start = Instant::now();
     game.advance_tick().unwrap();
     start.elapsed()
 }
 /// One frame of the trace: the snapshot payload and the private state it does not show.
-fn frame(game: &ArpgGame, payload: &[u8], commands: &[String]) -> Vec<u8> {
+#[cfg(test)]
+pub(super) fn frame(game: &ArpgGame, payload: &[u8], commands: &[String]) -> Vec<u8> {
     let hidden = format!(
         "{:?}",
         (
@@ -201,6 +226,7 @@ fn frame(game: &ArpgGame, payload: &[u8], commands: &[String]) -> Vec<u8> {
     }
     bytes
 }
+#[cfg(test)]
 struct Measurement {
     trace: Vec<u8>,
     tick: u128,
@@ -209,9 +235,11 @@ struct Measurement {
     /// Largest per-tick navigation work, by expansions.
     peak_navigation_tick: NavigationWork,
 }
+#[cfg(test)]
 fn replay(case: Case, seed: u32, ticks: u32) -> Measurement {
     replay_navigating(case, seed, ticks, NavigationMode::Retained)
 }
+#[cfg(test)]
 fn replay_navigating(case: Case, seed: u32, ticks: u32, mode: NavigationMode) -> Measurement {
     let mut game = fixture(case, seed);
     game.navigation_mode = mode;
@@ -322,16 +350,8 @@ fn chase_navigation_work_against_the_per_tick_reference() {
 /// tick publishes the same snapshot (with its events) and saves the same `f32` state.
 #[test]
 fn saves_taken_mid_play_continue_exactly_as_the_uninterrupted_game() {
-    let cases = [
-        Case::Sparse,
-        Case::Corner,
-        Case::Door,
-        Case::Correction,
-        Case::Combat,
-        Case::Lifecycle,
-    ];
     for seed in [42, 0xDEAD_BEEF] {
-        for case in cases {
+        for case in Case::SAVED {
             for save_at in [1, 25, 60] {
                 let mut game = fixture(case, seed);
                 for tick in 0..save_at {
