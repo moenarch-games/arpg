@@ -108,7 +108,8 @@ pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// are refused.
 /// 17: fall recovery (#211): a player's last supported position; schema 16 saves are refused.
 /// 18: lunging attacks (#90): a monster action's lunge; schema 17 saves are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 18;
+/// 19: damageable crates (#90): every crate's health; schema 18 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 19;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -135,6 +136,8 @@ const PLAYER_BODY_BASE: u64 = 1_000;
 const STATIC_BODY_BASE: u64 = 10_000;
 const DOOR_BODY_BASE: u64 = 20_000;
 const GROUND_LOOT_ID_BASE: u64 = 30_000;
+/// Crate ids and body keys (#90).
+const CRATE_ID_BASE: u32 = 40_000;
 const PLAYER_HALF_EXTENTS: Vec3i = Vec3i::new(30, 50, 30);
 const PLAYER_Y: i32 = 50;
 /// Height of a grounded body's lowest point: the flat floor's walking height (#59).
@@ -1227,6 +1230,8 @@ pub struct ArpgSnapshot {
     /// publishes none until its next tick.
     pub strike_events: Vec<StrikeEventSnapshot>,
     pub chests: Vec<ChestSnapshot>,
+    /// Crates still standing (#90).
+    pub crates: Vec<CrateSnapshot>,
     /// Interaction attempts resolved during the tick that produced this snapshot.
     pub interaction_events: Vec<InteractionEventSnapshot>,
 }
@@ -1551,6 +1556,8 @@ pub struct ArpgSaveState {
     pub scenario: ScenarioId,
     /// Ids of chests already opened.
     pub opened_chests: Vec<u64>,
+    /// Every generated crate's health, in generation order (#90).
+    pub crates: Vec<CrateSaveState>,
     /// Revision of the content bundle the authority ran; a different bundle is rejected.
     pub content_revision: String,
 }
@@ -1654,6 +1661,35 @@ pub struct MonsterSaveState {
     pub guard: Option<GuardState>,
 }
 
+/// A damageable crate (#90, Atlas 5.2.2), while it stands.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrateSnapshot {
+    pub id: u32,
+    pub room_id: RoomId,
+    pub position: [i32; 3],
+    pub half_extents: [i32; 3],
+    pub health: u16,
+    pub max_health: u16,
+}
+
+/// A crate's saved health; a broken crate keeps 0.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CrateSaveState {
+    pub id: u32,
+    pub health: u16,
+}
+
+/// A generated crate: a static box until player strikes break it.
+#[derive(Clone, Copy, Debug)]
+struct CrateState {
+    id: u32,
+    room_id: RoomId,
+    position: Vec3i,
+    health: u16,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StaticColliderSnapshot {
@@ -1673,6 +1709,8 @@ pub enum StaticColliderKind {
     Platform,
     /// A low ceiling (#209): a box overhead that a jump bumps into and a body walks under.
     Ceiling,
+    /// A damageable crate (#90), while it stands.
+    Crate,
 }
 
 /// Speed changes per tick by which controlled horizontal velocity converges on the movement
@@ -1772,6 +1810,8 @@ pub enum StrikeSource {
 pub enum StrikeTarget {
     Player(PlayerId),
     Monster(u32),
+    /// A damageable crate (#90).
+    Crate(u32),
 }
 
 /// Stable identity of one strike: its source and the tick on which its active window opened.
@@ -2213,6 +2253,8 @@ pub struct ArpgGame {
     next_arrow_id: u64,
     scenario: ScenarioId,
     chests: Vec<ChestSnapshot>,
+    /// Generated crates, broken ones with no health (#90).
+    crates: Vec<CrateState>,
     interaction_events: Vec<InteractionEventSnapshot>,
     /// Counter, guard and bow values this game runs: the content's, unless a workbench
     /// session tuned them.
@@ -2301,6 +2343,18 @@ impl ArpgGame {
                 array_to_vec(collider.half_extents),
             )?;
         }
+        let crates = place_crates(
+            &content,
+            &rooms,
+            &static_colliders,
+            &monsters,
+            &chests,
+            &player_spawns,
+        );
+        let crate_half = crate_half_extents(&content);
+        for placed in &crates {
+            physics.add_fixed(crate_body_id(placed.id), placed.position, crate_half)?;
+        }
 
         let tuning = Tuning::from_content(&content);
         Ok(Self {
@@ -2330,6 +2384,7 @@ impl ArpgGame {
             next_arrow_id: ARROW_ID_BASE,
             scenario: ScenarioId::Dungeon,
             chests,
+            crates,
             interaction_events: Vec::new(),
             tuning,
             workbench: None,
@@ -2642,6 +2697,14 @@ impl ArpgGame {
                 .filter(|chest| chest.opened)
                 .map(|chest| chest.id)
                 .collect(),
+            crates: self
+                .crates
+                .iter()
+                .map(|placed| CrateSaveState {
+                    id: placed.id,
+                    health: placed.health,
+                })
+                .collect(),
             content_revision: self.content.revision.clone(),
         })
     }
@@ -2699,6 +2762,30 @@ impl ArpgGame {
             Self::with_scenario_layout(Arc::clone(&content), save.scenario, save.run_seed)?;
         let content: &Content = &content;
         game.tick = save.tick;
+
+        // Crates first: a broken crate's body leaves the world before bodies are validated.
+        let crate_ids = game
+            .crates
+            .iter()
+            .map(|placed| placed.id)
+            .collect::<Vec<_>>();
+        let saved_ids = save.crates.iter().map(|saved| saved.id).collect::<Vec<_>>();
+        if crate_ids != saved_ids
+            || save
+                .crates
+                .iter()
+                .any(|saved| saved.health > content.crate_prop.health)
+        {
+            return Err(GameError::new(
+                "save crate set does not match generated dungeon",
+            ));
+        }
+        for (placed, saved) in game.crates.iter_mut().zip(&save.crates) {
+            placed.health = saved.health;
+            if saved.health == 0 {
+                game.physics.remove_fixed(crate_body_id(placed.id));
+            }
+        }
 
         if save.rooms.len() != game.rooms.len() {
             return Err(GameError::new(
@@ -4015,7 +4102,13 @@ impl ArpgGame {
             if connected == definition.max_targets {
                 break;
             }
-            let obstructed = self.strike_obstructed(origin, position)?;
+            // A crate does not obstruct a strike at itself.
+            let except = match target {
+                StrikeTarget::Crate(id) => Some(crate_body_id(id)),
+                _ => None,
+            };
+            let to = Vector::new(position.x, origin.y, position.z);
+            let obstructed = self.physics.segment_obstructed_except(origin, to, except);
             if !obstructed {
                 connected += 1;
             }
@@ -4040,7 +4133,7 @@ impl ArpgGame {
         };
         match actor {
             StrikeTarget::Player(id) => self.players.get(&id).map_or(base, |state| state.region),
-            StrikeTarget::Monster(_) => base,
+            StrikeTarget::Monster(_) | StrikeTarget::Crate(_) => base,
         }
     }
 
@@ -4277,6 +4370,12 @@ impl ArpgGame {
             .iter()
             .filter(|monster| monster.health > 0 && active_rooms.contains(&monster.room_id))
             .map(|monster| (StrikeTarget::Monster(monster.id), monster.position))
+            .chain(
+                self.crates
+                    .iter()
+                    .filter(|placed| placed.health > 0)
+                    .map(|placed| (StrikeTarget::Crate(placed.id), vector(placed.position))),
+            )
             .collect::<Vec<_>>();
         let direction = aim.map_or((f64::from(facing_x), f64::from(facing_z)), |aim| {
             (f64::from(aim[0]), f64::from(aim[1]))
@@ -4295,6 +4394,21 @@ impl ArpgGame {
 
         let mut defeated_positions = Vec::new();
         for (target, obstructed) in contacts {
+            if let StrikeTarget::Crate(crate_id) = target {
+                let result = if obstructed {
+                    StrikeResult::Obstructed
+                } else {
+                    self.damage_crate(crate_id, attack_damage)?
+                };
+                self.push_strike_outcome(StrikeOutcome {
+                    order: 0,
+                    strike,
+                    definition: self.content.id(definition.id).clone(),
+                    target,
+                    result,
+                });
+                continue;
+            }
             let StrikeTarget::Monster(monster_id) = target else {
                 continue;
             };
@@ -4380,6 +4494,26 @@ impl ArpgGame {
             self.spawn_ground_loot(position)?;
         }
         self.reconcile_encounters()
+    }
+
+    /// A strike's damage to a standing crate; at no health it breaks and its body leaves
+    /// the world, so it no longer blocks movement or navigation. Crates drop nothing.
+    fn damage_crate(&mut self, crate_id: u32, damage: u16) -> Result<StrikeResult, GameError> {
+        let placed = self
+            .crates
+            .iter_mut()
+            .find(|placed| placed.id == crate_id)
+            .ok_or_else(|| GameError::new("strike references an unknown crate"))?;
+        let previous = placed.health;
+        placed.health = placed.health.saturating_sub(damage);
+        let defeated = previous > 0 && placed.health == 0;
+        if defeated {
+            self.physics.remove_fixed(crate_body_id(crate_id));
+        }
+        Ok(StrikeResult::Hit {
+            damage: previous - placed.health,
+            defeated,
+        })
     }
 
     fn advance_actions(&mut self) -> Result<(), GameError> {
@@ -4569,7 +4703,8 @@ impl ArpgGame {
                 Some(StrikeTarget::Monster(monster_id)) => {
                     self.resolve_arrow_hit(arrow, monster_id)?;
                 }
-                None => {}
+                // Crates are no hurt volumes: they stop arrows as fixed geometry does.
+                Some(StrikeTarget::Crate(_)) | None => {}
             }
         }
         self.arrows = remaining;
@@ -6106,6 +6241,14 @@ impl AuthoritativeGame for ArpgGame {
             .map(|room| room.id)
             .collect::<BTreeSet<_>>();
         let mut static_colliders = self.static_colliders.clone();
+        static_colliders.extend(self.crates.iter().filter(|placed| placed.health > 0).map(
+            |placed| StaticColliderSnapshot {
+                id: crate_body_id(placed.id),
+                position: vec_to_array(placed.position),
+                half_extents: vec_to_array(crate_half_extents(&self.content)),
+                kind: StaticColliderKind::Crate,
+            },
+        ));
         static_colliders.extend(self.doors.iter().filter(|door| door.locked).map(|door| {
             StaticColliderSnapshot {
                 id: door.id,
@@ -6116,7 +6259,7 @@ impl AuthoritativeGame for ArpgGame {
         }));
 
         Ok(ArpgSnapshot {
-            schema_version: 23,
+            schema_version: 24,
             run_seed: self.run_seed,
             tick: self.tick,
             world_units_per_meter: WORLD_UNITS_PER_METER,
@@ -6177,6 +6320,19 @@ impl AuthoritativeGame for ArpgGame {
                 .map(|chest| ChestSnapshot {
                     available: !chest.opened && self.room_cleared(chest.room_id),
                     ..*chest
+                })
+                .collect(),
+            crates: self
+                .crates
+                .iter()
+                .filter(|placed| placed.health > 0)
+                .map(|placed| CrateSnapshot {
+                    id: placed.id,
+                    room_id: placed.room_id,
+                    position: vec_to_array(placed.position),
+                    half_extents: vec_to_array(crate_half_extents(&self.content)),
+                    health: placed.health,
+                    max_health: self.content.crate_prop.health,
                 })
                 .collect(),
             interaction_events: self.interaction_events.clone(),
@@ -6440,6 +6596,76 @@ const _: () = assert!(MONSTER_BODY_HALF_EXTENTS.x == MONSTER_BODY_HALF_EXTENTS.z
 /// collider. The first draw is the one a lone room monster takes; a conflicting draw is
 /// redrawn a bounded number of times, then the first free spot of a fixed grid over the
 /// spawn area is taken, so the result is always deterministic.
+/// A crate's body key: crates take their own id range.
+fn crate_body_id(id: u32) -> BodyKey {
+    u64::from(id)
+}
+
+fn crate_half_extents(content: &Content) -> Vec3i {
+    let [x, y, z] = content.crate_prop.half_extents.map(i32::from);
+    Vec3i::new(x, y, z)
+}
+
+/// The content's crates in every combat room (#90, Atlas 5.2.2), in room order: each in a
+/// corner, northern corners first, five units off the walls, standing on the floor. A corner
+/// that would overlap a fixed body, a monster, the chest or a spawn is skipped.
+fn place_crates(
+    content: &Content,
+    rooms: &[RoomSnapshot],
+    colliders: &[StaticColliderSnapshot],
+    monsters: &[MonsterState],
+    chests: &[ChestSnapshot],
+    spawns: &[Vec3i],
+) -> Vec<CrateState> {
+    let half = crate_half_extents(content);
+    let clearance = 2 * PLAYER_HALF_EXTENTS.x;
+    let mut crates = Vec::new();
+    for room in rooms.iter().filter(|room| room.kind == RoomKind::Combat) {
+        let (inset_x, inset_z) = (half.x + 5, half.z + 5);
+        let corners = [
+            (room.min_x + inset_x, room.min_z + inset_z),
+            (room.max_x - inset_x, room.min_z + inset_z),
+            (room.min_x + inset_x, room.max_z - inset_z),
+            (room.max_x - inset_x, room.max_z - inset_z),
+        ];
+        let free = |x: i32, z: i32| {
+            let apart = |at: Vector, reach: i32| {
+                (at.x - x as f32).abs() >= (half.x + reach) as f32
+                    || (at.z - z as f32).abs() >= (half.z + reach) as f32
+            };
+            colliders.iter().all(|collider| {
+                (collider.position[0] - x).abs() >= collider.half_extents[0] + half.x
+                    || (collider.position[2] - z).abs() >= collider.half_extents[2] + half.z
+            }) && monsters
+                .iter()
+                .all(|monster| apart(monster.position, MONSTER_BODY_HALF_EXTENTS.x + clearance))
+                && chests
+                    .iter()
+                    .all(|chest| apart(vector(array_to_vec(chest.position)), clearance))
+                && spawns
+                    .iter()
+                    .all(|&spawn| apart(vector(spawn), PLAYER_HALF_EXTENTS.x + clearance))
+        };
+        let mut placed = 0;
+        for (x, z) in corners {
+            if placed == content.crate_prop.per_combat_room {
+                break;
+            }
+            if free(x, z) {
+                let id = CRATE_ID_BASE + u32::try_from(crates.len()).expect("crate count fits u32");
+                crates.push(CrateState {
+                    id,
+                    room_id: room.id,
+                    position: Vec3i::new(x, FLOOR_FOOT_Y + half.y, z),
+                    health: content.crate_prop.health,
+                });
+                placed += 1;
+            }
+        }
+    }
+    crates
+}
+
 fn spawn_position(
     room: &RoomSnapshot,
     placed: &[Vec3i],
@@ -11405,12 +11631,25 @@ mod tests {
         game.add_player(1).unwrap();
         let snapshot = game.snapshot().unwrap();
         let generated = generate_dungeon(content(), snapshot.run_seed);
-        assert_eq!(snapshot.schema_version, 23);
+        assert_eq!(snapshot.schema_version, 24);
         assert_eq!(snapshot.run_seed, 0xDEAD_BEEF);
         assert_eq!(game.run_seed(), snapshot.run_seed);
         assert_eq!(snapshot.rooms, generated.rooms);
         assert_eq!(snapshot.doors, generated.doors);
-        assert_eq!(snapshot.static_colliders, generated.static_colliders);
+        // The generated walls, then every standing crate (#90): two per combat room.
+        let (crates, walls): (Vec<_>, Vec<_>) = snapshot
+            .static_colliders
+            .iter()
+            .cloned()
+            .partition(|collider| collider.kind == StaticColliderKind::Crate);
+        assert_eq!(walls, generated.static_colliders);
+        let combat_rooms = snapshot
+            .rooms
+            .iter()
+            .filter(|room| room.kind == RoomKind::Combat)
+            .count();
+        assert_eq!(crates.len(), 2 * combat_rooms);
+        assert_eq!(snapshot.crates.len(), crates.len());
         assert_eq!(snapshot.monsters.len(), generated.monsters.len());
         assert!(snapshot.ground_loot.is_empty());
         assert!(snapshot.monsters.iter().all(|monster| monster.room_id > 1));
@@ -11798,7 +12037,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 18"
+            "unsupported ARPG save schema version 12; expected 19"
         );
     }
 
@@ -11813,7 +12052,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 13; expected 18"
+            "unsupported ARPG save schema version 13; expected 19"
         );
     }
 
@@ -14347,5 +14586,166 @@ mod tests {
             }),
         });
         assert!(ArpgGame::from_save_state(save).is_err());
+    }
+
+    /// The strike arena with player 1 `offset` units east of the room's north-west crate,
+    /// and that crate's id and centre (#90).
+    fn crate_arena(offset: i32) -> (ArpgGame, u32, Vec3i) {
+        let (mut game, ..) = strike_arena();
+        let placed = *game
+            .crates
+            .iter()
+            .find(|placed| placed.room_id == STRIKE_ROOM)
+            .unwrap();
+        let at = placed.position;
+        game.put_player(1, Vec3i::new(at.x + offset, PLAYER_Y, at.z));
+        (game, placed.id, at)
+    }
+
+    const AIM_WEST: Option<[i16; 2]> = Some([-1_000, 0]);
+
+    #[test]
+    fn crates_stand_in_the_corners_of_every_combat_room() {
+        let game = ArpgGame::new_with_seed(42).unwrap();
+        for room in game
+            .rooms
+            .iter()
+            .filter(|room| room.kind == RoomKind::Combat)
+        {
+            let in_room = game
+                .crates
+                .iter()
+                .filter(|placed| placed.room_id == room.id)
+                .collect::<Vec<_>>();
+            assert_eq!(in_room.len(), 2, "room {}", room.id);
+            for placed in in_room {
+                assert_eq!(placed.position.z, room.min_z + 30);
+                assert!(
+                    placed.position.x == room.min_x + 30 || placed.position.x == room.max_x - 30
+                );
+                assert!(
+                    game.physics
+                        .penetrates_fixed(vector(placed.position), Vec3i::new(10, 10, 10))
+                );
+            }
+        }
+        assert!(game.crates.iter().all(|placed| placed.room_id != 1));
+    }
+
+    #[test]
+    fn strikes_break_a_crate_which_then_stops_blocking_and_drops_nothing() {
+        on_each_backend(|| {
+            let (mut game, crate_id, at) = crate_arena(90);
+            let crate_footprint = Rect::centered(at.x, at.z, 25, 25);
+            assert!(game.fixed_footprints().contains(&crate_footprint));
+            let first = strike(&mut game, 1, ArpgCommand::PrimaryAttack { aim: AIM_WEST });
+            assert_eq!(
+                targets(&first),
+                [(
+                    StrikeTarget::Crate(crate_id),
+                    StrikeResult::Hit {
+                        damage: 25,
+                        defeated: false
+                    }
+                )]
+            );
+            let second = strike(&mut game, 2, ArpgCommand::PrimaryAttack { aim: AIM_WEST });
+            assert_eq!(
+                targets(&second),
+                [(
+                    StrikeTarget::Crate(crate_id),
+                    StrikeResult::Hit {
+                        damage: 5,
+                        defeated: true
+                    }
+                )]
+            );
+            assert!(game.ground_loot.is_empty());
+            let snapshot = game.snapshot().unwrap();
+            assert!(snapshot.crates.iter().all(|placed| placed.id != crate_id));
+            assert!(!game.fixed_footprints().contains(&crate_footprint));
+            assert!(
+                !game
+                    .physics
+                    .penetrates_fixed(vector(at), Vec3i::new(10, 10, 10))
+            );
+            // The player walks on through where it stood, up to the wall behind it.
+            game.apply_command(
+                PlayerCommand::new(1, 3, ArpgCommand::SetMovement { x: -1, z: 0 }).unwrap(),
+            )
+            .unwrap();
+            for _ in 0..20 {
+                game.advance_tick().unwrap();
+            }
+            assert!(
+                game.players[&1].position.x < (at.x + 25) as f32,
+                "{:?}",
+                game.players[&1]
+            );
+        });
+    }
+
+    #[test]
+    fn a_standing_crate_blocks_a_walk_and_a_wall_shields_it_from_strikes() {
+        on_each_backend(|| {
+            let (mut game, crate_id, at) = crate_arena(150);
+            game.apply_command(
+                PlayerCommand::new(1, 1, ArpgCommand::SetMovement { x: -1, z: 0 }).unwrap(),
+            )
+            .unwrap();
+            for _ in 0..30 {
+                game.advance_tick().unwrap();
+            }
+            // Stopped at the crate's face (25 + the body's 30, and the contact offset).
+            let x = game.players[&1].position.x;
+            assert!((x - (at.x + 55) as f32).abs() < 1.0, "{x}");
+            // A blocker between them obstructs the strike; the crate itself never does.
+            game.apply_command(
+                PlayerCommand::new(1, 2, ArpgCommand::SetMovement { x: 0, z: 0 }).unwrap(),
+            )
+            .unwrap();
+            game.put_player(1, Vec3i::new(at.x + 150, PLAYER_Y, at.z));
+            place_blocker(&mut game, 1, at.x + 90, at.z, Vec3i::new(5, 100, 60));
+            let outcomes = strike(&mut game, 3, ArpgCommand::PrimaryAttack { aim: AIM_WEST });
+            assert!(
+                targets(&outcomes)
+                    .iter()
+                    .all(|&(target, result)| target != StrikeTarget::Crate(crate_id)
+                        || result == StrikeResult::Obstructed),
+                "{outcomes:?}"
+            );
+            assert!(
+                game.crates
+                    .iter()
+                    .any(|placed| placed.id == crate_id && placed.health == 30)
+            );
+        });
+    }
+
+    #[test]
+    fn a_save_with_a_damaged_and_a_broken_crate_continues_exactly() {
+        on_each_backend(|| {
+            let mut game = ArpgGame::new_with_seed(42).unwrap();
+            game.add_player(1).unwrap();
+            game.damage_crate(CRATE_ID_BASE, 30).unwrap();
+            game.damage_crate(CRATE_ID_BASE + 1, 10).unwrap();
+            let save = game.save_state().unwrap();
+            assert_eq!(save.crates[0].health, 0);
+            assert_eq!(save.crates[1].health, 20);
+            let mut restored = ArpgGame::from_save_state(save.clone()).unwrap();
+            assert!(!restored.physics.has_fixed(crate_body_id(CRATE_ID_BASE)));
+            assert!(restored.physics.has_fixed(crate_body_id(CRATE_ID_BASE + 1)));
+            for _ in 0..20 {
+                game.advance_tick().unwrap();
+                restored.advance_tick().unwrap();
+                assert_eq!(restored.snapshot().unwrap(), game.snapshot().unwrap());
+            }
+            let mut tampered = save.clone();
+            tampered.crates[1].health = 31;
+            assert!(ArpgGame::from_save_state(tampered).is_err());
+            let mut missing = save;
+            missing.crates.pop();
+            assert!(ArpgGame::from_save_state(missing).is_err());
+        });
     }
 }

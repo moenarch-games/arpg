@@ -426,11 +426,22 @@ impl Physics {
     /// Whether static geometry lies on the segment from `from` towards `to`, strictly
     /// before `to`. A segment starting inside static geometry is obstructed.
     pub(crate) fn segment_obstructed(&self, from: Vector, to: Vector) -> bool {
+        self.segment_obstructed_except(from, to, None)
+    }
+
+    /// [`Self::segment_obstructed`] ignoring the static body `except`: a strike at a
+    /// damageable prop is not obstructed by the prop itself (#90).
+    pub(crate) fn segment_obstructed_except(
+        &self,
+        from: Vector,
+        to: Vector,
+        except: Option<BodyKey>,
+    ) -> bool {
         let direction = to - from;
         if direction == Vector::ZERO {
             return false;
         }
-        self.first_fixed_hit(from, direction)
+        self.first_fixed_hit_except(from, direction, except)
             .is_some_and(|time_of_impact| time_of_impact < 1.0)
     }
 
@@ -438,9 +449,26 @@ impl Physics {
     /// from `origin` along `translation` meets static geometry.
     /// The floor is never an obstacle: strikes, sight and projectiles stay on the plane.
     pub(crate) fn first_fixed_hit(&self, origin: Vector, translation: Vector) -> Option<f32> {
+        self.first_fixed_hit_except(origin, translation, None)
+    }
+
+    /// [`Self::first_fixed_hit`] ignoring the static body `except`.
+    fn first_fixed_hit_except(
+        &self,
+        origin: Vector,
+        translation: Vector,
+        except: Option<BodyKey>,
+    ) -> Option<f32> {
         let mut filter = QueryFilter::only_fixed();
         if let Some(floor) = self.floor {
             filter = filter.exclude_collider(floor.collider);
+        }
+        let excluded = except
+            .and_then(|key| self.fixed.get(&key))
+            .map(|fixed| fixed.collider);
+        let other = |handle: ColliderHandle, _: &Collider| Some(handle) != excluded;
+        if excluded.is_some() {
+            filter = filter.predicate(&other);
         }
         let queries = self.world.broad_phase.as_query_pipeline(
             &self.queries,

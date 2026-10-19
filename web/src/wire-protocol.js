@@ -30,7 +30,8 @@ const scenarios = new Set([
   "retreating",
   "traversal",
 ]);
-const parties = new Set(["player", "monster"]);
+// A strike may land on a damageable crate (#90) as well as a character.
+const parties = new Set(["player", "monster", "crate"]);
 const strikeResults = new Set(["hit", "blocked", "guardBroken", "obstructed"]);
 // Content definition ids (`monster.brute`, `sword.lightSwing`): 1..=64 characters.
 const definitionId = (value) => typeof value === "string" && value.length > 0 && value.length <= 64;
@@ -168,6 +169,18 @@ export function decodeSnapshot(encoded) {
         motion(player.motion) &&
         optional(player.region, region),
     ) &&
+    (snapshot.crates === undefined ||
+      list(
+        "crates",
+        (crate) =>
+          nonNegative(crate?.id) &&
+          nonNegative(crate.roomId) &&
+          vector(crate.position, 3) &&
+          vector(crate.halfExtents, 3) &&
+          nonNegative(crate.health) &&
+          nonNegative(crate.maxHealth) &&
+          crate.health <= crate.maxHealth,
+      )) &&
     list(
       "chests",
       (chest) =>
@@ -247,7 +260,7 @@ export function decodeSnapshot(encoded) {
         vector(collider.position, 3) &&
         vector(collider.halfExtents, 3) &&
         collider.halfExtents.every((value) => value >= 0) &&
-        ["wall", "door", "pillar", "platform", "ceiling"].includes(collider.kind),
+        ["wall", "door", "pillar", "platform", "ceiling", "crate"].includes(collider.kind),
     ) &&
     list(
       "groundLoot",

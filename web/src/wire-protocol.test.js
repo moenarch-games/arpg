@@ -111,6 +111,36 @@ test("admits region membership and platforms and rejects malformed ones", () => 
   expect(decoded.staticColliders).toEqual([platform, ceiling]);
 });
 
+test("admits damageable crates and strikes on them and rejects malformed ones", () => {
+  const crate = {
+    id: 40000,
+    roomId: 2,
+    position: [0, 50, 0],
+    halfExtents: [25, 50, 25],
+    health: 5,
+    maxHealth: 30,
+  };
+  const strike = {
+    order: 0,
+    source: { kind: "player", id: 1 },
+    target: { kind: "crate", id: 40000 },
+    strikeTick: 3,
+    definition: "sword.lightSwing",
+    result: { kind: "hit", damage: 25, defeated: false },
+  };
+  const collider = { id: 40000, kind: "crate", position: [0, 50, 0], halfExtents: [25, 50, 25] };
+  const decoded = decodeSnapshot(
+    encode({ ...payload, crates: [crate], strikeEvents: [strike], staticColliders: [collider] }),
+  );
+  expect(decoded.crates).toEqual([crate]);
+  expect(decoded.strikeEvents[0].target).toEqual({ kind: "crate", id: 40000 });
+  for (const malformed of [
+    { ...crate, health: 31 },
+    { ...crate, position: [0, 0] },
+  ])
+    expect(() => decodeSnapshot(encode({ ...payload, crates: [malformed] }))).toThrow();
+});
+
 test("admits shield guard state and rejects malformed guard data", () => {
   expect(decodeSnapshot(encode({ ...payload, players: [player] })).players[0].guard.phase).toBe(
     "raised",

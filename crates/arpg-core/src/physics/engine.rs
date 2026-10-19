@@ -58,8 +58,13 @@ use crate::{GameError, Vec3i};
 
 /// Characters' layer: static-only queries ([`STATICS`]) skip them; moves see everything.
 const CHARACTERS: CollisionLayers3d = CollisionLayers3d::new(2, u32::MAX);
-/// Static geometry only: every body but the characters.
+/// The floor's own layer, so wall queries skip it by layer and keep `exclude` for a struck
+/// body (#90).
+const FLOOR: CollisionLayers3d = CollisionLayers3d::new(4, u32::MAX);
+/// Static boxes only: every body but the characters and the floor.
 const STATICS: CollisionLayers3d = CollisionLayers3d::new(1, 1);
+/// Static ground: the boxes and the floor.
+const GROUND: CollisionLayers3d = CollisionLayers3d::new(1, 1 | 4);
 /// How far (metres) below a body [`Physics::ground_height`] looks for ground.
 const GROUND_PROBE: f32 = 1.0e3;
 
@@ -85,14 +90,10 @@ struct Character {
     position: Vector,
 }
 
-#[derive(Clone, Copy)]
-struct Floor {
-    body: BodyId,
-}
-
 pub(crate) struct Physics {
     world: World,
-    floor: Option<Floor>,
+    /// Whether the floor was laid; queries tell it apart by its layer, not its body.
+    floor: bool,
     fixed: BTreeMap<BodyKey, Fixed>,
     characters: BTreeMap<BodyKey, Character>,
     results: Vec<CharacterMoveResult>,
@@ -164,7 +165,7 @@ impl Physics {
         .expect("the default physics-engine configuration is valid");
         Self {
             world,
-            floor: None,
+            floor: false,
             fixed: BTreeMap::new(),
             characters: BTreeMap::new(),
             results: Vec::with_capacity(1),
@@ -173,15 +174,14 @@ impl Physics {
     }
 
     pub(crate) fn add_floor(&mut self, foot_height: f32) -> Result<(), GameError> {
-        if self.floor.is_some() {
+        if self.floor {
             return Err(GameError::new("the floor already exists"));
         }
         let surface = Vector::new(0.0, foot_height - CONTACT_OFFSET_UNITS, 0.0);
-        let body = self
-            .world
-            .add_body(Body::new(Shape::HalfSpace, engine(surface), 0.0))
-            .map_err(failed)?;
-        self.floor = Some(Floor { body });
+        let mut floor = Body::new(Shape::HalfSpace, engine(surface), 0.0);
+        floor.layers = FLOOR;
+        self.world.add_body(floor).map_err(failed)?;
+        self.floor = true;
         Ok(())
     }
 
@@ -387,19 +387,23 @@ impl Physics {
         })
     }
 
+    /// Static ground: the boxes and the floor.
     fn statics(&self) -> QueryFilter {
         QueryFilter {
-            layers: STATICS,
+            layers: GROUND,
             ..QueryFilter::default()
         }
     }
 
-    /// Static geometry with the floor excluded: strikes, sight and projectiles stay on the
-    /// plane.
-    fn walls(&self) -> QueryFilter {
+    /// Static boxes without the floor (strikes, sight and projectiles stay on the plane),
+    /// and without the static body `except`.
+    fn walls(&self, except: Option<BodyKey>) -> QueryFilter {
         QueryFilter {
-            exclude: self.floor.map(|floor| floor.body),
-            ..self.statics()
+            layers: STATICS,
+            exclude: except
+                .and_then(|key| self.fixed.get(&key))
+                .map(|fixed| fixed.body),
+            ..QueryFilter::default()
         }
     }
 
@@ -413,22 +417,40 @@ impl Physics {
     }
 
     pub(crate) fn segment_obstructed(&self, from: Vector, to: Vector) -> bool {
+        self.segment_obstructed_except(from, to, None)
+    }
+
+    pub(crate) fn segment_obstructed_except(
+        &self,
+        from: Vector,
+        to: Vector,
+        except: Option<BodyKey>,
+    ) -> bool {
         let direction = to - from;
         if direction == Vector::ZERO {
             return false;
         }
-        self.first_fixed_hit(from, direction)
+        self.first_fixed_hit_except(from, direction, except)
             .is_some_and(|time_of_impact| time_of_impact < 1.0)
     }
 
     pub(crate) fn first_fixed_hit(&self, origin: Vector, translation: Vector) -> Option<f32> {
+        self.first_fixed_hit_except(origin, translation, None)
+    }
+
+    fn first_fixed_hit_except(
+        &self,
+        origin: Vector,
+        translation: Vector,
+        except: Option<BodyKey>,
+    ) -> Option<f32> {
         if translation == Vector::ZERO {
             return None;
         }
         self.world
             .cast_ray_first(
                 RayCast::new(engine(origin), engine(translation)),
-                self.walls(),
+                self.walls(except),
             )
             .expect("physics-engine ray")
             .map(|hit| hit.fraction)

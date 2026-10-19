@@ -64,10 +64,7 @@ test("melee scenarios show a forward hit, an aimed-away whiff, a blocked strike 
   await expect(retreat.timeline).toContainText("No events yet");
 });
 
-test("the traversal scenario climbs platform and bridge and stops a jump at the ceiling", async ({
-  page,
-  appUrl,
-}) => {
+test("the traversal scenario climbs the platform and the bridge", async ({ page, appUrl }) => {
   const traversal = await openScenario(page, appUrl, "traversal");
   await expect(traversal.diagnostics).toContainText("region 1");
   await page.keyboard.down("d");
@@ -81,7 +78,9 @@ test("the traversal scenario climbs platform and bridge and stops a jump at the 
   await traversal.stepUntil(traversal.diagnostics, "transit 3", 30);
   await traversal.stepUntil(traversal.diagnostics, "region 3", 40);
   await page.keyboard.up("d");
+});
 
+test("the traversal scenario stops a jump at its low ceiling", async ({ page, appUrl }) => {
   // Under the low ceiling a jump stops with the head at its underside, 140 units up.
   const ceiling = await openScenario(page, appUrl, "traversal");
   await page.keyboard.down("w");

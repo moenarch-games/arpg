@@ -73,6 +73,7 @@ fn exported_entities(snapshot: &ArpgSnapshot) -> u64 {
             + snapshot.static_colliders.len()
             + snapshot.arrows.len()
             + snapshot.chests.len()
+            + snapshot.crates.len()
             + snapshot.strike_events.len()
             + snapshot.interaction_events.len(),
     )

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ActionKind, ComboInput};
 
-pub const CONTENT_FORMAT_VERSION: u16 = 10;
+pub const CONTENT_FORMAT_VERSION: u16 = 11;
 /// Touching monster and player bodies keep their centres up to √2 times their
 /// combined XZ half extents apart (85 units), and pursuit stops one navigation
 /// cell inside strike reach, so a monster strike must reach past both.
@@ -75,6 +75,21 @@ pub struct ContentBundle {
     pub loot: LootData,
     pub targeting: TargetingData,
     pub jump: JumpData,
+    /// Damageable crates in combat rooms (#90).
+    #[serde(rename = "crate")]
+    pub crate_prop: CrateData,
+}
+
+/// A damageable static crate (#90, Atlas 5.2.2): it blocks movement and navigation until
+/// player strikes break it, and drops nothing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CrateData {
+    pub health: u16,
+    /// World units; the crate stands on the floor.
+    pub half_extents: [u16; 3],
+    /// Crates placed in each combat room's corners, at most four.
+    pub per_combat_room: u8,
 }
 
 /// Jump and airborne-control tuning (#59). Heights are world units, durations ticks and
@@ -542,6 +557,7 @@ pub(crate) struct Resolved {
     pub loot: LootData,
     pub targeting: TargetingData,
     pub jump: JumpTuning,
+    pub crate_prop: CrateData,
 }
 
 impl Resolved {
@@ -1175,6 +1191,31 @@ impl ContentBundle {
             }
         }
 
+        let crate_prop = self.crate_prop;
+        if crate_prop.health == 0 {
+            fail("crate.health".into(), "must be positive");
+        }
+        let [hx, hy, hz] = crate_prop.half_extents;
+        if !(10..=100).contains(&hx) || !(10..=100).contains(&hz) || !(10..=200).contains(&hy) {
+            fail(
+                "crate.halfExtents".into(),
+                "must be within 10..=100 across and 10..=200 high",
+            );
+        }
+        // A crate a jump could land on would be undeclared walkable ground (ADR 0002).
+        if 2 * hy <= jump.apex_height {
+            fail(
+                "crate.halfExtents".into(),
+                "a crate must stand taller than a jump's apex",
+            );
+        }
+        if crate_prop.per_combat_room > 4 {
+            fail(
+                "crate.perCombatRoom".into(),
+                "must be at most 4 (the room's corners)",
+            );
+        }
+
         if errors.is_empty() {
             Ok(Resolved {
                 revision: self.revision(),
@@ -1192,6 +1233,7 @@ impl ContentBundle {
                 loot,
                 targeting,
                 jump: JumpTuning::new(jump),
+                crate_prop,
             })
         } else {
             Err(errors)

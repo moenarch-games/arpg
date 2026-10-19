@@ -5,7 +5,7 @@ Gameplay tuning lives in one typed, versioned bundle:
 validated by [`content.rs`](../crates/arpg-core/src/content.rs). Definitions *select*
 supported behaviour; executable rules stay in Rust. Appearance and audio never live here.
 
-## What the bundle holds (format 10)
+## What the bundle holds (format 11)
 
 | Section | Contents |
 | --- | --- |
@@ -102,6 +102,14 @@ cells inside the strike reach (room for the band); a projectile's speed is `16..
 must fly at least the strike reach, less two units per tick, within its lifetime (bounds kept from
 whole-unit shot velocities; shots now fly their exact speed, #182). A lunge's speed is
 `1..=40`, it needs at least two active ticks, and a projectile attack cannot lunge.
+
+## Crates
+
+`crate` (`health`, `halfExtents`, `perCombatRoom`) defines the damageable crates generation
+places in the corners of every combat room (#90, Atlas 5.2.2): northern corners first, five
+units off the walls, at most four per room. Player melee breaks them; they drop nothing.
+Validation: positive health, `halfExtents` within `10..=100` across and `10..=200` high, a
+height above a jump's apex (no crate is walkable ground), and at most four per room.
 
 ## Adding a definition
 

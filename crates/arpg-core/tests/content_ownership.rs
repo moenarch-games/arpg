@@ -74,9 +74,9 @@ use serde_json::{Value, json};
 use std::ops::Deref;
 
 /// Revision of the built-in bundle since jump tuning became content (#59, format 9).
-const BUILT_IN_REVISION: &str = "96049b722fb792ba";
+const BUILT_IN_REVISION: &str = "a18e6613eb64cdc4";
 /// Revision of `paying(4_242)` at the same baseline.
-const PAYING_4242_REVISION: &str = "329dded5a7b491fd";
+const PAYING_4242_REVISION: &str = "3a4a039f83263a31";
 
 const BUILT_IN_SWING: &str = "sword.lightSwing";
 /// Distance from a monster at which an arranged light swing lands next tick.
