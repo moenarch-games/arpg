@@ -280,6 +280,8 @@ struct Comparison {
     max_position_on_edge: f32,
     /// Ticks on which a player of either game belongs to a region above the floor.
     raised_region_ticks: u32,
+    /// Monster strikes of the `monster.lunge` definition resolved in either game.
+    lunge_strikes: u32,
     /// Every region membership a player of either game held.
     memberships: std::collections::BTreeSet<String>,
     /// Ticks on which an airborne player's head touches a ceiling's underside, in either game.
@@ -488,6 +490,11 @@ fn compare(case: Case, seed: u32) -> Comparison {
             {
                 comparison.raised_region_ticks += 1;
             }
+            comparison.lunge_strikes += game
+                .strike_outcomes()
+                .iter()
+                .filter(|outcome| &*outcome.definition == "monster.lunge")
+                .count() as u32;
             for state in game.players.values() {
                 comparison.memberships.insert(format!("{:?}", state.region));
             }
@@ -599,6 +606,9 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
                 for violation in violations.iter().take(5) {
                     failures.push(format!("{context} on {backend}: {violation}"));
                 }
+            }
+            if case == Case::Lunge && comparison.lunge_strikes == 0 {
+                failures.push(format!("{context}: no lunge strike resolved"));
             }
             if case == Case::Traversal {
                 for expected in [

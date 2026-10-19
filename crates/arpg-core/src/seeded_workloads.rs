@@ -28,9 +28,11 @@ pub(super) enum Case {
     /// The traversal scenario end to end (#210): onto the platform, up onto the bridge,
     /// off its side and back along the floor path beneath it.
     Traversal,
+    /// A skirmisher chasing a player who keeps stepping away: its lunges sweep (#90).
+    Lunge,
 }
 impl Case {
-    pub(super) const ALL: [Self; 14] = [
+    pub(super) const ALL: [Self; 15] = [
         Self::Quiet,
         Self::PartyQuiet,
         Self::Sparse,
@@ -45,6 +47,7 @@ impl Case {
         Self::Ledge,
         Self::Ceiling,
         Self::Traversal,
+        Self::Lunge,
     ];
     /// The workloads whose saves restore: the others move monsters out of their generated
     /// rooms, which a save rejects.
@@ -77,6 +80,7 @@ impl Case {
             Self::Ledge => "ledge",
             Self::Ceiling => "ceiling",
             Self::Traversal => "traversal",
+            Self::Lunge => "lunge",
         }
     }
 }
@@ -88,6 +92,22 @@ pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
     };
     match case {
         // Jumping into the outer wall the corner case presses into: airborne sliding, landing.
+        Case::Lunge => {
+            // The player stands at the centre of the first skirmisher's room.
+            let room_id = game
+                .monsters
+                .iter()
+                .find(|monster| *game.content.id(monster.definition().id) == *"monster.skirmisher")
+                .unwrap()
+                .room_id;
+            let (x, z) = game
+                .rooms
+                .iter()
+                .find(|room| room.id == room_id)
+                .unwrap()
+                .center();
+            game.player_spawns[0] = Vec3i::new(x, PLAYER_Y, z);
+        }
         Case::Corner | Case::Jump => {
             game.player_spawns[0] = Vec3i::new(-2945, PLAYER_Y, -1745);
         }
@@ -193,6 +213,12 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
         Case::Ceiling if tick == 36 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
         Case::Ceiling if tick == 70 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
         Case::Ceiling if tick == 40 || tick == 72 || tick == 100 => Some(ArpgCommand::Jump),
+        // Stepping away and pausing, so lunges start both in and out of static reach.
+        Case::Lunge if tick.is_multiple_of(20) => {
+            let (x, z) =
+                [(-1, 0), (0, 0), (0, 1), (0, 0), (0, -1), (0, 0)][(tick / 20) as usize % 6];
+            Some(ArpgCommand::SetMovement { x, z })
+        }
         Case::Traversal if tick == 0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
         Case::Traversal if tick == 7 || tick == 47 => Some(ArpgCommand::Jump),
         Case::Traversal if tick == 75 => Some(ArpgCommand::SetMovement { x: 0, z: 1 }),

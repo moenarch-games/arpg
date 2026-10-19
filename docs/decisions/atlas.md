@@ -59,6 +59,7 @@ Child `- [x]` means **only the specifically named implemented capability** has c
     - **5.1.4** [decision] Jump details from #191 stand: an action freezes horizontal motion mid-jump while gravity continues, every press is a full jump (no variable height), and hurt reactions do not block jumping. (Owner, 2026-10-19; [#191](https://github.com/moritzbrantner/arpg/pull/191))
   - **5.2** Melee physics ([#90](https://github.com/moritzbrantner/arpg/issues/90))
     - **5.2.1** [decision] The skirmisher's `monster.lunge` becomes a short multi-tick lunge that moves the attacker, resolved as a swept strike with per-strike target deduplication. (Owner, 2026-10-19)
+      - [x] `crates/arpg-core/src/lib.rs::ArpgGame::resolve_monster_attack` with `MonsterLunge` (`a_lunge_catches_a_target_beyond_its_reach_once_along_its_path`, `a_lunge_into_a_thin_wall_stops_at_it_and_is_obstructed`, on both physics backends).
     - **5.2.2** [decision] Damageable props are static crates with health and no drops, placed in combat rooms; they block movement and navigation until broken. Strike rays exclude the struck body through the `Physics` seam on both backends. (Owner, 2026-10-19)
 
 ## Issue handoffs
