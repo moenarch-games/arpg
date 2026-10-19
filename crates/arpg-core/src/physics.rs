@@ -462,7 +462,7 @@ mod tests {
                     .unwrap();
                 free.add_character(3, pressed, BODY).unwrap();
                 let (_, moved) = free.move_character(3, pressed, step).unwrap();
-                assert!((moved - step).length() < 1.0e-3, "{moved:?}");
+                assert_eq!(moved, step);
             }
         });
     }
@@ -506,12 +506,7 @@ mod tests {
             let (_, moved) = physics
                 .move_character(1, blocked, Vector::new(7.0, 0.0, 0.0))
                 .unwrap();
-            // Within `f32` rounding: physics-engine reports the translation as a difference of
-            // metre positions.
-            assert!(
-                (moved - Vector::new(7.0, 0.0, 0.0)).length() < 1.0e-3,
-                "{moved:?}"
-            );
+            assert_eq!(moved, Vector::new(7.0, 0.0, 0.0));
         });
     }
 
@@ -576,7 +571,7 @@ mod tests {
                 Vector::new(5.0, 0.0, -5.0)
             }) {
                 assert_eq!(motion.to.y, Y as f32, "{motion:?}");
-                assert!((motion.moved - Vector::new(5.0, 0.0, -5.0)).length() < 1.0e-3);
+                assert!((motion.moved - Vector::new(5.0, 0.0, -5.0)).length() < 1.0e-5);
                 assert_eq!(motion.moved.y, 0.0);
                 assert!(motion.supported);
             }
@@ -605,7 +600,7 @@ mod tests {
                 Vector::new(3.0, velocity, 0.0)
             });
             assert!(!path[0].supported);
-            assert!((path[0].moved - Vector::new(3.0, 10.0, 0.0)).length() < 1.0e-3);
+            assert!((path[0].moved - Vector::new(3.0, 10.0, 0.0)).length() < 1.0e-5);
             let apex = path
                 .iter()
                 .map(|motion| motion.to.y)

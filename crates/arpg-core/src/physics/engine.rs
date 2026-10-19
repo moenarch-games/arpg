@@ -33,9 +33,6 @@
 //! - Overlap is resolved before the move and reported apart from it; the adapter adds it back,
 //!   because the game reads Rapier's translation, which includes it. Overlapping characters are
 //!   separated horizontally (the mover goes the whole way, since a batch holds one mover).
-//! - The engine reports a translation as a difference of metre positions, so an unobstructed
-//!   move can differ from the intended one by `f32` rounding of the position (7 units read as
-//!   6.99997 at 21 m from the origin); Rapier's controller returns the intended translation.
 //! - A character's movement kind is fixed in the engine when it is added. The game's
 //!   `add_character` does not say whether the body is a player, so it starts planar and turns
 //!   into a 3D mover (re-registered with the player settings) on its first `move_player`.
