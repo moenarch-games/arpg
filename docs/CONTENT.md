@@ -5,7 +5,7 @@ Gameplay tuning lives in one typed, versioned bundle:
 validated by [`content.rs`](../crates/arpg-core/src/content.rs). Definitions *select*
 supported behaviour; executable rules stay in Rust. Appearance and audio never live here.
 
-## What the bundle holds (format 13)
+## What the bundle holds (format 14)
 
 | Section | Contents |
 | --- | --- |
@@ -121,6 +121,13 @@ poison it applies: a player touching a pool is poisoned for `durationTicks`, tak
 every `intervalTicks`; touching it again refreshes the duration, never stacks. Validation: a
 radius within `20..=200`, at most one pool per room, positive damage and interval, and a
 duration of `1..=600` ticks spanning at least one interval.
+
+## Slow
+
+`slow` (`durationTicks`, `speedPercent`) is what a player's arrow does to a living monster it
+hits (#64, Atlas 5.3.2): the monster steers at `speedPercent` of its pursuit speed for
+`durationTicks`; a further hit refreshes the duration, never stacks. Validation: a duration of
+`1..=600` ticks and a speed of `1..=99` percent.
 
 ## Adding a definition
 

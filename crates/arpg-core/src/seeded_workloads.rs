@@ -39,9 +39,11 @@ pub(super) enum Case {
     /// Walking into a combat room's poison pool, lingering and walking out (#64): an area
     /// query every tick.
     Poison,
+    /// Shooting a pursuing monster, which the arrows slow (#64).
+    Slow,
 }
 impl Case {
-    pub(super) const ALL: [Self; 19] = [
+    pub(super) const ALL: [Self; 20] = [
         Self::Quiet,
         Self::PartyQuiet,
         Self::Sparse,
@@ -61,6 +63,7 @@ impl Case {
         Self::Stairs,
         Self::Slam,
         Self::Poison,
+        Self::Slow,
     ];
     /// The workloads whose saves restore: the others move monsters out of their generated
     /// rooms, which a save rejects.
@@ -102,6 +105,7 @@ impl Case {
             Self::Stairs => "stairs",
             Self::Slam => "slam",
             Self::Poison => "poison",
+            Self::Slow => "slow",
         }
     }
 }
@@ -118,6 +122,21 @@ pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
     };
     match case {
         // Jumping into the outer wall the corner case presses into: airborne sliding, landing.
+        Case::Slow => {
+            // Room 2's generated monster 600 east of the player, who has a bow.
+            let (x, z) = game
+                .rooms
+                .iter()
+                .find(|room| room.id == 2)
+                .unwrap()
+                .center();
+            game.player_spawns[0] = Vec3i::new(x, PLAYER_Y, z);
+            game.monsters
+                .iter_mut()
+                .find(|monster| monster.room_id == 2)
+                .unwrap()
+                .position = Vec3i::new(x + 600, PLAYER_Y, z).into();
+        }
         Case::Poison => {
             // East of room 2's pool, walking into it.
             let pool = game
@@ -279,6 +298,14 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
         }),
         Case::Crates if tick == 104 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
         // North, east to the stairs' line, then south up them onto the platform.
+        Case::Slow if tick == 0 => Some(ArpgCommand::EquipWeapon {
+            weapon: Weapon::Bow,
+        }),
+        Case::Slow if tick == 1 => Some(ArpgCommand::SetAim {
+            direction: Some([1_000, 0]),
+        }),
+        Case::Slow if tick == 2 || tick == 50 => Some(ArpgCommand::DrawBow),
+        Case::Slow if tick == 34 || tick == 82 => Some(ArpgCommand::ReleaseBow { aim: None }),
         Case::Poison if tick == 0 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
         Case::Poison if tick == 30 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
         Case::Poison if tick == 70 => Some(ArpgCommand::SetMovement { x: 1, z: -1 }),

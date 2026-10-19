@@ -249,6 +249,12 @@ ends with its duration or its player's defeat. Snapshots (schema 25) publish the
 workload walks into a pool and out on both backends, and the A/B harness compares every
 pool's query each tick.
 
+Slow (#64, Atlas 5.3.2; content `slow`): a player's arrow that hits a living monster slows it
+for 90 ticks, a further hit refreshing the duration (never stacking); a slowed monster's
+pursuit and retreat steering runs at half speed through the same physics moves. Snapshots
+(schema 26) and saves (schema 22) carry each monster's slow; the A/B outcomes compare it every
+tick, and the seeded A/B `slow` workload shoots a pursuing monster on both backends.
+
 The browser's presentation snapshot boundary and React update ownership are
 documented in [ADR 0001](adr/0001-browser-snapshot-projection.md). Tick-dependent
 views and rendering consume one session-owned snapshot store; menus and shell

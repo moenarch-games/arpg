@@ -111,7 +111,8 @@ pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// 19: damageable crates (#90): every crate's health; schema 18 saves are refused.
 /// 20: stairs (#222): a player's last ground contact; schema 19 saves are refused.
 /// 21: poison (#64): a player's poison status; schema 20 saves are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 21;
+/// 22: slow (#64): a monster's slow; schema 21 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 22;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -1396,6 +1397,8 @@ pub struct MonsterSnapshot {
     pub guard: Option<GuardStance>,
     pub guard_points: u16,
     pub max_guard_points: u16,
+    /// Slowed by a player's arrow (#64).
+    pub slow: Option<SlowStatus>,
 }
 
 /// A monster's engagement with the players of its room (#109). Authoritative and saved;
@@ -1686,6 +1689,8 @@ pub struct MonsterSaveState {
     pub retreating: bool,
     /// Shield guard (#92): present exactly for a shield monster.
     pub guard: Option<GuardState>,
+    /// Slowed by a player's arrow (#64).
+    pub slow: Option<SlowStatus>,
 }
 
 /// A poison pool on a combat room's floor (#64, Atlas 5.3.2).
@@ -1707,6 +1712,14 @@ pub struct PoisonStatus {
     pub source: u32,
     pub ticks_remaining: u16,
     pub next_damage_in: u8,
+}
+
+/// A monster's slow from a player's arrow (#64): its pursuit runs at the content's share of
+/// its speed for the ticks left; another hit refreshes them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SlowStatus {
+    pub ticks_remaining: u16,
 }
 
 /// A generated poison pool.
@@ -1988,6 +2001,8 @@ struct MonsterState {
     cornered: bool,
     /// Shield guard of a shield monster (#92); `held` is its engagement policy's choice.
     guard: Option<GuardState>,
+    /// Slowed by a player's arrow (#64).
+    slow: Option<SlowStatus>,
     /// Transient within a tick, never saved: where the body stood before this tick's
     /// physics pass, the start of a lunge's swept strike (#90).
     swept_from: Vector,
@@ -2018,6 +2033,7 @@ impl MonsterState {
                 .shield
                 .then(|| GuardState::ready(guard_max_points)),
             swept_from: vector(position),
+            slow: None,
         }
     }
 
@@ -2778,6 +2794,7 @@ impl ArpgGame {
                     steered: monster.steered,
                     retreating: monster.retreating,
                     guard: monster.guard,
+                    slow: monster.slow,
                 })
                 .collect(),
             ground_loot: self
@@ -3192,6 +3209,13 @@ impl ArpgGame {
             monster.steered = saved.steered;
             monster.retreating = saved.retreating;
             monster.guard = saved.guard;
+            if saved.slow.is_some_and(|slow| {
+                saved.health == 0
+                    || !(1..=content.slow.duration_ticks).contains(&slow.ticks_remaining)
+            }) {
+                return Err(GameError::new("saved monster slow is invalid"));
+            }
+            monster.slow = saved.slow;
         }
         if !monster_states.is_empty() {
             return Err(GameError::new("save contains unknown monster ids"));
@@ -4891,6 +4915,10 @@ impl ArpgGame {
         }
         if monster.health > 0 {
             monster.stagger_ticks_remaining = self.tuning.bow.arrow_stagger_ticks;
+            // Slowed afresh, never stacked (#64).
+            monster.slow = Some(SlowStatus {
+                ticks_remaining: self.content.slow.duration_ticks,
+            });
             monster.action = None;
             if shooter_present {
                 monster.provoke(owner_id);
@@ -5462,7 +5490,14 @@ impl ArpgGame {
                         monster,
                         crowd_goal,
                         point,
-                        definition.pursuit_speed,
+                        // A slowed monster pursues at the content's share (#64).
+                        if monster.slow.is_some() {
+                            (definition.pursuit_speed * i32::from(self.content.slow.speed_percent)
+                                / 100)
+                                .max(1)
+                        } else {
+                            definition.pursuit_speed
+                        },
                         &bodies,
                         definition.separation_range,
                     )
@@ -6460,6 +6495,11 @@ impl AuthoritativeGame for ArpgGame {
             .collect::<BTreeSet<_>>();
         for monster in &mut self.monsters {
             monster.stagger_ticks_remaining = monster.stagger_ticks_remaining.saturating_sub(1);
+            monster.slow = monster.slow.and_then(|slow| {
+                (slow.ticks_remaining > 1 && monster.health > 0).then_some(SlowStatus {
+                    ticks_remaining: slow.ticks_remaining - 1,
+                })
+            });
             let active = active_rooms.contains(&monster.room_id);
             Self::advance_monster_guard(&tuning.guard, monster, active);
         }
@@ -6573,7 +6613,7 @@ impl AuthoritativeGame for ArpgGame {
         }));
 
         Ok(ArpgSnapshot {
-            schema_version: 25,
+            schema_version: 26,
             run_seed: self.run_seed,
             tick: self.tick,
             world_units_per_meter: WORLD_UNITS_PER_METER,
@@ -6612,6 +6652,7 @@ impl AuthoritativeGame for ArpgGame {
                     } else {
                         0
                     },
+                    slow: monster.slow,
                 })
                 .collect(),
             ground_loot: self
@@ -11988,7 +12029,7 @@ mod tests {
         game.add_player(1).unwrap();
         let snapshot = game.snapshot().unwrap();
         let generated = generate_dungeon(content(), snapshot.run_seed);
-        assert_eq!(snapshot.schema_version, 25);
+        assert_eq!(snapshot.schema_version, 26);
         assert_eq!(snapshot.run_seed, 0xDEAD_BEEF);
         assert_eq!(game.run_seed(), snapshot.run_seed);
         assert_eq!(snapshot.rooms, generated.rooms);
@@ -12394,7 +12435,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 21"
+            "unsupported ARPG save schema version 12; expected 22"
         );
     }
 
@@ -12409,7 +12450,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 13; expected 21"
+            "unsupported ARPG save schema version 13; expected 22"
         );
     }
 
@@ -15375,6 +15416,73 @@ mod tests {
             let mut tampered = save;
             tampered.players[0].poison.as_mut().unwrap().next_damage_in = 0;
             assert!(ArpgGame::from_save_state(tampered).is_err());
+        });
+    }
+
+    /// A player's arrow slows the monster it hits (#64, Atlas 5.3.2): it pursues at half
+    /// speed for the slow's duration; another hit refreshes the duration and never stacks.
+    #[test]
+    fn an_arrow_slows_a_pursuing_monster_and_a_second_hit_refreshes_it() {
+        on_each_backend(|| {
+            let slow = content().slow;
+            let (mut game, x, z) = bow_arena();
+            place_monster(&mut game, 1, x + 600, z);
+            command(
+                &mut game,
+                ArpgCommand::SetAim {
+                    direction: Some([1_000, 0]),
+                },
+            );
+            let shoot = |game: &mut ArpgGame| {
+                draw_for(game, BOW_FULL_DRAW_TICKS);
+                command(game, ArpgCommand::ReleaseBow { aim: None });
+                for _ in 0..40 {
+                    game.advance_tick().unwrap();
+                    if game.strike_outcomes().iter().any(|outcome| {
+                        outcome.target == StrikeTarget::Monster(1)
+                            && matches!(outcome.result, StrikeResult::Hit { .. })
+                    }) {
+                        return;
+                    }
+                }
+                panic!("the arrow never slowed the brute");
+            };
+            let target = |game: &ArpgGame| *game.monsters.iter().find(|m| m.id == 1).unwrap();
+            shoot(&mut game);
+            assert_eq!(
+                target(&game).slow.unwrap().ticks_remaining,
+                slow.duration_ticks
+            );
+            // Past its stagger, it pursues at half speed.
+            for _ in 0..10 {
+                game.advance_tick().unwrap();
+            }
+            let full = brute().pursuit_speed as f32;
+            let before = target(&game).position;
+            game.advance_tick().unwrap();
+            let step = (target(&game).position - before).length();
+            assert!(step > 0.0 && step <= full / 2.0 + 1.0e-3, "{step}");
+            // A second hit refreshes, never stacks: still half speed.
+            shoot(&mut game);
+            assert_eq!(
+                target(&game).slow.unwrap().ticks_remaining,
+                slow.duration_ticks
+            );
+            for _ in 0..10 {
+                game.advance_tick().unwrap();
+            }
+            let before = target(&game).position;
+            game.advance_tick().unwrap();
+            let step = (target(&game).position - before).length();
+            assert!(
+                step > full / 2.0 - 1.0e-3 && step <= full / 2.0 + 1.0e-3,
+                "{step}"
+            );
+            // It wears off.
+            for _ in 0..slow.duration_ticks {
+                game.advance_tick().unwrap();
+            }
+            assert!(target(&game).slow.is_none());
         });
     }
 }

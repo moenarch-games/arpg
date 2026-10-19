@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ActionKind, ComboInput};
 
-pub const CONTENT_FORMAT_VERSION: u16 = 13;
+pub const CONTENT_FORMAT_VERSION: u16 = 14;
 /// Touching monster and player bodies keep their centres up to √2 times their
 /// combined XZ half extents apart (85 units), and pursuit stops one navigation
 /// cell inside strike reach, so a monster strike must reach past both.
@@ -80,6 +80,17 @@ pub struct ContentBundle {
     pub crate_prop: CrateData,
     /// Static poison pools in combat rooms and the poison they apply (#64).
     pub poison: PoisonData,
+    /// The slow a player's arrow puts on a monster it hits (#64).
+    pub slow: SlowData,
+}
+
+/// Slow (#64, Atlas 5.3.2): a monster a player's arrow hits pursues at `speedPercent` of
+/// its speed for `durationTicks`; another hit refreshes the duration, never stacks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SlowData {
+    pub duration_ticks: u16,
+    pub speed_percent: u8,
 }
 
 /// Poison pools (#64, Atlas 5.3.2): a player whose body touches a pool is poisoned for
@@ -581,6 +592,7 @@ pub(crate) struct Resolved {
     pub jump: JumpTuning,
     pub crate_prop: CrateData,
     pub poison: PoisonData,
+    pub slow: SlowData,
 }
 
 impl Resolved {
@@ -1260,6 +1272,13 @@ impl ContentBundle {
                 "poison needs positive damage and interval, and a duration of 1..=600 ticks spanning one interval",
             );
         }
+        let slow = self.slow;
+        if !(1..=600).contains(&slow.duration_ticks) || !(1..=99).contains(&slow.speed_percent) {
+            fail(
+                "slow".into(),
+                "slow needs a duration of 1..=600 ticks and a speed of 1..=99 percent",
+            );
+        }
         if crate_prop.per_combat_room > 4 {
             fail(
                 "crate.perCombatRoom".into(),
@@ -1286,6 +1305,7 @@ impl ContentBundle {
                 jump: JumpTuning::new(jump),
                 crate_prop,
                 poison,
+                slow,
             })
         } else {
             Err(errors)
