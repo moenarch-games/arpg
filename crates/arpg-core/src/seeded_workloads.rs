@@ -25,9 +25,12 @@ pub(super) enum Case {
     Ledge,
     /// The traversal scenario's low ceiling (#209): walking under it and jumping into it.
     Ceiling,
+    /// The traversal scenario end to end (#210): onto the platform, up onto the bridge,
+    /// off its side and back along the floor path beneath it.
+    Traversal,
 }
 impl Case {
-    pub(super) const ALL: [Self; 13] = [
+    pub(super) const ALL: [Self; 14] = [
         Self::Quiet,
         Self::PartyQuiet,
         Self::Sparse,
@@ -41,11 +44,12 @@ impl Case {
         Self::Jump,
         Self::Ledge,
         Self::Ceiling,
+        Self::Traversal,
     ];
     /// The workloads whose saves restore: the others move monsters out of their generated
     /// rooms, which a save rejects.
     #[cfg(test)]
-    pub(super) const SAVED: [Self; 9] = [
+    pub(super) const SAVED: [Self; 10] = [
         Self::Sparse,
         Self::Corner,
         Self::Door,
@@ -55,6 +59,7 @@ impl Case {
         Self::Jump,
         Self::Ledge,
         Self::Ceiling,
+        Self::Traversal,
     ];
     pub(super) fn name(self) -> &'static str {
         match self {
@@ -71,11 +76,12 @@ impl Case {
             Self::Jump => "jump",
             Self::Ledge => "ledge",
             Self::Ceiling => "ceiling",
+            Self::Traversal => "traversal",
         }
     }
 }
 pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
-    let mut game = if matches!(case, Case::Ledge | Case::Ceiling) {
+    let mut game = if matches!(case, Case::Ledge | Case::Ceiling | Case::Traversal) {
         ArpgGame::arranged_scenario(ScenarioId::Traversal, seed).unwrap()
     } else {
         ArpgGame::new_with_seed(seed).unwrap()
@@ -177,14 +183,21 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
         Case::Door if tick == 0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
         Case::Jump if tick == 0 => Some(ArpgCommand::SetMovement { x: -1, z: 1 }),
         Case::Jump if tick % 40 == 5 => Some(ArpgCommand::Jump),
+        // Onto the platform, off its south side, and back up onto it from the south.
         Case::Ledge if tick == 0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
-        Case::Ledge if tick == 70 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
-        Case::Ledge if tick == 7 || tick == 82 => Some(ArpgCommand::Jump),
+        Case::Ledge if tick == 40 => Some(ArpgCommand::SetMovement { x: 0, z: 1 }),
+        Case::Ledge if tick == 70 => Some(ArpgCommand::SetMovement { x: 0, z: -1 }),
+        Case::Ledge if tick == 7 || tick == 78 => Some(ArpgCommand::Jump),
         // North under the ceiling, a standing jump into it, then jumps while walking out.
         Case::Ceiling if tick == 0 => Some(ArpgCommand::SetMovement { x: 0, z: -1 }),
         Case::Ceiling if tick == 36 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
         Case::Ceiling if tick == 70 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
         Case::Ceiling if tick == 40 || tick == 72 || tick == 100 => Some(ArpgCommand::Jump),
+        Case::Traversal if tick == 0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
+        Case::Traversal if tick == 7 || tick == 47 => Some(ArpgCommand::Jump),
+        Case::Traversal if tick == 75 => Some(ArpgCommand::SetMovement { x: 0, z: 1 }),
+        Case::Traversal if tick == 100 => Some(ArpgCommand::SetMovement { x: 0, z: -1 }),
+        Case::Traversal if tick == 115 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
         Case::Combat if tick < 64 && tick.is_multiple_of(16) => {
             Some(ArpgCommand::PrimaryAttack { aim: None })
         }

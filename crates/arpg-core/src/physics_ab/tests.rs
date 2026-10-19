@@ -280,6 +280,8 @@ struct Comparison {
     max_position_on_edge: f32,
     /// Ticks on which a player of either game belongs to a region above the floor.
     raised_region_ticks: u32,
+    /// Every region membership a player of either game held.
+    memberships: std::collections::BTreeSet<String>,
     /// Ticks on which an airborne player's head touches a ceiling's underside, in either game.
     ceiling_touches: u32,
     /// First tick whose game-visible outcomes differ.
@@ -487,6 +489,9 @@ fn compare(case: Case, seed: u32) -> Comparison {
                 comparison.raised_region_ticks += 1;
             }
             for state in game.players.values() {
+                comparison.memberships.insert(format!("{:?}", state.region));
+            }
+            for state in game.players.values() {
                 let head = state.position.y + PLAYER_HALF_EXTENTS.y as f32;
                 let touches = game.static_colliders.iter().any(|collider| {
                     let [x, y, z] = collider.position.map(|value| value as f32);
@@ -593,6 +598,20 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
             for (backend, violations) in &comparison.violations {
                 for violation in violations.iter().take(5) {
                     failures.push(format!("{context} on {backend}: {violation}"));
+                }
+            }
+            if case == Case::Traversal {
+                for expected in [
+                    "Region { id: 3 }",
+                    "Transit { connection: 3 }",
+                    "Transit { connection: 4 }",
+                ] {
+                    if !comparison.memberships.contains(expected) {
+                        failures.push(format!(
+                            "{context}: never {expected}: {:?}",
+                            comparison.memberships
+                        ));
+                    }
                 }
             }
             if case == Case::Ceiling && comparison.ceiling_touches == 0 {
