@@ -5,7 +5,7 @@ Gameplay tuning lives in one typed, versioned bundle:
 validated by [`content.rs`](../crates/arpg-core/src/content.rs). Definitions *select*
 supported behaviour; executable rules stay in Rust. Appearance and audio never live here.
 
-## What the bundle holds (format 12)
+## What the bundle holds (format 13)
 
 | Section | Contents |
 | --- | --- |
@@ -112,6 +112,15 @@ units off the walls, at most four per room. Player melee and player arrows break
 monster shots stop at them; they drop nothing.
 Validation: positive health, `halfExtents` within `10..=100` across and `10..=200` high, a
 height above a jump's apex (no crate is walkable ground), and at most four per room.
+
+## Poison pools
+
+`poison` (`poolRadius`, `poolsPerCombatRoom`, `durationTicks`, `intervalTicks`, `damage`)
+places a poison pool in each combat room's south-west corner (#64, Atlas 5.3.2) and defines the
+poison it applies: a player touching a pool is poisoned for `durationTicks`, taking `damage`
+every `intervalTicks`; touching it again refreshes the duration, never stacks. Validation: a
+radius within `20..=200`, at most one pool per room, positive damage and interval, and a
+duration of `1..=600` ticks spanning at least one interval.
 
 ## Adding a definition
 
