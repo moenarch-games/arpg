@@ -41,6 +41,19 @@ use operation_work::{Counter, count};
 #[cfg(feature = "operation-work")]
 pub use operation_work::{OperationWork, WorkFixture, contract::check_work_contract};
 
+/// The point of the segment from `from` to `to` nearest `target` on the plane (heights are
+/// taken from `to`): where a swept strike measures its reach and obstruction from (#90).
+fn closest_on_segment(from: Vector, to: Vector, target: Vector) -> Vector {
+    let (dx, dz) = (to.x - from.x, to.z - from.z);
+    let length_sq = dx * dx + dz * dz;
+    let t = if length_sq > 0.0 {
+        (((target.x - from.x) * dx + (target.z - from.z) * dz) / length_sq).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    Vector::new(from.x + dx * t, to.y, from.z + dz * t)
+}
+
 /// A position or extent in whole world units: level layout and snapshots. Authoritative
 /// positions and velocities are `f32` ([`Vector`]) and gameplay rules read them directly;
 /// only snapshots round them, through [`Vec3i::rounded`] (Atlas 2.3.2, #182).
@@ -94,7 +107,8 @@ pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// 16: walkable topology (#207): a player's region membership or transit; schema 15 saves
 /// are refused.
 /// 17: fall recovery (#211): a player's last supported position; schema 16 saves are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 17;
+/// 18: lunging attacks (#90): a monster action's lunge; schema 17 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 18;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -1607,12 +1621,14 @@ pub struct RoomSaveState {
     pub encounter_state: RoomEncounterState,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MonsterActionSaveState {
     pub phase: ActionPhase,
     pub ticks_remaining: u8,
     pub target_player_id: PlayerId,
+    /// A lunge in progress (#90), while a lunging attack is active.
+    pub lunge: Option<MonsterLunge>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1709,6 +1725,20 @@ struct MonsterActionState {
     phase: ActionPhase,
     ticks_remaining: u8,
     target_player_id: PlayerId,
+    /// A lunging attack's committed motion and strike, through its active window (#90).
+    lunge: Option<MonsterLunge>,
+}
+
+/// A lunge in progress (#90): the direction committed when the active window opened, the
+/// strike's identity and whether it has connected (a strike reaches its target once).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MonsterLunge {
+    /// Unit direction on the plane, `[x, z]`.
+    pub direction: [f32; 2],
+    /// The tick on which the active window opened: the strike's identity.
+    pub strike_tick: u64,
+    pub connected: bool,
 }
 
 impl MonsterActionState {
@@ -1851,6 +1881,9 @@ struct MonsterState {
     cornered: bool,
     /// Shield guard of a shield monster (#92); `held` is its engagement policy's choice.
     guard: Option<GuardState>,
+    /// Transient within a tick, never saved: where the body stood before this tick's
+    /// physics pass, the start of a lunge's swept strike (#90).
+    swept_from: Vector,
 }
 
 impl MonsterState {
@@ -1877,6 +1910,7 @@ impl MonsterState {
             guard: definition
                 .shield
                 .then(|| GuardState::ready(guard_max_points)),
+            swept_from: vector(position),
         }
     }
 
@@ -2578,6 +2612,7 @@ impl ArpgGame {
                         phase: action.phase,
                         ticks_remaining: action.ticks_remaining,
                         target_player_id: action.target_player_id,
+                        lunge: action.lunge,
                     }),
                     stagger_ticks_remaining: monster.stagger_ticks_remaining,
                     post: monster.post.map(|post| post.to_array()),
@@ -2881,9 +2916,25 @@ impl ArpgGame {
                     ActionPhase::Active => definition.active_ticks,
                     ActionPhase::Recovery => definition.recovery_ticks,
                 };
+                // A lunging attack carries its lunge exactly while active (#90).
+                let lunging =
+                    action.phase == ActionPhase::Active && definition.lunge_speed.is_some();
+                let lunge_valid = match action.lunge {
+                    None => !lunging,
+                    Some(lunge) => {
+                        let [x, z] = lunge.direction;
+                        let length = x * x + z * z;
+                        lunging
+                            && x.is_finite()
+                            && z.is_finite()
+                            && (length == 0.0 || (length - 1.0).abs() <= 1.0e-3)
+                            && lunge.strike_tick < save.tick
+                    }
+                };
                 if action.ticks_remaining == 0
                     || action.ticks_remaining > maximum_ticks
                     || action.target_player_id == 0
+                    || !lunge_valid
                 {
                     return Err(GameError::new("saved monster action is invalid"));
                 }
@@ -2920,11 +2971,13 @@ impl ArpgGame {
                 return Err(GameError::new("saved monster position is outside its room"));
             }
             monster.position = position;
+            monster.swept_from = position;
             monster.health = saved.health;
             monster.action = saved.action.map(|action| MonsterActionState {
                 phase: action.phase,
                 ticks_remaining: action.ticks_remaining,
                 target_player_id: action.target_player_id,
+                lunge: action.lunge,
             });
             monster.stagger_ticks_remaining = saved.stagger_ticks_remaining;
             monster.post = saved.post.map(Vector::from_array);
@@ -4651,10 +4704,13 @@ impl ArpgGame {
         )
     }
 
+    /// A monster's melee strike at its target: around where it stands, or (`swept_from`)
+    /// along the path its lunge travelled this tick (#90). A lunge's strike connects once.
     fn resolve_monster_attack(
         &mut self,
         monster_id: u32,
         target_player_id: PlayerId,
+        swept_from: Option<Vector>,
     ) -> Result<(), GameError> {
         let Some(monster) = self
             .monsters
@@ -4663,7 +4719,20 @@ impl ArpgGame {
         else {
             return Ok(());
         };
-        self.resolve_monster_strike(monster_id, target_player_id, monster.definition().strike)
+        let definition = monster.definition().strike;
+        let connected =
+            self.resolve_monster_strike(monster_id, target_player_id, definition, swept_from)?;
+        if connected
+            && let Some(lunge) = self
+                .monsters
+                .iter_mut()
+                .find(|monster| monster.id == monster_id)
+                .and_then(|monster| monster.action.as_mut())
+                .and_then(|action| action.lunge.as_mut())
+        {
+            lunge.connected = true;
+        }
+        Ok(())
     }
 
     /// Resolves the shield before damage: a valid block or guard break never touches health.
@@ -4699,46 +4768,60 @@ impl ArpgGame {
         })
     }
 
+    /// Resolves a monster strike at `target_player_id`; whether it contacted the target
+    /// (hit, block, guard break or obstruction). A swept strike (#90) is measured from the
+    /// point of the path from `swept_from` to the monster nearest the target.
     fn resolve_monster_strike(
         &mut self,
         monster_id: u32,
         target_player_id: PlayerId,
         definition: StrikeDefinition,
-    ) -> Result<(), GameError> {
+        swept_from: Option<Vector>,
+    ) -> Result<bool, GameError> {
         let monster = self
             .monsters
             .iter()
             .find(|monster| monster.id == monster_id && monster.health > 0)
-            .map(|monster| (monster.position, monster.definition().damage));
-        let Some((monster_position, monster_damage)) = monster else {
-            return Ok(());
+            .map(|monster| {
+                (
+                    monster.position,
+                    monster.definition().damage,
+                    monster.action.and_then(|action| action.lunge),
+                )
+            });
+        let Some((monster_position, monster_damage, lunge)) = monster else {
+            return Ok(false);
         };
         let target_position = self
             .players
             .get(&target_player_id)
             .map(|state| state.position);
         let Some(target_position) = target_position else {
-            return Ok(());
+            return Ok(false);
         };
         let target_alive = self
             .players
             .get(&target_player_id)
             .is_some_and(|player| player.health > 0);
         if !target_alive {
-            return Ok(());
+            return Ok(false);
         }
 
+        let origin = swept_from.map_or(monster_position, |from| {
+            closest_on_segment(from, monster_position, target_position)
+        });
         let contacts = self.strike_contacts(
             definition,
             StrikeTarget::Monster(monster_id),
-            monster_position,
+            origin,
             (0.0, 0.0),
             [(StrikeTarget::Player(target_player_id), target_position)],
         )?;
         let strike = StrikeId {
             source: StrikeSource::Monster(monster_id),
-            tick: self.tick,
+            tick: lunge.map_or(self.tick, |lunge| lunge.strike_tick),
         };
+        let connected = !contacts.is_empty();
         for (target, obstructed) in contacts {
             if obstructed {
                 self.push_strike_outcome(StrikeOutcome {
@@ -4755,11 +4838,11 @@ impl ArpgGame {
                     monster_damage,
                     target_player_id,
                     target_position,
-                    monster_position,
+                    origin,
                 )?;
             }
         }
-        Ok(())
+        Ok(connected)
     }
 
     /// A monster strike or shot that reached `player_id` unobstructed: the shield first,
@@ -4897,8 +4980,21 @@ impl ArpgGame {
             {
                 continue;
             }
-            let steering = self.steering(monster, &targets)?;
             let definition = monster.definition();
+            // A lunge drives the body through its active window (#90).
+            if let Some(action) = monster.action
+                && action.phase == ActionPhase::Active
+                && let (Some(lunge), Some(speed)) = (action.lunge, definition.lunge_speed)
+            {
+                let [x, z] = lunge.direction;
+                velocities.push((
+                    index,
+                    Vector::new(x * speed, 0.0, z * speed),
+                    Steering::Hold,
+                ));
+                continue;
+            }
+            let steering = self.steering(monster, &targets)?;
             let (goal, goal_reach) = match steering {
                 Steering::Hold => {
                     velocities.push((index, Vector::ZERO, steering));
@@ -5268,6 +5364,7 @@ impl ArpgGame {
         let targets = self.monster_targets();
 
         let mut hits = Vec::new();
+        let mut sweeps = Vec::new();
         for index in 0..self.monsters.len() {
             let mut monster = self.monsters[index];
             let definition = monster.definition();
@@ -5285,6 +5382,12 @@ impl ArpgGame {
                     }
                 }
             } else if let Some(mut action) = monster.action {
+                // A lunge that moved this tick sweeps the path it travelled (#90).
+                if action.phase == ActionPhase::Active
+                    && action.lunge.is_some_and(|lunge| !lunge.connected)
+                {
+                    sweeps.push((monster.id, action.target_player_id, monster.swept_from));
+                }
                 if action.ticks_remaining > 1 {
                     action.ticks_remaining -= 1;
                     monster.action = Some(action);
@@ -5293,6 +5396,21 @@ impl ArpgGame {
                         ActionPhase::Windup => {
                             action.phase = ActionPhase::Active;
                             action.ticks_remaining = definition.active_ticks;
+                            // A lunge commits to where its target stands now (#90).
+                            action.lunge = definition.lunge_speed.map(|_| MonsterLunge {
+                                direction: targets
+                                    .iter()
+                                    .find(|&&(id, ..)| id == action.target_player_id)
+                                    .and_then(|&(.., at)| {
+                                        let (dx, dz) = xz_delta(monster.position, at);
+                                        let length = dx.hypot(dz);
+                                        (length > 0.0)
+                                            .then(|| [(dx / length) as f32, (dz / length) as f32])
+                                    })
+                                    .unwrap_or([0.0, 0.0]),
+                                strike_tick: self.tick,
+                                connected: false,
+                            });
                             monster.action = Some(action);
                             hits.push((monster.id, action.target_player_id));
                         }
@@ -5326,6 +5444,7 @@ impl ArpgGame {
                         phase: ActionPhase::Windup,
                         ticks_remaining: definition.windup_ticks,
                         target_player_id,
+                        lunge: None,
                     });
                 }
                 // A shield monster holds its guard whenever it is engaged and free, so it
@@ -5349,8 +5468,11 @@ impl ArpgGame {
             if shoots {
                 self.launch_monster_projectile(monster_id, target_player_id)?;
             } else {
-                self.resolve_monster_attack(monster_id, target_player_id)?;
+                self.resolve_monster_attack(monster_id, target_player_id, None)?;
             }
+        }
+        for (monster_id, target_player_id, from) in sweeps {
+            self.resolve_monster_attack(monster_id, target_player_id, Some(from))?;
         }
         Ok(())
     }
@@ -5444,6 +5566,9 @@ impl ArpgGame {
             );
             state.position = motion.to;
             Self::settle_support(&jump, &self.topology, state, motion.supported);
+        }
+        for monster in &mut self.monsters {
+            monster.swept_from = monster.position;
         }
         for &(index, velocity) in monster_motions {
             let monster = &mut self.monsters[index];
@@ -7980,7 +8105,7 @@ mod tests {
 
     fn claw(game: &mut ArpgGame, monster_id: u32) -> StrikeResult {
         game.strike_outcomes.clear();
-        game.resolve_monster_strike(monster_id, 1, monster_claw())
+        game.resolve_monster_strike(monster_id, 1, monster_claw(), None)
             .unwrap();
         assert_eq!(game.strike_outcomes.len(), 1);
         game.strike_outcomes[0].result
@@ -8132,8 +8257,10 @@ mod tests {
         raise_guard_fully(&mut game);
         game.players.get_mut(&1).unwrap().guard.points = 50;
         game.strike_outcomes.clear();
-        game.resolve_monster_strike(1, 1, monster_claw()).unwrap();
-        game.resolve_monster_strike(2, 1, monster_claw()).unwrap();
+        game.resolve_monster_strike(1, 1, monster_claw(), None)
+            .unwrap();
+        game.resolve_monster_strike(2, 1, monster_claw(), None)
+            .unwrap();
         assert_eq!(
             targets(&game.strike_outcomes),
             [
@@ -8153,7 +8280,8 @@ mod tests {
             blockable: false,
             ..monster_claw()
         };
-        game.resolve_monster_strike(1, 1, unblockable).unwrap();
+        game.resolve_monster_strike(1, 1, unblockable, None)
+            .unwrap();
         assert_eq!(game.strike_outcomes[0].result, CLAW_HIT);
         assert_eq!(game.players.get(&1).unwrap().guard.points, MAX_GUARD_POINTS);
     }
@@ -11088,6 +11216,7 @@ mod tests {
             phase: ActionPhase::Windup,
             ticks_remaining: skirmisher.windup_ticks + 1,
             target_player_id: 1,
+            lunge: None,
         });
         assert!(skirmisher.windup_ticks < brute().windup_ticks);
         assert!(ArpgGame::from_save_state(long_windup).is_err());
@@ -11669,7 +11798,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 17"
+            "unsupported ARPG save schema version 12; expected 18"
         );
     }
 
@@ -11684,7 +11813,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 13; expected 17"
+            "unsupported ARPG save schema version 13; expected 18"
         );
     }
 
@@ -12615,6 +12744,7 @@ mod tests {
                     phase: ActionPhase::Windup,
                     ticks_remaining: 1,
                     target_player_id: 1,
+                    lunge: None,
                 });
                 monster.guard = Some(GuardState { held, ..ready });
             })
@@ -14052,5 +14182,170 @@ mod tests {
             ArpgGame::from_save_state(save).unwrap_err().message(),
             "saved player last supported position is invalid"
         );
+    }
+
+    /// A skirmisher `distance` units east of player 1 (in the strike arena), its wind-up
+    /// ending on the next tick; optionally a thin wall between them (#90).
+    fn lunge_arena(distance: i32, wall: bool) -> (ArpgGame, i32, i32) {
+        let (mut game, x, z) = strike_arena();
+        place_monster_of(&mut game, 1, SKIRMISHER, x + distance, z);
+        if wall {
+            place_blocker(&mut game, 1, x + 60, z, Vec3i::new(5, 100, 100));
+        }
+        game.monsters[0].engagement = Engagement::Engaged {
+            target_player_id: 1,
+        };
+        game.monsters[0].action = Some(MonsterActionState {
+            phase: ActionPhase::Windup,
+            ticks_remaining: 1,
+            target_player_id: 1,
+            lunge: None,
+        });
+        (game, x, z)
+    }
+
+    /// Advances `ticks` ticks; every strike outcome of monster 1, with the tick it came on.
+    fn lunge_outcomes(game: &mut ArpgGame, ticks: u32) -> Vec<(u64, StrikeOutcome)> {
+        let mut outcomes = Vec::new();
+        for _ in 0..ticks {
+            game.advance_tick().unwrap();
+            outcomes.extend(
+                game.strike_outcomes()
+                    .iter()
+                    .filter(|outcome| outcome.strike.source == StrikeSource::Monster(1))
+                    .map(|outcome| (game.tick, outcome.clone())),
+            );
+        }
+        outcomes
+    }
+
+    #[test]
+    fn a_lunge_catches_a_target_beyond_its_reach_once_along_its_path() {
+        on_each_backend(|| {
+            let reach = skirmisher().strike.reach;
+            let speed = skirmisher().lunge_speed.unwrap();
+            assert!(skirmisher().active_ticks >= 2);
+            // Out of reach when the window opens: an in-place strike would miss.
+            let distance = i32::try_from(reach).unwrap() + 20;
+            let (mut game, x, _) = lunge_arena(distance, false);
+            let health = game.players[&1].health;
+            let outcomes = lunge_outcomes(&mut game, 12);
+            assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+            let (tick, outcome) = &outcomes[0];
+            assert!(
+                matches!(outcome.result, StrikeResult::Hit { .. }),
+                "{outcome:?}"
+            );
+            // The strike keeps the identity of the tick its window opened on, and lands
+            // after the lunge has closed the distance.
+            assert_eq!(outcome.strike.tick, 0);
+            assert!(*tick >= 2, "{tick}");
+            assert!(game.players[&1].health < health);
+            // The body travelled towards the target, stopping short of overlapping it.
+            let travelled = (x + distance) as f32 - game.monsters[0].position.x;
+            assert!(travelled > speed, "{travelled}");
+            assert!(game.monsters[0].position.x - x as f32 >= 60.0 - 0.5);
+        });
+    }
+
+    #[test]
+    fn a_lunge_into_a_thin_wall_stops_at_it_and_is_obstructed() {
+        on_each_backend(|| {
+            let reach = i32::try_from(skirmisher().strike.reach).unwrap();
+            let (mut game, x, _) = lunge_arena(reach + 20, true);
+            let health = game.players[&1].health;
+            let outcomes = lunge_outcomes(&mut game, 12);
+            assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+            assert_eq!(outcomes[0].1.result, StrikeResult::Obstructed);
+            assert_eq!(game.players[&1].health, health);
+            // It never passed the wall's east face (x + 65) with its 30-unit body.
+            assert!(
+                game.monsters[0].position.x >= (x + 65 + 30) as f32 - 0.5,
+                "{:?}",
+                game.monsters[0].position
+            );
+        });
+    }
+
+    #[test]
+    fn a_save_mid_lunge_continues_exactly() {
+        on_each_backend(|| {
+            // The generated skirmisher closes in, winds up and lunges; saved mid-lunge.
+            let (mut game, id) = skirmisher_room(400);
+            let lunging = |game: &ArpgGame| {
+                game.monsters
+                    .iter()
+                    .find(|monster| monster.id == id)
+                    .and_then(|monster| monster.action)
+                    .is_some_and(|action| action.lunge.is_some())
+            };
+            for _ in 0..300 {
+                if lunging(&game) {
+                    break;
+                }
+                game.advance_tick().unwrap();
+            }
+            game.advance_tick().unwrap();
+            assert!(lunging(&game));
+            let save = game.save_state().unwrap();
+            let index = save
+                .monsters
+                .iter()
+                .position(|monster| monster.id == id)
+                .unwrap();
+            let action = save.monsters[index].action.unwrap();
+            assert_eq!(action.phase, ActionPhase::Active);
+            assert!(action.lunge.is_some());
+            let mut restored = ArpgGame::from_save_state(save).unwrap();
+            for tick in 0..30 {
+                game.advance_tick().unwrap();
+                restored.advance_tick().unwrap();
+                assert_eq!(
+                    restored.snapshot().unwrap(),
+                    game.snapshot().unwrap(),
+                    "{tick}"
+                );
+                assert_eq!(
+                    restored.save_state().unwrap(),
+                    game.save_state().unwrap(),
+                    "{tick}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn saves_reject_a_lunge_on_a_monster_that_does_not_lunge() {
+        let mut game = ArpgGame::new_with_seed(91).unwrap();
+        game.add_player(1).unwrap();
+        for _ in 0..3 {
+            game.advance_tick().unwrap();
+        }
+        let mut save = game.save_state().unwrap();
+        let brute = save
+            .monsters
+            .iter_mut()
+            .find(|monster| {
+                *content().id(game
+                    .monsters
+                    .iter()
+                    .find(|m| m.id == monster.id)
+                    .unwrap()
+                    .definition()
+                    .id)
+                    == *BRUTE
+            })
+            .unwrap();
+        brute.action = Some(MonsterActionSaveState {
+            phase: ActionPhase::Active,
+            ticks_remaining: 1,
+            target_player_id: 1,
+            lunge: Some(MonsterLunge {
+                direction: [1.0, 0.0],
+                strike_tick: 0,
+                connected: false,
+            }),
+        });
+        assert!(ArpgGame::from_save_state(save).is_err());
     }
 }

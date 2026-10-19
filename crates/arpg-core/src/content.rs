@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ActionKind, ComboInput};
 
-pub const CONTENT_FORMAT_VERSION: u16 = 9;
+pub const CONTENT_FORMAT_VERSION: u16 = 10;
 /// Touching monster and player bodies keep their centres up to √2 times their
 /// combined XZ half extents apart (85 units), and pursuit stops one navigation
 /// cell inside strike reach, so a monster strike must reach past both.
@@ -43,6 +43,9 @@ pub const MAX_DEFINITION_ID_LENGTH: usize = 64;
 pub const MAX_ENCOUNTER_SPAWNS: usize = 8;
 const _: () = assert!(MAX_ENCOUNTER_SPAWNS >= 1);
 const _: () = assert!(MAX_ENCOUNTER_SPAWNS <= crate::MAX_WORKBENCH_MONSTERS);
+/// Fastest lunge (world units per tick): a body moved this far per tick stays well inside the
+/// character controller's swept motion and a player's 60-unit width.
+const MAX_LUNGE_SPEED: u8 = 40;
 /// Slowest monster projectile: integer velocities still aim diagonally within a few degrees.
 pub(crate) const MIN_PROJECTILE_SPEED: u16 = 16;
 
@@ -318,6 +321,18 @@ pub struct MonsterData {
     /// Shield user (#92): an engaged monster holds the shared shield guard (`guard`
     /// tuning, `guard_outcome` rules) while it is free and lowers it to attack.
     pub shield: bool,
+    /// The attack lunges (#90): through its active window the monster moves towards where
+    /// its target stood when the window opened, and the strike sweeps the path it travels.
+    /// `null` strikes in place.
+    pub lunge: Option<LungeData>,
+}
+
+/// A lunging attack's motion (#90).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LungeData {
+    /// World units per active tick.
+    pub speed: u8,
 }
 
 /// A monster projectile: it flies the shared arrow path and resolves through the
@@ -454,6 +469,8 @@ pub(crate) struct MonsterDef {
     pub retreat_range: Option<i64>,
     pub projectile: Option<ProjectileDefinition>,
     pub shield: bool,
+    /// Lunge speed in world units per active tick (#90).
+    pub lunge_speed: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -920,6 +937,20 @@ impl ContentBundle {
                     );
                 }
             }
+            if let Some(lunge) = monster.lunge {
+                if !(1..=MAX_LUNGE_SPEED).contains(&lunge.speed) {
+                    fail(
+                        path.clone(),
+                        &format!("lunge speed must be within 1..={MAX_LUNGE_SPEED}"),
+                    );
+                }
+                if monster.active_ticks < 2 {
+                    fail(path.clone(), "a lunge needs at least two active ticks");
+                }
+                if monster.projectile.is_some() {
+                    fail(path.clone(), "a projectile attack cannot lunge");
+                }
+            }
             match strike_by_id.get(monster.strike.as_str()) {
                 Some(strike) => {
                     if strike.1.reach < MIN_MONSTER_STRIKE_REACH {
@@ -951,6 +982,7 @@ impl ContentBundle {
                             lifetime_ticks: projectile.lifetime_ticks,
                         }),
                         shield: monster.shield,
+                        lunge_speed: monster.lunge.map(|lunge| f32::from(lunge.speed)),
                     });
                 }
                 None => fail(path, "references an unknown strike"),

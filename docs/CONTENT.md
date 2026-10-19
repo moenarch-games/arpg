@@ -5,7 +5,7 @@ Gameplay tuning lives in one typed, versioned bundle:
 validated by [`content.rs`](../crates/arpg-core/src/content.rs). Definitions *select*
 supported behaviour; executable rules stay in Rust. Appearance and audio never live here.
 
-## What the bundle holds (format 9)
+## What the bundle holds (format 10)
 
 | Section | Contents |
 | --- | --- |
@@ -13,7 +13,7 @@ supported behaviour; executable rules stay in Rust. Appearance and audio never l
 | `actions` | One definition per supported `ActionKind`: phase ticks, strike, damage ratio, stagger. |
 | `combos` | Light/heavy transitions between striking actions and their input windows. |
 | `counterWindowTicks` | How long a successful block keeps the counter open. |
-| `monsters` | Enemy definitions: health, strike, phase ticks, damage, experience, pursuit speed, aggro/leash/switch/reacquire/separation, and the role parameters `retreatRange`, `projectile` and `shield` (see below). |
+| `monsters` | Enemy definitions: health, strike, phase ticks, damage, experience, pursuit speed, aggro/leash/switch/reacquire/separation, and the role parameters `retreatRange`, `projectile`, `shield` and `lunge` (see below). |
 | `encounters` | Room encounters: a bounded `spawnGroup`, an `activation` and a `completion` rule, and the `reward` clearing it unlocks (see below). |
 | `rewards` | Rewards encounters refer to: `kind` (`chest`) and the `gold` it pays. |
 | `roomEncounters` | The encounter of each combat room, in generation order (repeats when rooms outnumber entries). |
@@ -92,6 +92,7 @@ is no per-role AI.
 | Role | Built-in | What selects it |
 | --- | --- | --- |
 | Melee pressure | `monster.brute`, `monster.skirmisher` | `retreatRange: null`, `projectile: null`: closes to strike reach and strikes around itself. |
+| Lunger | `monster.skirmisher` | `lunge` (`speed`, world units per tick): as its active window opens it commits to where its target stands, then moves that way through physics for every active tick (5 ticks at 16 units for the skirmisher), and its strike sweeps the path it actually travelled each tick: a target within reach of that path is struck once, from the path's nearest point, with obstruction tested from there (#90). A wall stops the body, so a lunge never strikes through one. |
 | Ranged | `monster.archer` | `retreatRange` keeps it in a band from that distance out to strike reach: a player who comes nearer makes it back off through its room grid, never nearer to the player and never into fixed bodies, before it shoots again. With nowhere to go it shoots from where it stands. `projectile` (`speed`, `lifetimeTicks`) makes the attack launch a shot along the arrow path at the target's position as the active phase opens; the monster's strike still decides reach, line of sight, block and guard cost, and `damage` the hurt. |
 | Shielded defender | `monster.defender` | `shield: true`: it carries the player's shield guard, with the shared `guard` tuning (raise ticks, points, regeneration, block reaction, break ticks) and the same block rules (`guard_outcome`: the raised guard protects 60 degrees either side of where it faces against blockable strikes, each block spends the strike's `guardCost`, and a cost that reaches the remaining points breaks it). Engaged and free, it holds the guard, so it closes on its target with the shield up and faces that target; committing to its attack, a stagger or a guard break lowers it, and it rises again from the start once the monster is free. A short strike reach and slow pursuit leave a sword swing time to meet the shield while it closes; strike from behind or beside, or break the guard, to land damage. Player arrows are not blocked by it yet (#77). |
 | Heavy | `monster.bruiser` | Long `windupTicks`, slow `pursuitSpeed`, high `damage` and a `guardCost` that breaks a full guard. The wind-up holds still and lands at the strike's reach around it, so the answer is to step out of it or interrupt it: any player hit staggers the monster and cancels the wind-up. |
@@ -99,7 +100,8 @@ is no per-role AI.
 Validation: `retreatRange` is at least the minimum monster reach and stays three navigation
 cells inside the strike reach (room for the band); a projectile's speed is `16..=200` and it
 must fly at least the strike reach, less two units per tick, within its lifetime (bounds kept from
-whole-unit shot velocities; shots now fly their exact speed, #182).
+whole-unit shot velocities; shots now fly their exact speed, #182). A lunge's speed is
+`1..=40`, it needs at least two active ticks, and a projectile attack cannot lunge.
 
 ## Adding a definition
 
