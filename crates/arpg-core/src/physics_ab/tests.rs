@@ -647,8 +647,11 @@ const EDGE_POSITION: f32 = 2.0;
 /// where Rapier's controller counts its edge contact as grounded and keeps stepping. The
 /// engine climbs that edge a tick behind, so on the stairs positions differ by up to about 7
 /// units, and support and the region change to the platform for a tick or a few; both reach
-/// the platform. Bounded here, reported every run.
-const STAIRS_POSITION: f32 = 10.0;
+/// the platform. Bounded at what physics-engine `baa9244` measures (7.06 units, 7 ticks),
+/// reported every run.
+const STAIRS_POSITION: f32 = 7.5;
+/// Most stairs ticks whose outcomes may differ only in support or region membership.
+const STAIRS_SUPPORT_TICKS: u32 = 7;
 
 /// Bodies agree to this (world units) until two characters first touch: Rapier's controller
 /// adds a 0.01 unit normal nudge per contact (a body pressed into a corner drifts up to that
@@ -695,6 +698,12 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
                 failures.push(format!(
                     "{context}: positions differ by {} at {:?}",
                     comparison.max_position, comparison.max_position_at
+                ));
+            }
+            if comparison.stairs_support_ticks > STAIRS_SUPPORT_TICKS {
+                failures.push(format!(
+                    "{context}: support differs on {} stairs ticks",
+                    comparison.stairs_support_ticks
                 ));
             }
             if comparison.max_position_on_stairs > STAIRS_POSITION {
