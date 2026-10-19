@@ -69,42 +69,44 @@ server or WASM build enables it.
 
   | workload | players | static boxes | peak monster bodies | backend | median | p95 | p99 | setup median | rebuild share | engine/rapier total |
   |---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
-  | quiet | 1 | 28 | 0 | rapier | 12.8 | 15.8 | 34.7 | 45.8 | 88% |  |
-  | quiet | 1 | 28 | 0 | physics-engine | 0.7 | 0.8 | 0.9 | 46.8 | 3% | 0.06 |
-  | party-quiet | 4 | 28 | 0 | rapier | 18.1 | 22.7 | 37.5 | 52.3 | 72% |  |
-  | party-quiet | 4 | 28 | 0 | physics-engine | 1.9 | 2.2 | 3.4 | 80.0 | 1% | 0.11 |
-  | sparse | 4 | 28 | 0 | rapier | 20.3 | 46.0 | 69.0 | 55.0 | 57% |  |
-  | sparse | 4 | 28 | 0 | physics-engine | 3.3 | 11.2 | 28.0 | 80.4 | 0% | 0.23 |
-  | corner | 1 | 28 | 0 | rapier | 18.5 | 22.3 | 40.2 | 54.2 | 60% |  |
-  | corner | 1 | 28 | 0 | physics-engine | 10.3 | 11.8 | 27.7 | 51.9 | 0% | 0.57 |
-  | door | 1 | 31 | 1 | rapier | 17.0 | 26.0 | 53.3 | 51.4 | 75% |  |
-  | door | 1 | 31 | 1 | physics-engine | 2.8 | 4.7 | 14.3 | 47.5 | 1% | 0.17 |
-  | correction | 1 | 28 | 0 | rapier | 11.5 | 13.6 | 27.3 | 40.6 | 87% |  |
-  | correction | 1 | 28 | 0 | physics-engine | 0.7 | 0.7 | 0.8 | 40.6 | 3% | 0.06 |
-  | combat | 1 | 28 | 1 | rapier | 11.6 | 15.8 | 29.1 | 44.0 | 85% |  |
-  | combat | 1 | 28 | 1 | physics-engine | 0.7 | 0.9 | 1.9 | 69.3 | 3% | 0.06 |
-  | crowd | 1 | 31 | 5 | rapier | 18.8 | 25.8 | 49.5 | 50.1 | 75% |  |
-  | crowd | 1 | 31 | 5 | physics-engine | 2.2 | 6.5 | 9.7 | 76.4 | 1% | 0.14 |
-  | lifecycle | 4 | 28 | 0 | rapier | 17.9 | 37.5 | 42.4 | 45.6 | 60% |  |
-  | lifecycle | 4 | 28 | 0 | physics-engine | 2.9 | 10.6 | 26.9 | 70.6 | 0% | 0.25 |
-  | chase | 1 | 31 | 5 | rapier | 23.3 | 39.2 | 77.6 | 62.7 | 64% |  |
-  | chase | 1 | 31 | 5 | physics-engine | 6.2 | 10.4 | 20.4 | 79.3 | 0% | 0.27 |
-  | jump | 1 | 28 | 0 | rapier | 13.5 | 16.1 | 28.2 | 39.5 | 70% |  |
-  | jump | 1 | 28 | 0 | physics-engine | 3.4 | 4.8 | 5.9 | 38.7 | 1% | 0.25 |
-  | ledge | 1 | 36 | 1 | rapier | 20.1 | 54.0 | 80.9 | 75.1 | 66% |  |
-  | ledge | 1 | 36 | 1 | physics-engine | 3.5 | 25.9 | 38.0 | 86.1 | 0% | 0.24 |
-  | ceiling | 1 | 36 | 1 | rapier | 17.4 | 26.6 | 46.7 | 65.1 | 74% |  |
-  | ceiling | 1 | 36 | 1 | physics-engine | 3.0 | 5.4 | 7.7 | 83.0 | 1% | 0.17 |
-  | traversal | 1 | 36 | 1 | rapier | 16.7 | 42.0 | 74.7 | 74.3 | 70% |  |
-  | traversal | 1 | 36 | 1 | physics-engine | 2.3 | 11.9 | 29.3 | 85.9 | 1% | 0.17 |
-  | lunge | 1 | 30 | 1 | rapier | 14.7 | 24.4 | 69.6 | 46.1 | 77% |  |
-  | lunge | 1 | 30 | 1 | physics-engine | 1.9 | 7.2 | 8.5 | 76.4 | 1% | 0.16 |
-  | crates | 1 | 30 | 1 | rapier | 15.9 | 24.6 | 54.0 | 55.7 | 72% |  |
-  | crates | 1 | 30 | 1 | physics-engine | 2.7 | 4.7 | 6.9 | 75.2 | 1% | 0.16 |
-  | stairs | 1 | 36 | 1 | rapier | 30.2 | 52.1 | 93.7 | 60.9 | 49% |  |
-  | stairs | 1 | 36 | 1 | physics-engine | 2.9 | 10.4 | 15.4 | 85.1 | 1% | 0.12 |
-  | all | | | | rapier | 17.5 | 35.5 | 63.5 | | | |
-  | all | | | | physics-engine | 2.7 | 10.3 | 25.9 | | | |
+  | quiet | 1 | 28 | 0 | rapier | 9.8 | 11.8 | 41.3 | 33.0 | 88% |  |
+  | quiet | 1 | 28 | 0 | physics-engine | 0.6 | 0.6 | 4.1 | 34.6 | 3% | 0.06 |
+  | party-quiet | 4 | 28 | 0 | rapier | 16.3 | 29.3 | 64.0 | 48.1 | 72% |  |
+  | party-quiet | 4 | 28 | 0 | physics-engine | 1.6 | 2.9 | 6.2 | 72.9 | 1% | 0.10 |
+  | sparse | 4 | 28 | 0 | rapier | 17.5 | 44.2 | 75.6 | 53.5 | 57% |  |
+  | sparse | 4 | 28 | 0 | physics-engine | 2.8 | 11.9 | 24.4 | 68.3 | 0% | 0.22 |
+  | corner | 1 | 28 | 0 | rapier | 16.0 | 32.8 | 84.7 | 55.6 | 60% |  |
+  | corner | 1 | 28 | 0 | physics-engine | 8.9 | 13.1 | 27.6 | 43.3 | 0% | 0.53 |
+  | door | 1 | 31 | 1 | rapier | 14.8 | 40.3 | 103.4 | 46.5 | 75% |  |
+  | door | 1 | 31 | 1 | physics-engine | 2.5 | 6.5 | 17.5 | 45.5 | 1% | 0.16 |
+  | correction | 1 | 28 | 0 | rapier | 9.8 | 17.9 | 69.6 | 35.2 | 87% |  |
+  | correction | 1 | 28 | 0 | physics-engine | 0.6 | 0.7 | 0.8 | 38.5 | 3% | 0.06 |
+  | combat | 1 | 28 | 1 | rapier | 11.3 | 31.1 | 72.9 | 41.6 | 85% |  |
+  | combat | 1 | 28 | 1 | physics-engine | 0.6 | 1.3 | 4.7 | 69.3 | 2% | 0.06 |
+  | crowd | 1 | 31 | 5 | rapier | 16.9 | 46.0 | 119.9 | 51.8 | 74% |  |
+  | crowd | 1 | 31 | 5 | physics-engine | 2.4 | 11.2 | 20.9 | 72.0 | 1% | 0.14 |
+  | lifecycle | 4 | 28 | 0 | rapier | 16.9 | 35.2 | 53.9 | 45.8 | 62% |  |
+  | lifecycle | 4 | 28 | 0 | physics-engine | 2.8 | 13.3 | 27.3 | 71.7 | 0% | 0.25 |
+  | chase | 1 | 31 | 5 | rapier | 22.1 | 51.5 | 136.4 | 64.7 | 64% |  |
+  | chase | 1 | 31 | 5 | physics-engine | 6.1 | 11.9 | 24.2 | 75.8 | 0% | 0.25 |
+  | jump | 1 | 28 | 0 | rapier | 12.2 | 27.7 | 87.7 | 38.1 | 70% |  |
+  | jump | 1 | 28 | 0 | physics-engine | 3.0 | 4.4 | 13.8 | 39.6 | 1% | 0.25 |
+  | ledge | 1 | 36 | 1 | rapier | 18.6 | 55.0 | 105.1 | 75.3 | 66% |  |
+  | ledge | 1 | 36 | 1 | physics-engine | 3.3 | 24.5 | 42.8 | 86.8 | 0% | 0.25 |
+  | ceiling | 1 | 36 | 1 | rapier | 15.6 | 27.4 | 75.8 | 52.9 | 74% |  |
+  | ceiling | 1 | 36 | 1 | physics-engine | 2.8 | 5.4 | 12.6 | 72.7 | 1% | 0.18 |
+  | traversal | 1 | 36 | 1 | rapier | 15.5 | 40.6 | 91.7 | 69.5 | 70% |  |
+  | traversal | 1 | 36 | 1 | physics-engine | 2.3 | 11.1 | 31.7 | 82.4 | 1% | 0.17 |
+  | lunge | 1 | 30 | 1 | rapier | 12.6 | 22.4 | 68.9 | 37.1 | 77% |  |
+  | lunge | 1 | 30 | 1 | physics-engine | 1.7 | 6.4 | 9.5 | 66.8 | 1% | 0.17 |
+  | crates | 1 | 29 | 1 | rapier | 16.1 | 33.4 | 73.9 | 58.2 | 63% |  |
+  | crates | 1 | 29 | 1 | physics-engine | 4.4 | 9.8 | 27.6 | 68.6 | 0% | 0.24 |
+  | stairs | 1 | 36 | 1 | rapier | 26.3 | 43.6 | 69.2 | 51.4 | 51% |  |
+  | stairs | 1 | 36 | 1 | physics-engine | 2.6 | 9.3 | 13.6 | 73.4 | 1% | 0.12 |
+  | slam | 3 | 31 | 1 | rapier | 15.2 | 21.1 | 53.8 | 45.8 | 73% |  |
+  | slam | 3 | 31 | 1 | physics-engine | 1.3 | 2.9 | 5.2 | 64.7 | 1% | 0.10 |
+  | all | | | | rapier | 15.6 | 37.8 | 83.5 | | | |
+  | all | | | | physics-engine | 2.4 | 9.6 | 24.2 | | | |
 
 ## Height and traversal topology
 
@@ -221,6 +223,18 @@ physics world and drops nothing. Snapshots (schema 24) list standing crates and 
 `crate` colliders; saves (schema 19) keep every crate's health. The seeded A/B `crates`
 workload shoots the room's far crate, breaks the near one and walks through its spot on both
 backends.
+
+## Area effects
+
+The bruiser's slam is a ground burst (#64, Atlas 5.3.1; content `burst: true`): when its
+45-tick telegraph ends, an overlap query through the physics seam
+(`Physics::characters_in_column`, an upright capsule of the slam's 220-unit reach around the
+bruiser, on both backends) yields the candidate bodies, and the shared strike path lands the
+unblockable slam on every living player among them within reach, in the bruiser's region and
+not behind a wall. Monsters are never candidates (no friendly fire). Snapshots publish the
+attack's delivery as `burst`, which the renderer telegraphs with the strike's range ring. The
+seeded A/B `slam` workload runs it with three players on both backends, and the A/B query
+comparison checks the area query from every body until characters touch.
 
 The browser's presentation snapshot boundary and React update ownership are
 documented in [ADR 0001](adr/0001-browser-snapshot-projection.md). Tick-dependent

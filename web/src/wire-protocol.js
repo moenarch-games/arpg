@@ -65,7 +65,7 @@ const playerReactions = new Set(["hurt", "blocked", "guardBroken"]);
 const guardPhases = new Set(["raising", "raised"]);
 const optional = (value, validate) => value === null || value === undefined || validate(value);
 // How a monster attack lands: around the monster, or as a shot at its target.
-const deliveries = new Set(["strike", "projectile"]);
+const deliveries = new Set(["strike", "projectile", "burst"]);
 // Aim is a non-zero direction whose components lie within ±1000 (AIM_COMPONENT_LIMIT).
 export const AIM_COMPONENT_LIMIT = 1000;
 const aimDirection = (value) =>

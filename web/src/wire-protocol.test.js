@@ -365,6 +365,11 @@ test("monster attacks publish how they land and shots share the arrow list", () 
   expect(decoded.monsters[0].action.delivery).toBe("projectile");
   expect(decoded.arrows.map(({ source }) => source.kind)).toEqual(["monster", "player"]);
   expect(decodeSnapshot(encode({ ...payload, scenario: "heavy" })).scenario).toBe("heavy");
+  // The bruiser's ground burst (#64) is its own delivery.
+  const bursting = { ...shooting, action: { ...shooting.action, range: 220, delivery: "burst" } };
+  expect(
+    decodeSnapshot(encode({ ...payload, monsters: [bursting] })).monsters[0].action.delivery,
+  ).toBe("burst");
   for (const candidate of [
     { ...payload, monsters: [{ ...shooting, action: { ...shooting.action, delivery: "beam" } }] },
     {

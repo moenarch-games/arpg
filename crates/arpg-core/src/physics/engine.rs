@@ -485,6 +485,31 @@ impl Physics {
         !hits.is_empty()
     }
 
+    pub(crate) fn characters_in_column(
+        &self,
+        center: Vector,
+        radius: f32,
+        half_height: f32,
+    ) -> Vec<BodyKey> {
+        let mut hits = self.hits.borrow_mut();
+        let shape = Shape::capsule(
+            half_height * super::METRES_PER_UNIT,
+            radius * super::METRES_PER_UNIT,
+        );
+        self.world
+            .overlap_shape(
+                QueryPose::new(shape, engine(center)),
+                QueryFilter::default(),
+                &mut hits,
+            )
+            .expect("physics-engine area overlap");
+        self.characters
+            .iter()
+            .filter(|(_, character)| hits.iter().any(|hit| hit.body == character.body))
+            .map(|(&key, _)| key)
+            .collect()
+    }
+
     pub(crate) fn penetrates_fixed(&self, position: Vector, half_extents: Vec3i) -> bool {
         let mut hits = self.hits.borrow_mut();
         self.world

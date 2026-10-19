@@ -570,6 +570,34 @@ impl Physics {
         })
     }
 
+    /// The characters whose bodies overlap an upright column (a capsule of `radius` around a
+    /// segment `half_height` above and below `center`, world units), in key order: the
+    /// candidates of an area effect (#64). Touching counts.
+    pub(crate) fn characters_in_column(
+        &self,
+        center: Vector,
+        radius: f32,
+        half_height: f32,
+    ) -> Vec<BodyKey> {
+        let shape = Capsule::new_y(half_height * METRES_PER_UNIT, radius * METRES_PER_UNIT);
+        let pose = Pose::from_translation(metres(center));
+        let queries = self.world.broad_phase.as_query_pipeline(
+            &self.queries,
+            &self.world.bodies,
+            &self.world.colliders,
+            QueryFilter::exclude_fixed(),
+        );
+        let bodies = queries
+            .intersect_shape(pose, &shape)
+            .filter_map(|(_, collider)| collider.parent())
+            .collect::<Vec<_>>();
+        self.characters
+            .iter()
+            .filter(|(_, character)| bodies.contains(&character.body))
+            .map(|(&key, _)| key)
+            .collect()
+    }
+
     fn character(&self, key: BodyKey) -> Result<Character, GameError> {
         self.characters
             .get(&key)
