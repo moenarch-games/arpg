@@ -22,11 +22,6 @@ pub fn workloads() -> impl Iterator<Item = &'static str> {
     Case::ALL.into_iter().map(Case::name)
 }
 
-/// Why physics-engine cannot run `workload` yet, if it cannot (reported, never substituted).
-pub fn engine_unsupported(workload: &str) -> Option<&'static str> {
-    case(workload).engine_unsupported()
-}
-
 fn case(name: &str) -> Case {
     Case::ALL
         .into_iter()

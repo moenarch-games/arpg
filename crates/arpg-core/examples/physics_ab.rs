@@ -18,7 +18,7 @@
 
 use std::time::Duration;
 
-use arpg_core::physics_ab::{Backend, Timing, engine_unsupported, time_workload, workloads};
+use arpg_core::physics_ab::{Backend, Timing, time_workload, workloads};
 
 const SEED: u32 = 42;
 const TICKS: u32 = 240;
@@ -111,10 +111,6 @@ fn main() {
     println!("|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|");
     let mut all: [Vec<Duration>; 2] = Default::default();
     for workload in workloads() {
-        if let Some(reason) = engine_unsupported(workload) {
-            println!("| {workload} | | | | physics-engine | unsupported: {reason} | | | | | |");
-            continue;
-        }
         for _ in 0..WARMUP_RUNS {
             for backend in Backend::ALL {
                 time_workload(backend, workload, SEED, TICKS);

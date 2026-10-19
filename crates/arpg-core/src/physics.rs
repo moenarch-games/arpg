@@ -48,8 +48,8 @@ const PENETRATION_TOLERANCE: f32 = 1.0e-3 * METRES_PER_UNIT;
 const SUPPORT_REACH: f32 = CONTACT_OFFSET + 0.05;
 /// The highest step (world units) a walking player climbs without jumping (Atlas 5.1.5): a
 /// stair's rise. The capsule's rounded base climbs an edge up to about 9 units further as a
-/// slope, so steps up to about 33 units climb and 35 block. Rapier's controller does it with `autostep`; physics-engine has no autostep
-/// yet, so stairs are unsupported there (#222).
+/// slope, so steps up to about 33 units climb and 35 block. Both backends climb with their
+/// character controller's autostep, on walking moves only (#222).
 pub(crate) const STEP_HEIGHT_UNITS: f32 = 25.0;
 
 /// A game-chosen identity for a physical body (walls, doors, players and monsters each
@@ -743,8 +743,7 @@ mod tests {
     }
 
     /// Walking climbs a step of up to [`STEP_HEIGHT_UNITS`]; a higher one, or any step met
-    /// in the air, blocks (#222). Rapier only: physics-engine has no autostep yet, which
-    /// the A/B comparison reports as unsupported.
+    /// in the air, blocks (#222).
     #[test]
     fn a_walking_body_climbs_a_low_step_but_not_a_high_one_or_in_the_air() {
         let run = || {
@@ -777,16 +776,19 @@ mod tests {
             // rule), about 9 units above the 25-unit autostep: 35 is too high.
             let high = climb(35, true);
             assert!(high.x < 75.0 && (high.y - Y as f32).abs() < 1.0, "{high:?}");
-            let airborne = climb(20, false);
-            assert!(airborne.x < 75.0, "{airborne:?}");
+            // A body falling into the step's face never steps up onto it.
+            let mut physics = floored();
+            physics
+                .add_fixed(1, Vec3i::new(400, 10, 0), Vec3i::new(300, 10, 60))
+                .unwrap();
+            let start = Vector::new(69.0, (Y + 5) as f32, 0.0);
+            physics.add_character(2, start, BODY).unwrap();
+            let fall = physics
+                .move_player(2, start, Vector::new(7.0, -1.0, 0.0), false)
+                .unwrap();
+            assert!(fall.to.y <= start.y && fall.to.x < 75.0, "{fall:?}");
         };
-        #[cfg(feature = "physics-ab")]
-        {
-            with_backend(Backend::Rapier, run);
-            eprintln!("physics-engine: unsupported (no autostep, #222)");
-        }
-        #[cfg(not(feature = "physics-ab"))]
-        run();
+        each_backend(run);
     }
 
     #[test]

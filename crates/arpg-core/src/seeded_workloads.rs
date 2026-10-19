@@ -72,14 +72,6 @@ impl Case {
         Self::Crates,
         Self::Stairs,
     ];
-    /// Why physics-engine cannot run this workload yet, if it cannot: the A/B comparison
-    /// reports it unsupported instead of substituting anything.
-    #[cfg(feature = "physics-ab")]
-    pub(super) fn engine_unsupported(self) -> Option<&'static str> {
-        (self == Self::Stairs).then_some(
-            "walking up stairs needs character-controller autostep, which physics-engine lacks (#222)",
-        )
-    }
     pub(super) fn name(self) -> &'static str {
         match self {
             Self::Quiet => "quiet",
