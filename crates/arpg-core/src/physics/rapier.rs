@@ -122,7 +122,7 @@ impl Physics {
             up: Vector::Y,
             offset: CharacterLength::Absolute(CONTACT_OFFSET),
             slide: true,
-            // No stairs or ledges exist yet (ADR 0002 traversal follows #59's flat slice).
+            // No autostep: a step or platform is climbed by jumping (#208).
             autostep: None,
             max_slope_climb_angle: std::f32::consts::FRAC_PI_4,
             min_slope_slide_angle: std::f32::consts::FRAC_PI_4,
@@ -134,8 +134,8 @@ impl Physics {
             queries: UprightShapes.chain(DefaultQueryDispatcher),
             controller,
             vertical: KinematicCharacterController {
-                // Settles a body the controller found grounded within its support reach;
-                // never a step down a ledge (no ledges exist yet).
+                // Settles a body the controller found grounded within its support reach, also
+                // over a platform's rounded edge (#208).
                 snap_to_ground: Some(CharacterLength::Absolute(SUPPORT_REACH)),
                 ..controller
             },

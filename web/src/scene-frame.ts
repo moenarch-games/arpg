@@ -163,7 +163,13 @@ export function buildFrame(
           kind: "box",
           size: [fullSize[0], visualHeight, fullSize[2]],
         },
-        color: lowered ? "#62594e" : collider.kind === "pillar" ? "#5d5142" : "#403a33",
+        color: lowered
+          ? "#62594e"
+          : collider.kind === "pillar"
+            ? "#5d5142"
+            : collider.kind === "platform"
+              ? "#6b5e4b"
+              : "#403a33",
         transform: { translation },
       };
     }),

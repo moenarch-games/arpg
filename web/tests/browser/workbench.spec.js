@@ -64,6 +64,20 @@ test("melee scenarios show a forward hit, an aimed-away whiff, a blocked strike 
   await expect(retreat.timeline).toContainText("No events yet");
 });
 
+test("the traversal scenario lands a jump on the platform in its own region", async ({
+  page,
+  appUrl,
+}) => {
+  const traversal = await openScenario(page, appUrl, "traversal");
+  await expect(traversal.diagnostics).toContainText("region 1");
+  await page.keyboard.down("d");
+  await traversal.steps(7);
+  await traversal.press("Space");
+  await traversal.stepUntil(traversal.diagnostics, "region 2", 60);
+  await traversal.stepUntil(traversal.diagnostics, "feet 60", 5);
+  await page.keyboard.up("d");
+});
+
 test("a block opens a counter window that expires and a counter honours reach", async ({
   page,
   appUrl,
