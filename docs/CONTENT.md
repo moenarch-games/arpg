@@ -107,7 +107,8 @@ whole-unit shot velocities; shots now fly their exact speed, #182). A lunge's sp
 
 `crate` (`health`, `halfExtents`, `perCombatRoom`) defines the damageable crates generation
 places in the corners of every combat room (#90, Atlas 5.2.2): northern corners first, five
-units off the walls, at most four per room. Player melee breaks them; they drop nothing.
+units off the walls, at most four per room. Player melee and player arrows break them;
+monster shots stop at them; they drop nothing.
 Validation: positive health, `halfExtents` within `10..=100` across and `10..=200` high, a
 height above a jump's apex (no crate is walkable ground), and at most four per room.
 

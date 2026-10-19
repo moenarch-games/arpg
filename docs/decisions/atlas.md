@@ -64,6 +64,7 @@ Child `- [x]` means **only the specifically named implemented capability** has c
     - **5.2.2** [decision] Damageable props are static crates with health and no drops, placed in combat rooms; they block movement and navigation until broken. Strike rays exclude the struck body through the `Physics` seam on both backends. (Owner, 2026-10-19)
       - [x] `crates/arpg-core/src/lib.rs::place_crates`, `::ArpgGame::damage_crate` and `Physics::segment_obstructed_except` (`strikes_break_a_crate_which_then_stops_blocking_and_drops_nothing`, `a_segment_can_ignore_one_static_body_but_not_the_others`, on both physics backends).
     - **5.2.3** [decision] Player arrows damage crates through the shared strike path. (Owner, 2026-10-19; [#223](https://github.com/moritzbrantner/arpg/issues/223))
+      - [x] `crates/arpg-core/src/lib.rs::ArpgGame::advance_arrows` (`player_arrows_damage_and_break_a_crate_and_then_pass_its_spot`, on both physics backends).
 
 ## Issue handoffs
 

@@ -138,6 +138,9 @@ const DOOR_BODY_BASE: u64 = 20_000;
 const GROUND_LOOT_ID_BASE: u64 = 30_000;
 /// Crate ids and body keys (#90).
 const CRATE_ID_BASE: u32 = 40_000;
+/// How far (in units of an arrow's per-tick translation) a crate's own box may lie beyond
+/// the wall ray's hit and still be the crate the ray met (#223).
+const CRATE_ARROW_TIE: f32 = 1.0e-3;
 const PLAYER_HALF_EXTENTS: Vec3i = Vec3i::new(30, 50, 30);
 const PLAYER_Y: i32 = 50;
 /// Height of a grounded body's lowest point: the flat floor's walking height (#59).
@@ -4670,6 +4673,25 @@ impl ArpgGame {
             };
             let (from, translation) = (arrow.position, arrow.velocity);
             let wall = self.physics.first_fixed_hit(from, translation);
+            // A player's arrow also strikes standing crates (Atlas 5.2.3, #223): real boxes,
+            // not columns, so a shot can pass over one.
+            let crates = match arrow.source {
+                StrikeSource::Player(_) => self
+                    .crates
+                    .iter()
+                    .filter(|placed| placed.health > 0)
+                    .filter_map(|placed| {
+                        let time = box_hit(
+                            vector(placed.position),
+                            crate_half_extents(&self.content),
+                            from,
+                            translation,
+                        )?;
+                        Some((time, StrikeTarget::Crate(placed.id)))
+                    })
+                    .collect::<Vec<_>>(),
+                StrikeSource::Monster(_) => Vec::new(),
+            };
             let hurt = hurtboxes
                 .into_iter()
                 // Hurt volumes are columns on the plane (ADR 0002): a shot meets a body at
@@ -4678,10 +4700,16 @@ impl ArpgGame {
                     let center = Vector::new(center.x, from.y, center.z);
                     Some((box_hit(center, half_extents, from, translation)?, target))
                 })
+                .chain(crates)
                 .min_by(|(left, left_target), (right, right_target)| {
                     left.total_cmp(right).then(left_target.cmp(right_target))
                 });
             let hit = match (wall, hurt) {
+                // A crate is a fixed body as well: the wall ray meets it at its own box, so
+                // it wins a tie with itself within rounding of the two closed forms.
+                (Some(wall), Some((time, target @ StrikeTarget::Crate(_)))) => {
+                    (time <= wall + CRATE_ARROW_TIE).then_some(target)
+                }
                 (Some(wall), Some((time, target))) => (time < wall).then_some(target),
                 (None, Some((_, target))) => Some(target),
                 (Some(_), None) => None,
@@ -4703,8 +4731,20 @@ impl ArpgGame {
                 Some(StrikeTarget::Monster(monster_id)) => {
                     self.resolve_arrow_hit(arrow, monster_id)?;
                 }
-                // Crates are no hurt volumes: they stop arrows as fixed geometry does.
-                Some(StrikeTarget::Crate(_)) | None => {}
+                Some(StrikeTarget::Crate(crate_id)) => {
+                    let result = self.damage_crate(crate_id, arrow.damage)?;
+                    self.push_strike_outcome(StrikeOutcome {
+                        order: 0,
+                        strike: StrikeId {
+                            source: arrow.source,
+                            tick: arrow.launched_at_tick,
+                        },
+                        definition: BOW_ARROW_DEFINITION.clone(),
+                        target: StrikeTarget::Crate(crate_id),
+                        result,
+                    });
+                }
+                None => {}
             }
         }
         self.arrows = remaining;
@@ -14746,6 +14786,59 @@ mod tests {
             let mut missing = save;
             missing.crates.pop();
             assert!(ArpgGame::from_save_state(missing).is_err());
+        });
+    }
+
+    #[test]
+    fn player_arrows_damage_and_break_a_crate_and_then_pass_its_spot() {
+        on_each_backend(|| {
+            let (mut game, ..) = bow_arena();
+            let placed = *game
+                .crates
+                .iter()
+                .find(|placed| placed.room_id == STRIKE_ROOM)
+                .unwrap();
+            let at = placed.position;
+            game.put_player(1, Vec3i::new(at.x + 300, PLAYER_Y, at.z));
+            command(
+                &mut game,
+                ArpgCommand::SetAim {
+                    direction: Some([-1_000, 0]),
+                },
+            );
+            let shoot = |game: &mut ArpgGame| {
+                draw_for(game, content().bow.min_draw_ticks);
+                release_and_fly(game)
+            };
+            let crate_hits = |outcomes: &[StrikeOutcome]| {
+                outcomes
+                    .iter()
+                    .filter(|outcome| outcome.target == StrikeTarget::Crate(placed.id))
+                    .map(|outcome| (outcome.definition.to_string(), outcome.result))
+                    .collect::<Vec<_>>()
+            };
+            let damage = content().bow.arrow_min_damage;
+            assert!(damage < content().crate_prop.health);
+            let first = crate_hits(&shoot(&mut game));
+            assert_eq!(
+                first,
+                [(
+                    "bow.arrow".to_owned(),
+                    StrikeResult::Hit {
+                        damage,
+                        defeated: false
+                    }
+                )]
+            );
+            let second = crate_hits(&shoot(&mut game));
+            assert!(
+                matches!(second[..], [(_, StrikeResult::Hit { defeated: true, .. })]),
+                "{second:?}"
+            );
+            assert!(game.ground_loot.is_empty());
+            assert!(!game.physics.has_fixed(crate_body_id(placed.id)));
+            // The next arrow flies on through where it stood, to the room's wall.
+            assert!(crate_hits(&shoot(&mut game)).is_empty());
         });
     }
 }

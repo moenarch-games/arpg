@@ -185,14 +185,17 @@ the lunge in progress. The seeded A/B `lunge` workload runs it on both backends.
 Damageable crates (#90, Atlas 5.2.2; content `crate`) stand in the corners of every combat
 room, two per room, five units off the walls and taller than a jump's apex (so they are no
 walkable ground). A standing crate is a static box: it blocks movement and navigation, stops
-arrows and obstructs strikes at what lies behind it. Player melee strikes may target it like a
-monster, nearest first within the strike volume; the obstruction ray of a strike at a crate
+monster shots and obstructs strikes at what lies behind it. Player melee strikes may target it
+like a monster, nearest first within the strike volume, and a player's arrow that reaches it
+first damages it through the same strike outcome path (Atlas 5.2.3, #223; a real box, so a
+shot can pass over it; the wall ray meets the crate's own box, which wins that tie); the obstruction ray of a strike at a crate
 ignores that crate (`Physics::segment_obstructed_except`, on both backends: Rapier filters the
 collider out with a query predicate, the physics-engine adapter puts the floor on its own
 collision layer so `QueryFilter::exclude` is free for the crate). A broken crate leaves the
 physics world and drops nothing. Snapshots (schema 24) list standing crates and export them as
 `crate` colliders; saves (schema 19) keep every crate's health. The seeded A/B `crates`
-workload breaks one and walks through its spot on both backends.
+workload shoots the room's far crate, breaks the near one and walks through its spot on both
+backends.
 
 The browser's presentation snapshot boundary and React update ownership are
 documented in [ADR 0001](adr/0001-browser-snapshot-projection.md). Tick-dependent

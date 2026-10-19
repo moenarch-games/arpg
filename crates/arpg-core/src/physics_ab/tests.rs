@@ -288,6 +288,8 @@ struct Comparison {
     lunge_strikes: u32,
     /// Crates broken in either game.
     crates_broken: u32,
+    /// Arrow hits on crates in either game (#223).
+    crate_arrow_hits: u32,
     /// Every region membership a player of either game held.
     memberships: std::collections::BTreeSet<String>,
     /// Ticks on which an airborne player's head touches a ceiling's underside, in either game.
@@ -496,6 +498,14 @@ fn compare(case: Case, seed: u32) -> Comparison {
             {
                 comparison.raised_region_ticks += 1;
             }
+            comparison.crate_arrow_hits += game
+                .strike_outcomes()
+                .iter()
+                .filter(|outcome| {
+                    matches!(outcome.target, crate::StrikeTarget::Crate(_))
+                        && &*outcome.definition == "bow.arrow"
+                })
+                .count() as u32;
             comparison.crates_broken += game
                 .strike_outcomes()
                 .iter()
@@ -626,6 +636,9 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
             }
             if case == Case::Crates && comparison.crates_broken == 0 {
                 failures.push(format!("{context}: no crate was broken"));
+            }
+            if case == Case::Crates && comparison.crate_arrow_hits == 0 {
+                failures.push(format!("{context}: no arrow struck a crate"));
             }
             if case == Case::Lunge && comparison.lunge_strikes == 0 {
                 failures.push(format!("{context}: no lunge strike resolved"));
