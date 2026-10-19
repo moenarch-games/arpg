@@ -49,15 +49,44 @@ server or WASM build enables it.
   positions after the first character contact are reported, not bounded (up to about 195 units
   in the four-player workloads, 2.6 units in `door`; outcomes stay identical). Rapier adds a 0.01
   unit normal nudge per contact (up to 0.26 units of drift out of a corner) and pushes a body
-  placed into a wall out to touching, where the engine keeps the 0.25 unit offset. The engine
-  reports a translation as a difference of metre positions, so an unobstructed move can differ
-  from the intended one by `f32` rounding (7 units read as 6.99997 at 21 m from the origin).
-  `ground_height` probes 1 km down instead of an unbounded ray, a zero-length
+  placed into a wall out to touching, where the engine keeps the 0.25 unit offset. An
+  unobstructed move is exact on both. `ground_height` probes 1 km down instead of an unbounded ray, a zero-length
   `first_fixed_hit` meets nothing, and a character registers as planar until its first
   `move_player`.
 - **Timing.** `cargo run --release --locked -p arpg-core --features physics-ab --example
   physics_ab` reports per-tick whole-physics-path time (median, p95, p99), setup time and the
   share of Rapier's per-tick rebuild, natively, for every workload. It is manual, not a gate.
+
+  Last run (physics-engine `5391c5c`, seed 42, 240 ticks, 3 warm-up and 20 paired runs per
+  workload, µs per tick; one laptop, so read ratios rather than absolute times). Most of
+  Rapier's tick is the rebuild that exact save continuation needs; the engine needs none.
+
+  | workload | players | static boxes | peak monster bodies | backend | median | p95 | p99 | setup median | rebuild share | engine/rapier total |
+  |---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
+  | quiet | 1 | 18 | 0 | rapier | 9.6 | 12.6 | 33.5 | 28.9 | 85% |  |
+  | quiet | 1 | 18 | 0 | physics-engine | 0.7 | 0.8 | 0.9 | 32.4 | 3% | 0.07 |
+  | party-quiet | 4 | 18 | 0 | rapier | 14.6 | 18.7 | 67.5 | 39.6 | 73% |  |
+  | party-quiet | 4 | 18 | 0 | physics-engine | 1.9 | 2.1 | 4.4 | 46.9 | 2% | 0.13 |
+  | sparse | 4 | 18 | 0 | rapier | 15.7 | 30.2 | 55.1 | 41.2 | 63% |  |
+  | sparse | 4 | 18 | 0 | physics-engine | 3.4 | 8.4 | 13.0 | 40.8 | 0% | 0.26 |
+  | corner | 1 | 18 | 0 | rapier | 15.0 | 19.9 | 45.4 | 32.5 | 58% |  |
+  | corner | 1 | 18 | 0 | physics-engine | 4.2 | 4.9 | 12.6 | 38.5 | 0% | 0.28 |
+  | door | 1 | 21 | 1 | rapier | 14.9 | 24.5 | 60.2 | 42.0 | 72% |  |
+  | door | 1 | 21 | 1 | physics-engine | 2.7 | 4.3 | 10.2 | 42.4 | 1% | 0.19 |
+  | correction | 1 | 18 | 0 | rapier | 10.1 | 12.6 | 32.1 | 32.2 | 85% |  |
+  | correction | 1 | 18 | 0 | physics-engine | 0.7 | 0.8 | 0.9 | 35.8 | 3% | 0.07 |
+  | combat | 1 | 18 | 1 | rapier | 10.5 | 15.5 | 48.1 | 38.6 | 84% |  |
+  | combat | 1 | 18 | 1 | physics-engine | 0.7 | 0.9 | 2.3 | 36.9 | 3% | 0.07 |
+  | crowd | 1 | 21 | 5 | rapier | 17.5 | 32.3 | 88.5 | 50.7 | 75% |  |
+  | crowd | 1 | 21 | 5 | physics-engine | 1.5 | 4.1 | 14.8 | 47.2 | 1% | 0.12 |
+  | lifecycle | 4 | 18 | 0 | rapier | 17.3 | 41.2 | 160.6 | 43.9 | 65% |  |
+  | lifecycle | 4 | 18 | 0 | physics-engine | 3.5 | 13.4 | 43.1 | 50.7 | 0% | 0.23 |
+  | chase | 1 | 21 | 5 | rapier | 26.9 | 58.9 | 140.1 | 67.5 | 60% |  |
+  | chase | 1 | 21 | 5 | physics-engine | 6.8 | 13.7 | 27.4 | 50.9 | 0% | 0.24 |
+  | jump | 1 | 18 | 0 | rapier | 15.8 | 23.3 | 86.6 | 49.9 | 64% |  |
+  | jump | 1 | 18 | 0 | physics-engine | 4.0 | 5.3 | 15.4 | 46.1 | 1% | 0.24 |
+  | all | | | | rapier | 15.2 | 32.3 | 80.9 | | | |
+  | all | | | | physics-engine | 2.6 | 8.1 | 15.6 | | | |
 
 ## Height and traversal topology
 
