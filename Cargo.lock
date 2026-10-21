@@ -907,7 +907,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "physics-engine"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/physics-engine?rev=baa92444994885ec91fa769bb6649c6496f99e47#baa92444994885ec91fa769bb6649c6496f99e47"
+source = "git+https://github.com/moritzbrantner/physics-engine?rev=2a9af2d3f84ae9f15cc817797d27d61fd8f52384#2a9af2d3f84ae9f15cc817797d27d61fd8f52384"
 dependencies = [
  "bvh-kernels",
  "geometry-kernels",
