@@ -21,9 +21,9 @@ game-server = { git = "https://github.com/moritzbrantner/game-server.git", rev =
 graph-kernels = { git = "https://github.com/moritzbrantner/rust-kernels.git", rev = "5a3fab06da3c41fa522ebcfa7234457523ccda18" }
 rapier3d = "=0.36.1"
 serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = "=1.0.151"
-tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
-wasm-bindgen = "=0.2.128"
+serde_json = "=1.0.154"
+tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+wasm-bindgen = "=0.2.129"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
