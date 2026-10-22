@@ -1,8 +1,11 @@
 // Released asset-tooling character bundles the game ships (arpg#55, Atlas 3.2.1). The
 // setup step unpacks each into `public/characters/<release>/`.
 export const RANGER_BUNDLE = Object.freeze({
-  release: "humanoid-ranger-male-v4",
-  url: "https://github.com/moritzbrantner/asset-tooling/releases/download/humanoid-ranger-male-v4/humanoid.ranger.male.tar",
+  release: "humanoid-ranger-male",
+  url: "https://github.com/moritzbrantner/asset-tooling/releases/download/humanoid-ranger-male/humanoid.ranger.male.tar",
+  // The release is rolling (asset-tooling Atlas 7.1.5): its assets are replaced in place.
+  // Setup compares this small reference with the unpacked copy to notice an update.
+  ref: "https://github.com/moritzbrantner/asset-tooling/releases/download/humanoid-ranger-male/export.ref.json",
   key: "humanoid.ranger.male",
   variant: "default",
   // Presentation data for the character's clips (#188). Gaits are in-place clips; each

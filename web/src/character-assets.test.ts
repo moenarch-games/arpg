@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createCharacterAssets } from "./character-assets.ts";
 
 const bundle = {
-  release: "humanoid-ranger-male-v1",
+  release: "humanoid-ranger-male",
   key: "humanoid.ranger.male",
   variant: "default",
 };
@@ -46,9 +46,9 @@ test("the bundle loads once from the release directory with byte progress", asyn
   expect(assets.load()).toBe(first);
   const asset = await first;
   expect(requested).toEqual([
-    "/arpg/characters/humanoid-ranger-male-v1/manifest.json",
-    "/arpg/characters/humanoid-ranger-male-v1/resources/a.bin",
-    "/arpg/characters/humanoid-ranger-male-v1/resources/b.png",
+    "/arpg/characters/humanoid-ranger-male/manifest.json",
+    "/arpg/characters/humanoid-ranger-male/resources/a.bin",
+    "/arpg/characters/humanoid-ranger-male/resources/b.png",
   ]);
   expect(seen).toContainEqual({ loadedBytes: 4, totalBytes: 8 });
   expect(assets.getProgress()).toBeNull();
