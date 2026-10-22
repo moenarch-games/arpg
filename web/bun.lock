@@ -5,7 +5,7 @@
     "": {
       "name": "arpg-web",
       "dependencies": {
-        "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#bfeb9fafd8fef541e51236bf76b5b57ab73213d4",
+        "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#c850bda5f37f65f79655469625baf5f1644ac2a0",
         "react": "19.1.1",
         "react-dom": "19.1.1",
         "three": "0.185.1",
@@ -19,7 +19,7 @@
     },
   },
   "packages": {
-    "@moritzbrantner/three-d-renderer": ["@moritzbrantner/three-d-renderer@github:moritzbrantner/3d-lab#bfeb9fa", { "dependencies": { "three": "0.186.1" } }, "moritzbrantner-3d-lab-bfeb9fa", "sha512-arnYs+XojxWB6u1rjOEDGpJ39jGvvbfoY803jIptIth9LFcFbbHVUqT9TJnM1HJECj4FrFlqz+XEPReTgD6d6Q=="],
+    "@moritzbrantner/three-d-renderer": ["@moritzbrantner/three-d-renderer@github:moritzbrantner/3d-lab#c850bda", { "dependencies": { "three": "0.186.1" } }, "moritzbrantner-3d-lab-c850bda", "sha512-b00pk2295mwP9Op5uRNtV3NGo0UDu+97dufazGjX2EPZjl+ao+EpZf0sgCDWHolwThrTRcC61fU+nwgP3kBh+w=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.152.0", "", {}, "sha512-oM/5rLBm2tPkg0iBgkH/FOeR3PCDpY19GTgAZjMFM8h9WI9VW7cLgzp6nwtarYKmovavIQZ+Fe/RKX/8C8O/Rw=="],
 
