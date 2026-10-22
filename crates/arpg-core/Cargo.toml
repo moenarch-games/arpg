@@ -12,7 +12,7 @@ rapier3d.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Test/bench-only A/B backend (`physics-ab`): never part of product or WASM builds.
-physics-engine = { git = "https://github.com/moritzbrantner/physics-engine", rev = "2a9af2d3f84ae9f15cc817797d27d61fd8f52384", optional = true }
+physics-engine = { git = "https://github.com/moritzbrantner/physics-engine", rev = "ad5bcbf4f04294fff050d7d41af13937b234f481", optional = true }
 
 [features]
 # Deterministic operation work counters and scaled fixtures for the performance contract
