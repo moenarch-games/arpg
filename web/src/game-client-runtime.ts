@@ -204,6 +204,9 @@ const HELD_COMMAND_TYPES = new Set(["setGuard", "setMovement", "setAim"]);
 // left out, and the authority keeps using its held aim.
 const AIMED_COMMAND_TYPES = new Set(["primaryAttack", "secondaryAttack", "releaseBow"]);
 
+const sameAim = (a: AimDirection, b: AimDirection) =>
+  a === b || (!!a && !!b && a[0] === b[0] && a[1] === b[1]);
+
 export function createGameClientRuntime(options: GameClientRuntimeOptions) {
   const schedule = options.setInterval ?? ((callback, ms) => globalThis.setInterval(callback, ms));
   const cancel = options.clearInterval ?? ((handle) => globalThis.clearInterval(handle as never));
@@ -231,8 +234,10 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
   // Every device currently holding the bow draw. The last deliberate release shoots; an
   // interrupted hold (pointer cancel, focus loss) only cancels.
   const drawSources = new Set<GuardSource>();
-  // The aim intent last sent to the authority; repeated identical aims are not resent.
+  // The aim the player is pointing now, which aimed one-shots embed, and the aim that last
+  // reached the authority (#159). They differ while a session is still (re)connecting.
   let aim: AimDirection = null;
+  let sentAim: AimDirection = null;
   // Whether a raised guard ever reached the current source's authority, which may then
   // still hold it after a press or release was lost.
   let guardRaiseSent = false;
@@ -244,7 +249,10 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
   // The core load in flight, and the latest start waiting for it. A request only activates
   // while its source generation is still current.
   let coreLoad: Promise<void> | null = null;
-  let pendingStart: { generation: number; activate: (() => void) | null } | null = null;
+  let pendingStart: {
+    generation: number;
+    activate: (() => void) | null;
+  } | null = null;
 
   const update = (patch: Partial<ClientState>) => {
     let changed = false;
@@ -338,6 +346,7 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
     guardSources.clear();
     drawSources.clear();
     aim = null;
+    sentAim = null;
     guardRaiseSent = false;
     heldRefreshRotation = 0;
   };
@@ -483,7 +492,9 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
         if (send({ type: "setGuard", raised: held }) && held) guardRaiseSent = true;
       },
       movement: () => send({ type: "setMovement", x: movement.lastX, z: movement.lastZ }),
-      aim: () => send({ type: "setAim", direction: aim }),
+      aim: () => {
+        if (send({ type: "setAim", direction: aim })) sentAim = aim;
+      },
     };
     for (let index = 0; index < HELD_INPUTS.length; index += 1) {
       refreshers[HELD_INPUTS[(heldRefreshRotation + index) % HELD_INPUTS.length]]();
@@ -512,6 +523,24 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
   const syncGuardOnAssignment = (): boolean => {
     const held = guardSources.size > 0;
     return held || guardRaiseSent ? sendGuard(held) : true;
+  };
+
+  const sendAim = (direction: AimDirection): boolean => {
+    const sent = dispatch({ type: "setAim", direction });
+    if (sent) sentAim = direction;
+    return sent;
+  };
+
+  // Sends the aim the player is pointing once a remote authority (re-)assigns its player: a
+  // pointer move during the connection never reached it, and a re-joined or recovered player
+  // may hold an older aim or none. Nothing is sent when no aim is pointed or ever reached it.
+  const syncAimOnAssignment = () => {
+    if (aim || sentAim) sendAim(aim);
+  };
+
+  const syncHeldOnAssignment = () => {
+    syncGuardOnAssignment();
+    syncAimOnAssignment();
   };
 
   const flushMovement = () => {
@@ -579,7 +608,7 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
       // A restored draw nobody is holding is lowered, never fired.
       if (drawHeld) dispatch({ type: "cancelBow" });
       // A restored aim nobody is pointing returns to committed facing until the next aim.
-      if (aimHeld) dispatch({ type: "setAim", direction: null });
+      if (aimHeld) sendAim(null);
     },
 
     async hostPeer(apiBase: string) {
@@ -645,11 +674,11 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
         getGame: () => null,
         onPlayer: (playerId) => {
           update({ playerId, lifecycle: "running" });
-          syncGuardOnAssignment();
+          syncHeldOnAssignment();
         },
         // The host kept this guest's player across an in-place link recovery, but any held
         // change sent during the outage was refused; re-assert it like after a re-join.
-        onLinkRecovered: syncGuardOnAssignment,
+        onLinkRecovered: syncHeldOnAssignment,
         // Held input is released and nothing is sent until the player joins again.
         onHostLinkLost: () => {
           if (!isCurrent(generation) || peer !== session) return;
@@ -701,7 +730,7 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
             if (!current()) return;
             update({ playerId: welcome.playerId, lifecycle: "running" });
             status(`Dedicated authority · player ${welcome.playerId} · ${welcome.tickHz} Hz`);
-            syncGuardOnAssignment();
+            syncHeldOnAssignment();
             startHeldRefresh();
           },
           onSnapshot: (frame) => {
@@ -813,17 +842,12 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
       dispatch({ type: interrupted ? "cancelBow" : "releaseBow" });
     },
 
-    // Sends aim intent (mouse, stick or touch) only when it changes; null clears it.
+    // Records aim intent (mouse, stick or touch) and sends it when it differs from the aim
+    // the authority last received; null clears it. A session that is still connecting
+    // receives it on player assignment.
     setAim(direction: AimDirection) {
-      if (
-        aim === direction ||
-        (aim && direction && aim[0] === direction[0] && aim[1] === direction[1])
-      )
-        return;
-      const next: AimDirection = direction ? [direction[0], direction[1]] : null;
-      // Remember the direction only once it reached the authority, so a session that was
-      // still connecting receives the same direction on the next pointer event.
-      if (dispatch({ type: "setAim", direction: next })) aim = next;
+      aim = direction ? [direction[0], direction[1]] : null;
+      if (!sameAim(aim, sentAim)) sendAim(aim);
     },
 
     // Locks the nearest target or cycles the lock; the authority owns eligibility and order.
@@ -860,10 +884,8 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
         dispatch({ type: "cancelBow" });
       }
       // The pointer position is unknown after focus loss: fall back to committed facing.
-      if (aim) {
-        aim = null;
-        dispatch({ type: "setAim", direction: null });
-      }
+      aim = null;
+      if (sentAim) sendAim(null);
     },
 
     setTrainingPaused(paused: boolean) {
