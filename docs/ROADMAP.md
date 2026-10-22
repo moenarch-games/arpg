@@ -69,7 +69,7 @@ Finish one reusable ARPG locomotion model:
 - responsive acceleration and stopping;
 - reliable direction changes;
 - diagonal and analog normalization;
-- good collision sliding and corner handling through `physics-engine`;
+- good collision sliding and corner handling through the physics backend (Rapier for now);
 - explicit movement/action cancellation rules;
 - controller, keyboard, and touch intent projected into the same gameplay commands;
 - movement skills through the same authoritative movement boundary.
@@ -190,7 +190,7 @@ Add:
 - formation pressure;
 - separation between monsters.
 
-Physical movement stays in `physics-engine`; ARPG owns tactical decisions.
+Physical movement stays in the physics backend (Rapier for now); ARPG owns tactical decisions.
 
 ### Enemy roles
 
@@ -761,7 +761,7 @@ Keep the existing authority map:
 | Concern | Authority |
 | --- | --- |
 | ARPG gameplay rules and content semantics | `arpg-core` |
-| Collision, movement constraints, contacts, spatial queries | `physics-engine` |
+| Collision, movement constraints, contacts, spatial queries | Rapier until `physics-engine` is finished |
 | Reusable rendering, camera, animation, and asset models | `3d-lab` |
 | Reproducible asset processing | `asset-tooling` |
 | Reusable binding/runtime input behavior | `input-bindings` |

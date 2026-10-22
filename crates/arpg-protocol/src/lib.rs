@@ -6,7 +6,8 @@ use std::fmt;
 use arpg_core::{ArpgCommand, ArpgSnapshot};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u16 = 20;
+/// 21: the `jump` command and the players' `motion` (height and support) in snapshots (#59).
+pub const PROTOCOL_VERSION: u16 = 21;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProtocolError {
@@ -100,7 +101,7 @@ mod tests {
         let command = ArpgCommand::SetMovement { x: -1, z: 1 };
         let bytes = protocol.encode_command(&command).unwrap();
         let encoded = String::from_utf8(bytes.clone()).unwrap();
-        assert!(encoded.contains("\"protocolVersion\":20"));
+        assert!(encoded.contains("\"protocolVersion\":21"));
         assert_eq!(protocol.decode_command(&bytes).unwrap(), command);
 
         let guard = ArpgCommand::SetGuard { raised: true };
@@ -125,6 +126,7 @@ mod tests {
             ),
             (ArpgCommand::CycleTarget, "\"type\":\"cycleTarget\""),
             (ArpgCommand::ClearTarget, "\"type\":\"clearTarget\""),
+            (ArpgCommand::Jump, "\"type\":\"jump\""),
         ] {
             let bytes = protocol.encode_command(&command).unwrap();
             assert!(String::from_utf8(bytes.clone()).unwrap().contains(encoded));
@@ -150,7 +152,37 @@ mod tests {
         let decoded = protocol.decode_snapshot(&bytes).unwrap();
         assert_eq!(decoded, snapshot);
         assert_eq!(decoded.run_seed, 0xCAFE_BABE);
-        assert_eq!(decoded.schema_version, 21);
+        assert_eq!(decoded.schema_version, 26);
+    }
+
+    #[test]
+    fn jumps_and_player_motion_are_versioned_wire_data() {
+        // A version-20 client predates `jump` and is refused.
+        assert!(
+            JsonProtocol
+                .decode_command(br#"{"protocolVersion":20,"payload":{"type":"jump"}}"#)
+                .is_err()
+        );
+        let mut game = ArpgGame::new_with_seed(5).unwrap();
+        game.add_player(1).unwrap();
+        game.apply_command(arpg_core::PlayerCommand::new(1, 1, ArpgCommand::Jump).unwrap())
+            .unwrap();
+        for _ in 0..4 {
+            game.advance_tick().unwrap();
+        }
+        let bytes = JsonProtocol
+            .encode_snapshot(&game.snapshot().unwrap())
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let motion = &value["payload"]["players"][0]["motion"];
+        assert_eq!(motion["grounded"], false);
+        assert!(motion["verticalVelocity"].as_i64().unwrap() > 0);
+        assert!(motion["feetY"].as_i64().unwrap() > 0);
+        assert_eq!(motion["groundY"], 0);
+        assert_eq!(
+            JsonProtocol.decode_snapshot(&bytes).unwrap(),
+            game.snapshot().unwrap()
+        );
     }
 
     #[test]

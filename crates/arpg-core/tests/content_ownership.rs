@@ -73,10 +73,10 @@ use arpg_core::{
 use serde_json::{Value, json};
 use std::ops::Deref;
 
-/// Revision of the built-in bundle at the baseline of #154 (origin/main 435c9ea).
-const BUILT_IN_REVISION: &str = "3a14b8be9ae981e4";
+/// Revision of the built-in bundle since jump tuning became content (#59, format 9).
+const BUILT_IN_REVISION: &str = "4d30f882ca678a85";
 /// Revision of `paying(4_242)` at the same baseline.
-const PAYING_4242_REVISION: &str = "336c4220cb330869";
+const PAYING_4242_REVISION: &str = "d90863a2e9ec49e0";
 
 const BUILT_IN_SWING: &str = "sword.lightSwing";
 /// Distance from a monster at which an arranged light swing lands next tick.
@@ -167,11 +167,11 @@ fn swing_once(game: ArpgGame, bundle: Option<ContentBundle>) -> (Vec<StrikeOutco
     let player = save.players.iter_mut().find(|p| p.id == 1).expect("saved");
     let facing = [-dx as i8, -dz as i8];
     player.position = [
-        x + dx * SIDE_DISTANCE,
+        (x + dx * SIDE_DISTANCE) as f32,
         player.position[1],
-        z + dz * SIDE_DISTANCE,
+        (z + dz * SIDE_DISTANCE) as f32,
     ];
-    player.velocity = [0, 0, 0];
+    player.velocity = [0.0; 3];
     player.movement = [0, 0];
     player.facing = facing;
     player.aim = None;

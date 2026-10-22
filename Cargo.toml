@@ -17,9 +17,9 @@ publish = false
 [workspace.dependencies]
 arpg-core = { path = "crates/arpg-core" }
 arpg-protocol = { path = "crates/arpg-protocol" }
-game-server = { git = "https://github.com/moritzbrantner/game-server.git", rev = "ebd6aaee156c8e12a1444d1dd55a305eae13df86" }
-graph-kernels = { git = "https://github.com/moritzbrantner/rust-kernels.git", rev = "45a7571890e1bbffc7f2ff5f517b5c4c7859d17c" }
-physics-engine = { git = "https://github.com/moritzbrantner/physics-engine.git", rev = "65e00816fa4e17c899f45d618dcdc8c40990dc00" }
+game-server = { git = "https://github.com/moritzbrantner/game-server.git", rev = "532b503904b36970761c36f78c43283930a679a9" }
+graph-kernels = { git = "https://github.com/moritzbrantner/rust-kernels.git", rev = "5a3fab06da3c41fa522ebcfa7234457523ccda18" }
+rapier3d = "=0.36.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "signal", "sync"] }

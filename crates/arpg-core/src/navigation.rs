@@ -1,7 +1,12 @@
 //! Room-local pursuit navigation (#65, #110).
 //!
-//! ARPG owns the tactical path; `physics-engine` moves the body along it. A room is
+//! ARPG owns the tactical path; Rapier's character controller moves the body along it. A room is
 //! rasterized into cells whose body-sized footprint is clear of every fixed obstacle.
+//!
+//! The grid's topology (room bounds, obstacles, cell centres) is whole world units. Bodies
+//! and targets are sampled at their authoritative `f32` positions ([`Point`]), never at a
+//! rounded view of them (#182); the geometry on them is computed in `f64`, where the
+//! differences and squares of `f32` coordinates are exact.
 //!
 //! Two planners search that grid:
 //!
@@ -59,6 +64,7 @@ impl Rect {
         ]
     }
 
+    #[cfg(test)]
     fn contains(self, (x, z): (i32, i32)) -> bool {
         self.min_x <= x && x <= self.max_x && self.min_z <= z && z <= self.max_z
     }
@@ -107,6 +113,40 @@ pub(crate) fn fan_is_clear(apex: (i32, i32), area: Rect, obstacle: Rect) -> bool
 
 pub(crate) type Cell = (i32, i32);
 
+/// A position on the plane in world units: a body's or target's authoritative `f32`
+/// position, or a whole-unit layout point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Point {
+    pub(crate) x: f32,
+    pub(crate) z: f32,
+}
+
+impl From<(f32, f32)> for Point {
+    fn from((x, z): (f32, f32)) -> Self {
+        Self { x, z }
+    }
+}
+
+impl From<(i32, i32)> for Point {
+    fn from((x, z): (i32, i32)) -> Self {
+        // Layout coordinates lie far inside the range `f32` represents exactly.
+        Self {
+            x: x as f32,
+            z: z as f32,
+        }
+    }
+}
+
+impl Rect {
+    /// Whether `point` lies in the closed rectangle.
+    fn contains_point(self, point: Point) -> bool {
+        f64::from(self.min_x) <= f64::from(point.x)
+            && f64::from(point.x) <= f64::from(self.max_x)
+            && f64::from(self.min_z) <= f64::from(point.z)
+            && f64::from(point.z) <= f64::from(self.max_z)
+    }
+}
+
 /// Passability of one room for a body with the given XZ clearance (half extent).
 #[derive(Clone)]
 pub(crate) struct RoomGrid {
@@ -152,10 +192,17 @@ impl RoomGrid {
         )
     }
 
-    fn cell_at(&self, x: i32, z: i32) -> Cell {
+    /// The cell whose half-open span holds `point`, clamped into the grid.
+    fn cell_at(&self, point: impl Into<Point>) -> Cell {
+        let point = point.into();
+        let index = |value: f32, min: i32, count: i32| {
+            // `as` saturates, and the clamp keeps any position inside the grid.
+            let cell = ((f64::from(value) - f64::from(min)) / f64::from(NAV_CELL_SIZE)).floor();
+            (cell as i32).clamp(0, count - 1)
+        };
         (
-            ((x - self.bounds.min_x) / NAV_CELL_SIZE).clamp(0, self.columns - 1),
-            ((z - self.bounds.min_z) / NAV_CELL_SIZE).clamp(0, self.rows - 1),
+            index(point.x, self.bounds.min_x, self.columns),
+            index(point.z, self.bounds.min_z, self.rows),
         )
     }
 
@@ -169,31 +216,33 @@ impl RoomGrid {
 
     /// Whether every cell the straight segment passes through is free, including both
     /// neighbours where it crosses exactly through a cell corner.
-    pub(crate) fn segment_is_free(&self, from: (i32, i32), to: (i32, i32)) -> bool {
-        let (mut column, mut row) = self.cell_at(from.0, from.1);
-        let end = self.cell_at(to.0, to.1);
+    pub(crate) fn segment_is_free(&self, from: impl Into<Point>, to: impl Into<Point>) -> bool {
+        let (from, to) = (from.into(), to.into());
+        let (mut column, mut row) = self.cell_at(from);
+        let end = self.cell_at(to);
         if !self.is_free((column, row)) {
             return false;
         }
-        let x0 = i64::from(from.0 - self.bounds.min_x);
-        let z0 = i64::from(from.1 - self.bounds.min_z);
-        let dx = i64::from(to.0 - from.0);
-        let dz = i64::from(to.1 - from.1);
-        let (step_x, step_z) = (dx.signum() as i32, dz.signum() as i32);
-        let size = i64::from(NAV_CELL_SIZE);
+        let x0 = f64::from(from.x) - f64::from(self.bounds.min_x);
+        let z0 = f64::from(from.z) - f64::from(self.bounds.min_z);
+        let dx = f64::from(to.x) - f64::from(from.x);
+        let dz = f64::from(to.z) - f64::from(from.z);
+        let step = |delta: f64| i32::from(delta > 0.0) - i32::from(delta < 0.0);
+        let (step_x, step_z) = (step(dx), step(dz));
+        let size = f64::from(NAV_CELL_SIZE);
         for _ in 0..=(self.columns + self.rows) {
             if (column, row) == end {
                 return true;
             }
-            // Compare the parameters of the next x and z boundary crossings exactly.
-            let boundary = |cell: i32, step: i32| i64::from(cell + i32::from(step > 0)) * size;
+            // Compare the parameters of the next x and z boundary crossings.
+            let boundary = |cell: i32, step: i32| f64::from(cell + i32::from(step > 0)) * size;
             let to_x = if step_x == 0 {
-                i64::MAX
+                f64::INFINITY
             } else {
                 (boundary(column, step_x) - x0).abs() * dz.abs()
             };
             let to_z = if step_z == 0 {
-                i64::MAX
+                f64::INFINITY
             } else {
                 (boundary(row, step_z) - z0).abs() * dx.abs()
             };
@@ -217,8 +266,8 @@ impl RoomGrid {
 
     /// The free cell holding `point`, or the first free neighbour in a fixed order: a body
     /// resting against an obstacle can sit in a cell whose centre is too close to it.
-    fn free_cell_near(&self, (x, z): (i32, i32)) -> Option<Cell> {
-        let cell = self.cell_at(x, z);
+    fn free_cell_near(&self, point: Point) -> Option<Cell> {
+        let cell = self.cell_at(point);
         std::iter::once(cell)
             .chain(neighbour_offsets().map(|(dx, dz, _)| (cell.0 + dx, cell.1 + dz)))
             .find(|&cell| self.is_free(cell))
@@ -230,24 +279,23 @@ impl RoomGrid {
     /// `searched` counts A* expansions.
     pub(crate) fn find_path(
         &self,
-        start: (i32, i32),
-        target: (i32, i32),
+        start: impl Into<Point>,
+        target: impl Into<Point>,
         reach: i64,
         mut clear_line: impl FnMut((i32, i32)) -> bool,
         searched: &mut u64,
     ) -> Option<Vec<(i32, i32)>> {
-        let start = self.free_cell_near(start)?;
-        let target_cell = self.cell_at(target.0, target.1);
-        let reach_sq = reach * reach;
+        let target = target.into();
+        let start = self.free_cell_near(start.into())?;
+        let target_cell = self.cell_at(target);
+        let reach_sq = range_sq(reach);
         let reach_cost = u64::try_from(reach).unwrap_or(0) * STRAIGHT_COST
             / u64::from(NAV_CELL_SIZE.unsigned_abs());
         let path = astar(
             start,
             |&cell| {
-                let (x, z) = self.cell_center(cell);
-                let dx = i64::from(target.0 - x);
-                let dz = i64::from(target.1 - z);
-                dx * dx + dz * dz <= reach_sq && clear_line((x, z))
+                let centre = self.cell_center(cell);
+                point_distance_sq(centre, target) <= reach_sq && clear_line(centre)
             },
             |&cell| {
                 *searched += 1;
@@ -269,16 +317,17 @@ impl RoomGrid {
     /// `None` when no such cell is reachable that way. `searched` counts A* expansions.
     pub(crate) fn find_retreat(
         &self,
-        start: (i32, i32),
-        threat: (i32, i32),
+        start: impl Into<Point>,
+        threat: impl Into<Point>,
         (near, far): (i64, i64),
         mut clear_line: impl FnMut((i32, i32)) -> bool,
         searched: &mut u64,
     ) -> Option<Vec<(i32, i32)>> {
-        let start = self.free_cell_near(start)?;
-        let from_threat_sq = |cell: Cell| distance_sq(self.cell_center(cell), threat);
+        let threat = threat.into();
+        let start = self.free_cell_near(start.into())?;
+        let from_threat_sq = |cell: Cell| point_distance_sq(self.cell_center(cell), threat);
         let floor_sq = from_threat_sq(start);
-        let band = near * near..=far * far;
+        let band = range_sq(near)..=range_sq(far);
         let path = astar(
             start,
             |&cell| band.contains(&from_threat_sq(cell)) && clear_line(self.cell_center(cell)),
@@ -291,8 +340,9 @@ impl RoomGrid {
             // Backing off by d units takes a route of at least d units, and no step costs
             // less than 0.49 per unit (a diagonal: 14 per 20√2).
             |&cell| {
-                let short = near - isqrt(from_threat_sq(cell));
-                u64::try_from(short).unwrap_or(0) * 49 / 100
+                let short = near as f64 - from_threat_sq(cell).sqrt();
+                // Saturating: a cell beyond `near` needs no more backing off.
+                (short.max(0.0) * 0.49).floor() as u64
             },
         )?;
         Some(
@@ -327,15 +377,16 @@ impl RoomGrid {
         usize::try_from(self.columns * self.rows).unwrap_or(0)
     }
 
-    /// The integer positions inside the room that `cell_at` maps to `cell`; the last
-    /// column and row absorb the remainder of the room.
+    /// The closed span holding every position inside the room that `cell_at` maps to
+    /// `cell`; the last column and row absorb the remainder of the room. Neighbouring
+    /// spans share their boundary.
     fn cell_area(&self, (column, row): Cell) -> Rect {
         let low = |min: i32, index: i32| min + index * NAV_CELL_SIZE;
         let high = |min: i32, max: i32, index: i32, count: i32| {
             if index == count - 1 {
                 max
             } else {
-                low(min, index) + NAV_CELL_SIZE - 1
+                low(min, index) + NAV_CELL_SIZE
             }
         };
         Rect {
@@ -348,9 +399,10 @@ impl RoomGrid {
 
     /// The cell holding `target`, or `None` when the target is outside the room's cells
     /// (then only the exact planner applies).
-    pub(crate) fn target_cell(&self, target: (i32, i32)) -> Option<Cell> {
-        let cell = self.cell_at(target.0, target.1);
-        self.cell_area(cell).contains(target).then_some(cell)
+    pub(crate) fn target_cell(&self, target: impl Into<Point>) -> Option<Cell> {
+        let target = target.into();
+        let cell = self.cell_at(target);
+        self.cell_area(cell).contains_point(target).then_some(cell)
     }
 
     /// The retained planner's field for a target anywhere in `target_cell`, whose goals are
@@ -428,10 +480,10 @@ impl RoomGrid {
     pub(crate) fn field_route(
         &self,
         field: &mut TargetField,
-        start: (i32, i32),
+        start: impl Into<Point>,
         work: &mut FieldWork,
     ) -> FieldRoute {
-        let Some(start) = self.free_cell_near(start) else {
+        let Some(start) = self.free_cell_near(start.into()) else {
             return FieldRoute::NoStartCell;
         };
         let index = self.index(start);
@@ -609,9 +661,22 @@ fn distance_sq(from: (i32, i32), to: (i32, i32)) -> i64 {
     dx * dx + dz * dz
 }
 
+/// Squared planar distance from a layout point to a position.
+fn point_distance_sq(from: (i32, i32), to: Point) -> f64 {
+    let dx = f64::from(to.x) - f64::from(from.0);
+    let dz = f64::from(to.z) - f64::from(from.1);
+    dx * dx + dz * dz
+}
+
+/// A whole-unit range, squared, for comparison with `f64` squared distances.
+fn range_sq(range: i64) -> f64 {
+    let range = range as f64;
+    range * range
+}
+
 #[cfg(test)]
 impl TargetField {
-    /// Centres of the strict goal cells, and the target cell's integer positions.
+    /// Centres of the strict goal cells, and the closed span of the target cell.
     pub(crate) fn strict_goal_centres(&self, grid: &RoomGrid) -> (Vec<(i32, i32)>, Rect) {
         (
             self.strict
@@ -727,21 +792,6 @@ fn octile_cost(from: Cell, to: Cell) -> u64 {
     STRAIGHT_COST * dx.max(dz) + (DIAGONAL_COST - STRAIGHT_COST) * dx.min(dz)
 }
 
-/// Integer square root (floor).
-pub(crate) fn isqrt(value: i64) -> i64 {
-    if value <= 0 {
-        return 0;
-    }
-    let mut root = (value as f64).sqrt() as i64;
-    while root * root > value {
-        root -= 1;
-    }
-    while (root + 1) * (root + 1) <= value {
-        root += 1;
-    }
-    root
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,11 +824,36 @@ mod tests {
         let pillar = Rect::centered(200, 200, 20, 60);
         let grid = RoomGrid::new(ROOM, &[pillar], 30);
 
-        assert!(!grid.is_free(grid.cell_at(10, 200)));
-        assert!(!grid.is_free(grid.cell_at(200, 200)));
-        assert!(!grid.is_free(grid.cell_at(235, 200)));
-        assert!(grid.is_free(grid.cell_at(260, 200)));
-        assert!(grid.is_free(grid.cell_at(60, 60)));
+        assert!(!grid.is_free(grid.cell_at((10, 200))));
+        assert!(!grid.is_free(grid.cell_at((200, 200))));
+        assert!(!grid.is_free(grid.cell_at((235, 200))));
+        assert!(grid.is_free(grid.cell_at((260, 200))));
+        assert!(grid.is_free(grid.cell_at((60, 60))));
+    }
+
+    /// Bodies and targets are sampled at their `f32` positions (#182): 19.6 lies in the
+    /// first cell, where a rounded view (20) would have put it in the second.
+    #[test]
+    fn grid_sampling_uses_exact_positions() {
+        let grid = RoomGrid::new(ROOM, &[], 30);
+        assert_eq!(grid.cell_at((19.6_f32, 0.4_f32)), (0, 0));
+        assert_eq!(grid.cell_at((20.0_f32, 0.4_f32)), (1, 0));
+        assert_eq!(grid.target_cell((19.6_f32, 39.9_f32)), Some((0, 1)));
+        // Outside the room's span there is no target cell, even within rounding of it.
+        assert_eq!(grid.target_cell((-0.4_f32, 100.0_f32)), None);
+        assert_eq!(grid.target_cell((400.4_f32, 100.0_f32)), None);
+        assert_eq!(grid.target_cell((400.0_f32, 100.0_f32)), Some((19, 5)));
+        // The goal test measures from the cell centre to the exact target position: the
+        // first cell's centre (10, 10) is exactly 50 units from (40, 50), and about 50.3
+        // from (40, 50.4), which a rounded view would put back at (40, 50).
+        let grid = RoomGrid::new(ROOM, &[], 5);
+        let mut searched = 0;
+        let reaches = |target: (f32, f32), searched: &mut u64| {
+            grid.find_path((10, 10), target, 50, |centre| centre == (10, 10), searched)
+                .is_some()
+        };
+        assert!(reaches((40.0, 50.0), &mut searched));
+        assert!(!reaches((40.0, 50.4), &mut searched));
     }
 
     #[test]
@@ -845,8 +920,8 @@ mod tests {
                 )
                 .is_none()
         );
-        let start = closed.cell_at(30, 30);
-        let target = closed.cell_at(200, 200);
+        let start = closed.cell_at((30, 30));
+        let target = closed.cell_at((200, 200));
         assert!(closed.is_free(target));
         assert!(reachable_cells(&closed, start) < reachable_cells(&open, start));
     }
@@ -1038,8 +1113,8 @@ mod tests {
                             .expect("a retained route implies the reference reaches too");
                         assert!(
                             path.windows(2).all(|step| {
-                                let from = grid.cell_at(step[0].0, step[0].1);
-                                let to = grid.cell_at(step[1].0, step[1].1);
+                                let from = grid.cell_at(step[0]);
+                                let to = grid.cell_at(step[1]);
                                 grid.moves(from).any(|(next, _)| next == to)
                             }),
                             "routes take allowed moves"
@@ -1073,13 +1148,5 @@ mod tests {
         assert!(max_excess <= ROUTE_SLACK, "excess {max_excess}");
         assert!(retained_work.searches < routed);
         assert!(retained_work.expansions < reference_expansions);
-    }
-
-    #[test]
-    fn integer_square_root_floors() {
-        assert_eq!(
-            [0, 1, 3, 4, 99, 100, 101].map(isqrt),
-            [0, 1, 1, 2, 9, 10, 10]
-        );
     }
 }

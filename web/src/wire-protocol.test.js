@@ -65,7 +65,109 @@ const player = {
   weapon: "bow",
   drawTicks: 12,
   interaction: { kind: "available", target: { kind: "chest", id: 50002 } },
+  motion: { grounded: false, verticalVelocity: -3, feetY: 42, groundY: 0 },
 };
+
+test("admits a player's authoritative height and support and rejects malformed motion", () => {
+  const decoded = decodeSnapshot(encode({ ...payload, players: [player] })).players[0];
+  expect(decoded.motion).toEqual({ grounded: false, verticalVelocity: -3, feetY: 42, groundY: 0 });
+  // No ground below the body is published as null.
+  expect(() =>
+    decodeSnapshot(
+      encode({ ...payload, players: [{ ...player, motion: { ...player.motion, groundY: null } }] }),
+    ),
+  ).not.toThrow();
+  for (const motion of [
+    undefined,
+    null,
+    { ...player.motion, grounded: "no" },
+    { ...player.motion, verticalVelocity: 0.5 },
+    { ...player.motion, feetY: undefined },
+    { ...player.motion, groundY: "floor" },
+  ]) {
+    expect(() => decodeSnapshot(encode({ ...payload, players: [{ ...player, motion }] }))).toThrow(
+      "Malformed ARPG presentation snapshot",
+    );
+  }
+});
+
+test("admits region membership and platforms and rejects malformed ones", () => {
+  for (const region of [
+    { kind: "region", id: 2 },
+    { kind: "transit", connection: 1 },
+  ]) {
+    const decoded = decodeSnapshot(encode({ ...payload, players: [{ ...player, region }] }));
+    expect(decoded.players[0].region).toEqual(region);
+  }
+  for (const region of [{ kind: "region" }, { kind: "transit", connection: -1 }, { kind: "air" }])
+    expect(() =>
+      decodeSnapshot(encode({ ...payload, players: [{ ...player, region }] })),
+    ).toThrow();
+  const platform = { id: 9, kind: "platform", position: [0, 30, 0], halfExtents: [100, 30, 100] };
+  const ceiling = { id: 10, kind: "ceiling", position: [0, 160, 0], halfExtents: [100, 20, 100] };
+  const step = { id: 11, kind: "step", position: [0, 10, 0], halfExtents: [60, 10, 20] };
+  const decoded = decodeSnapshot(
+    encode({ ...payload, scenario: "traversal", staticColliders: [platform, ceiling, step] }),
+  );
+  expect(decoded.staticColliders).toEqual([platform, ceiling, step]);
+});
+
+test("admits a slowed monster and rejects a malformed slow", () => {
+  const slowed = { ...monster, slow: { ticksRemaining: 90 } };
+  expect(decodeSnapshot(encode({ ...payload, monsters: [slowed] })).monsters[0].slow).toEqual({
+    ticksRemaining: 90,
+  });
+  expect(() =>
+    decodeSnapshot(
+      encode({ ...payload, monsters: [{ ...monster, slow: { ticksRemaining: -1 } }] }),
+    ),
+  ).toThrow();
+});
+
+test("admits poison pools and poisoned players and rejects malformed ones", () => {
+  const hazard = { id: 50000, roomId: 2, position: [0, 0, 0], radius: 60 };
+  const poison = { source: 50000, ticksRemaining: 179, nextDamageIn: 29 };
+  const decoded = decodeSnapshot(
+    encode({ ...payload, hazards: [hazard], players: [{ ...player, poison }] }),
+  );
+  expect(decoded.hazards).toEqual([hazard]);
+  expect(decoded.players[0].poison).toEqual(poison);
+  for (const candidate of [
+    { ...payload, hazards: [{ ...hazard, radius: -1 }] },
+    { ...payload, players: [{ ...player, poison: { ...poison, ticksRemaining: "a" } }] },
+  ])
+    expect(() => decodeSnapshot(encode(candidate))).toThrow();
+});
+
+test("admits damageable crates and strikes on them and rejects malformed ones", () => {
+  const crate = {
+    id: 40000,
+    roomId: 2,
+    position: [0, 50, 0],
+    halfExtents: [25, 50, 25],
+    health: 5,
+    maxHealth: 30,
+  };
+  const strike = {
+    order: 0,
+    source: { kind: "player", id: 1 },
+    target: { kind: "crate", id: 40000 },
+    strikeTick: 3,
+    definition: "sword.lightSwing",
+    result: { kind: "hit", damage: 25, defeated: false },
+  };
+  const collider = { id: 40000, kind: "crate", position: [0, 50, 0], halfExtents: [25, 50, 25] };
+  const decoded = decodeSnapshot(
+    encode({ ...payload, crates: [crate], strikeEvents: [strike], staticColliders: [collider] }),
+  );
+  expect(decoded.crates).toEqual([crate]);
+  expect(decoded.strikeEvents[0].target).toEqual({ kind: "crate", id: 40000 });
+  for (const malformed of [
+    { ...crate, health: 31 },
+    { ...crate, position: [0, 0] },
+  ])
+    expect(() => decodeSnapshot(encode({ ...payload, crates: [malformed] }))).toThrow();
+});
 
 test("admits shield guard state and rejects malformed guard data", () => {
   expect(decodeSnapshot(encode({ ...payload, players: [player] })).players[0].guard.phase).toBe(
@@ -290,6 +392,11 @@ test("monster attacks publish how they land and shots share the arrow list", () 
   expect(decoded.monsters[0].action.delivery).toBe("projectile");
   expect(decoded.arrows.map(({ source }) => source.kind)).toEqual(["monster", "player"]);
   expect(decodeSnapshot(encode({ ...payload, scenario: "heavy" })).scenario).toBe("heavy");
+  // The bruiser's ground burst (#64) is its own delivery.
+  const bursting = { ...shooting, action: { ...shooting.action, range: 220, delivery: "burst" } };
+  expect(
+    decodeSnapshot(encode({ ...payload, monsters: [bursting] })).monsters[0].action.delivery,
+  ).toBe("burst");
   for (const candidate of [
     { ...payload, monsters: [{ ...shooting, action: { ...shooting.action, delivery: "beam" } }] },
     {

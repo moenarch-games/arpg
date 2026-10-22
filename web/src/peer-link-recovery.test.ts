@@ -41,6 +41,7 @@ const snapshotJson = (tick, players) =>
         attackDamage: 1,
         gold: 0,
         guardPoints: 100,
+        motion: { grounded: true, verticalVelocity: 0, feetY: 0, groundY: 0 },
         maxGuardPoints: 100,
         weapon: "swordAndShield",
         interaction: { kind: "unavailable", reason: "nothingInRange" },
@@ -351,5 +352,77 @@ test("peer host: recovering a guest's link sends no guest commands and changes n
   expect(game.commands.slice(commandsBefore)).toEqual([]);
   expect(game.players).toContain(2);
   expect(runtime.getState()).toMatchObject({ mode: "host", lifecycle: "running", playerId: 1 });
+  runtime.dispose();
+});
+
+// Owner decision (#176, Atlas 4.1.2): a guest's held inputs are released as soon as its own
+// link to the host closes and recovery gives up.
+test("peer guest: a host link whose recovery gave up releases held input and stops sending", async () => {
+  const fixture = await guestFixture();
+  fixture.runtime.setGuard("keyboard", true);
+  fixture.runtime.setHeldMovement("forward", true);
+  const sentBefore = fixture.lobby.sent.length;
+
+  fixture.loseLink("failed");
+  fixture.lobby.emit("peer-recovery-exhausted", { peerId: "host", attempts: 3 });
+  await settle();
+
+  expect(fixture.runtime.getState()).toMatchObject({
+    mode: "guest",
+    lifecycle: "disconnected",
+    playerId: null,
+  });
+  expect(fixture.lobby.closed).toBe(true);
+
+  // Keys still held or pressed afterwards reach nobody; a refused send would count here.
+  const refusedBefore = fixture.lobby.refused;
+  fixture.runtime.setHeldMovement("left", true);
+  fixture.runtime.setGuard("touch", true);
+  fixture.runtime.dispatch({ type: "primaryAttack" });
+  await settle();
+  expect(fixture.lobby.sent.length).toBe(sentBefore);
+  expect(fixture.lobby.refused).toBe(refusedBefore);
+  fixture.runtime.dispose();
+});
+
+test("peer guest: exhausted recovery of another peer's link is not a loss", async () => {
+  const fixture = await guestFixture();
+  fixture.lobby.emit("peer-recovery-exhausted", { peerId: "someone-else", attempts: 3 });
+  await settle();
+  expect(fixture.runtime.getState()).toMatchObject({ lifecycle: "running", playerId: 2 });
+  expect(fixture.lobby.closed).toBe(false);
+  fixture.runtime.dispose();
+});
+
+test("peer guest: a re-join after the loss starts with nothing held", async () => {
+  const lobbies = [new ModelLobby("host"), new ModelLobby("host")];
+  const sessions = [...lobbies];
+  const { runtime } = runtimeWith({ createPeerSession: () => sessions.shift() });
+  const join = async (lobby) => {
+    await runtime.joinPeer("http://setup.test", "CODE");
+    lobby.setPeerState("host", "connected");
+    lobby.emit("peer-ready", { peerId: "host" });
+    lobby.emit("reliable", {
+      peerId: "host",
+      data: { kind: "welcome", playerId: 2, encodedSnapshot: snapshotJson(1, [1, 2]) },
+    });
+    await settle();
+  };
+  await join(lobbies[0]);
+  runtime.setGuard("keyboard", true);
+  runtime.setHeldMovement("forward", true);
+  expect(hostGuard(lobbies[0].commandsTo("host"))).toBe(true);
+  lobbies[0].emit("peer-recovery-exhausted", { peerId: "host", attempts: 3 });
+  await settle();
+
+  // The keys are still physically down when the player joins again.
+  await join(lobbies[1]);
+  expect(runtime.getState()).toMatchObject({ lifecycle: "running", playerId: 2 });
+  const commands = lobbies[1].commandsTo("host");
+  expect(hostGuard(commands)).toBe(false);
+  expect(commands.some((c) => c.type === "setMovement" && (c.x || c.z))).toBe(false);
+  // A fresh press applies again.
+  runtime.setGuard("keyboard", true);
+  expect(hostGuard(lobbies[1].commandsTo("host"))).toBe(true);
   runtime.dispose();
 });

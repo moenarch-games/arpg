@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "suite": "arpg/product-composition-v1",
-  "description": "Transport-neutral ARPG core composition over physics-engine. The product contract protects command/tick/snapshot orchestration without duplicating physics-engine microbenchmarks or game-server transport benchmarks.",
+  "description": "Transport-neutral ARPG core composition over its embedded Rapier physics. The product contract protects complete command/tick/snapshot orchestration, physics included, without physics microbenchmarks or game-server transport benchmarks.",
   "scenarios": [
     {
       "id": "four-player-combat",
@@ -20,7 +20,7 @@
         "identical final ArpgSnapshot across repeated runs",
         "monotonic command sequences",
         "intermediate snapshot tick identity",
-        "physics-engine remains authoritative for movement/collision"
+        "Rapier remains authoritative for movement/collision"
       ],
       "metrics": [
         {
@@ -107,7 +107,7 @@
             { "dimension": "players", "bound": "constant" },
             { "dimension": "monsters", "bound": "constant" }
           ],
-          "notes": "Largest number of physics-engine steps in one tick of the window. Physics cost itself belongs to physics-engine."
+          "notes": "Largest number of physics passes in one tick of the window; their cost is part of the complete tick."
         },
         {
           "name": "ticks_without_one_physics_step",

@@ -88,7 +88,8 @@ function looks(effects) {
   return {
     frame,
     activePlayer: node(frame, "player-1").color,
-    blockedShield: node(frame, "player-shield-2").color,
+    blockedShield: node(frame, "player-2").color,
+    playerShieldBoard: frame.nodes.some((candidate) => candidate.id.startsWith("player-shield-")),
     windupPlayer: node(frame, "player-3").color,
     hurtPlayer: node(frame, "player-4").color,
     staggerMonster: node(frame, "monster-1").color,
@@ -108,6 +109,7 @@ test("default effects draw exactly what main draws today", () => {
   expect(explicit).toMatchObject({
     activePlayer: "#fff0a3",
     blockedShield: "#e8f4ff",
+    playerShieldBoard: false,
     windupPlayer: "#e3a45d",
     hurtPlayer: "#e05a4f",
     staggerMonster: "#e8a25d",
@@ -163,4 +165,22 @@ test("building a frame never modifies the authoritative snapshot", () => {
   buildFrame(source, 1, 800, 600, "#d6b45f", reduced);
   buildFrame(source, 1, 800, 600, "#d6b45f", FULL_EFFECTS);
   expect(JSON.stringify(source)).toBe(before);
+});
+
+test("the ground ring stays on the ground under an airborne player (#59)", () => {
+  const source = snapshot();
+  source.players = [
+    player(1, {
+      position: [200, 140, 0],
+      motion: { grounded: false, verticalVelocity: -2, feetY: 90, groundY: 0 },
+    }),
+    player(2, {
+      position: [400, 50, 0],
+      motion: { grounded: true, verticalVelocity: 0, feetY: 0, groundY: 0 },
+    }),
+  ];
+  const frame = buildFrame(source, 1, 800, 600);
+  for (const id of ["player-1", "player-2"]) {
+    expect(node(frame, id).transform.translation[1]).toBeCloseTo(0.015, 6);
+  }
 });

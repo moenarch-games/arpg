@@ -50,7 +50,8 @@ const AIMED: [&str; 3] = ["primaryAttack", "secondaryAttack", "releaseBow"];
 
 #[test]
 fn the_protocol_version_is_bumped_for_aimed_one_shots() {
-    assert_eq!(PROTOCOL_VERSION, PREVIOUS_PROTOCOL_VERSION + 1);
+    // Version 20 introduced aimed one-shots; later versions (21: jump, #59) keep them.
+    const { assert!(PROTOCOL_VERSION > PREVIOUS_PROTOCOL_VERSION) };
     let bytes = protocol()
         .encode_command(&ArpgCommand::ReleaseBow {
             aim: Some([1000, 0]),

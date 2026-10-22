@@ -5,7 +5,7 @@ Gameplay tuning lives in one typed, versioned bundle:
 validated by [`content.rs`](../crates/arpg-core/src/content.rs). Definitions *select*
 supported behaviour; executable rules stay in Rust. Appearance and audio never live here.
 
-## What the bundle holds (format 8)
+## What the bundle holds (format 14)
 
 | Section | Contents |
 | --- | --- |
@@ -13,7 +13,7 @@ supported behaviour; executable rules stay in Rust. Appearance and audio never l
 | `actions` | One definition per supported `ActionKind`: phase ticks, strike, damage ratio, stagger. |
 | `combos` | Light/heavy transitions between striking actions and their input windows. |
 | `counterWindowTicks` | How long a successful block keeps the counter open. |
-| `monsters` | Enemy definitions: health, strike, phase ticks, damage, experience, pursuit speed, aggro/leash/switch/reacquire/separation, and the role parameters `retreatRange`, `projectile` and `shield` (see below). |
+| `monsters` | Enemy definitions: health, strike, phase ticks, damage, experience, pursuit speed, aggro/leash/switch/reacquire/separation, and the role parameters `retreatRange`, `projectile`, `shield`, `lunge` and `burst` (see below). |
 | `encounters` | Room encounters: a bounded `spawnGroup`, an `activation` and a `completion` rule, and the `reward` clearing it unlocks (see below). |
 | `rewards` | Rewards encounters refer to: `kind` (`chest`) and the `gold` it pays. |
 | `roomEncounters` | The encounter of each combat room, in generation order (repeats when rooms outnumber entries). |
@@ -22,6 +22,7 @@ supported behaviour; executable rules stay in Rust. Appearance and audio never l
 | `progression` | Experience per level and the base/per-level health and attack damage. |
 | `loot` | `monsterGold`: gold dropped by a defeated monster. |
 | `targeting` | Target-lock acquisition range and the larger break range that keeps a held lock (stickiness). |
+| `jump` | Jump arc and forgiveness (#59): `apexHeight` (how high the feet rise on flat ground, 1–100 world units, so no jump clears a wall), `airtimeTicks` (takeoff to landing, 4–120), `coyoteTicks` (after walking off the ground, 0–30), `bufferTicks` (how long a press waits for a possible jump, 1–30) and the airborne control rates `airAccelerationPerTick`, `airBrakingPerTick`, `airReversalPerTick` (1 to the top speed of 7). The core derives the takeoff speed and gravity that give exactly that apex and airtime. |
 
 Ids are 1–64 ASCII characters, unique per collection and published to clients (strike
 events, `MonsterSnapshot.definition`, `RoomSnapshot.encounter`), so presentation can key
@@ -91,13 +92,42 @@ is no per-role AI.
 | Role | Built-in | What selects it |
 | --- | --- | --- |
 | Melee pressure | `monster.brute`, `monster.skirmisher` | `retreatRange: null`, `projectile: null`: closes to strike reach and strikes around itself. |
+| Lunger | `monster.skirmisher` | `lunge` (`speed`, world units per tick): as its active window opens it commits to where its target stands, then moves that way through physics for every active tick (5 ticks at 16 units for the skirmisher), and its strike sweeps the path it actually travelled each tick: a target within reach of that path is struck once, from the path's nearest point, with obstruction tested from there (#90). A wall stops the body, so a lunge never strikes through one. |
 | Ranged | `monster.archer` | `retreatRange` keeps it in a band from that distance out to strike reach: a player who comes nearer makes it back off through its room grid, never nearer to the player and never into fixed bodies, before it shoots again. With nowhere to go it shoots from where it stands. `projectile` (`speed`, `lifetimeTicks`) makes the attack launch a shot along the arrow path at the target's position as the active phase opens; the monster's strike still decides reach, line of sight, block and guard cost, and `damage` the hurt. |
 | Shielded defender | `monster.defender` | `shield: true`: it carries the player's shield guard, with the shared `guard` tuning (raise ticks, points, regeneration, block reaction, break ticks) and the same block rules (`guard_outcome`: the raised guard protects 60 degrees either side of where it faces against blockable strikes, each block spends the strike's `guardCost`, and a cost that reaches the remaining points breaks it). Engaged and free, it holds the guard, so it closes on its target with the shield up and faces that target; committing to its attack, a stagger or a guard break lowers it, and it rises again from the start once the monster is free. A short strike reach and slow pursuit leave a sword swing time to meet the shield while it closes; strike from behind or beside, or break the guard, to land damage. Player arrows are not blocked by it yet (#77). |
-| Heavy | `monster.bruiser` | Long `windupTicks`, slow `pursuitSpeed`, high `damage` and a `guardCost` that breaks a full guard. The wind-up holds still and lands at the strike's reach around it, so the answer is to step out of it or interrupt it: any player hit staggers the monster and cancels the wind-up. |
+| Heavy | `monster.bruiser` | Long `windupTicks`, slow `pursuitSpeed` and high `damage`; `burst: true` makes its slam a ground burst (#64): when the wind-up ends, the unblockable `monster.slam` (`blockable: false`, no target limit) lands on every player within its reach, found by an area query on the physics seam, never on monsters. The wind-up holds still and telegraphs the ring, so the answer is to step out of it or interrupt it: any player hit staggers the monster and cancels the wind-up. |
 
 Validation: `retreatRange` is at least the minimum monster reach and stays three navigation
-cells inside the strike reach (room for the band); a projectile's speed is `16..=200` (slower integer velocities cannot hold a diagonal aim) and it
-must fly at least the strike reach within its lifetime.
+cells inside the strike reach (room for the band); a projectile's speed is `16..=200` and it
+must fly at least the strike reach, less two units per tick, within its lifetime (bounds kept from
+whole-unit shot velocities; shots now fly their exact speed, #182). A lunge's speed is
+`1..=40`, it needs at least two active ticks, and a projectile attack cannot lunge. A burst
+can neither lunge nor shoot, and its strike cannot be frontal.
+
+## Crates
+
+`crate` (`health`, `halfExtents`, `perCombatRoom`) defines the damageable crates generation
+places in the corners of every combat room (#90, Atlas 5.2.2): northern corners first, five
+units off the walls, at most four per room. Player melee and player arrows break them;
+monster shots stop at them; they drop nothing.
+Validation: positive health, `halfExtents` within `10..=100` across and `10..=200` high, a
+height above a jump's apex (no crate is walkable ground), and at most four per room.
+
+## Poison pools
+
+`poison` (`poolRadius`, `poolsPerCombatRoom`, `durationTicks`, `intervalTicks`, `damage`)
+places a poison pool in each combat room's south-west corner (#64, Atlas 5.3.2) and defines the
+poison it applies: a player touching a pool is poisoned for `durationTicks`, taking `damage`
+every `intervalTicks`; touching it again refreshes the duration, never stacks. Validation: a
+radius within `20..=200`, at most one pool per room, positive damage and interval, and a
+duration of `1..=600` ticks spanning at least one interval.
+
+## Slow
+
+`slow` (`durationTicks`, `speedPercent`) is what a player's arrow does to a living monster it
+hits (#64, Atlas 5.3.2): the monster steers at `speedPercent` of its pursuit speed for
+`durationTicks`; a further hit refreshes the duration, never stacks. Validation: a duration of
+`1..=600` ticks and a speed of `1..=99` percent.
 
 ## Adding a definition
 

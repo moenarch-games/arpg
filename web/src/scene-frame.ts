@@ -2,6 +2,7 @@
 // scene nodes. Presentation only: it reads the snapshot and never modifies it.
 
 import * as THREE from "three";
+import { presentedFacing } from "./character-layer.ts";
 import { CAMERA_FOV_DEGREES, CAMERA_OFFSET } from "./aim-input.js";
 import { FULL_EFFECTS } from "./presentation-effects.js";
 
@@ -56,6 +57,13 @@ function barrierOccludesFocus(collider, target, scale) {
     centerZ - halfZ,
     centerZ + halfZ,
   );
+}
+
+// Height (m) of the ground under a player, from its authoritative motion; snapshots without
+// it (older fixtures) keep the ring at the body's height.
+function groundHeight(player, scale) {
+  const motion = player.motion;
+  return (motion?.groundY ?? motion?.feetY ?? player.position[1]) / scale;
 }
 
 function dungeonFloor(snapshot, scale) {
@@ -155,19 +163,36 @@ export function buildFrame(
           kind: "box",
           size: [fullSize[0], visualHeight, fullSize[2]],
         },
-        color: lowered ? "#62594e" : collider.kind === "pillar" ? "#5d5142" : "#403a33",
+        color: lowered
+          ? "#62594e"
+          : collider.kind === "pillar"
+            ? "#5d5142"
+            : collider.kind === "platform" ||
+                collider.kind === "ceiling" ||
+                collider.kind === "step"
+              ? "#6b5e4b"
+              : collider.kind === "crate"
+                ? "#7a5a36"
+                : "#403a33",
         transform: { translation },
+      };
+    }),
+    // Poison pools (#64): flat discs on the floor, drawn from the authority's hazards.
+    ...(snapshot.hazards ?? []).map((hazard) => {
+      const size = (hazard.radius * 2) / scale;
+      return {
+        id: `hazard-${hazard.id}`,
+        geometry: { kind: "box", size: [size, 0.02, size] },
+        color: "#4f7a2e",
+        transform: {
+          translation: [hazard.position[0] / scale, 0.011, hazard.position[2] / scale],
+        },
       };
     }),
     ...snapshot.players.flatMap((player) => {
       const position = player.position.map((value) => value / scale);
-      // The exact committed or intended direction when aim or a lock owns it.
-      // A target lock takes precedence over aim, as in the core: show the authoritative facing.
-      const facing = player.action
-        ? (player.action.aim ?? player.action.facing)
-        : player.lockedMonsterId != null
-          ? (player.facing ?? [1, 0])
-          : (player.aim ?? player.facing ?? [1, 0]);
+      // The exact committed or intended direction, as the humanoid faces it.
+      const facing = presentedFacing(player);
       const facingLength = Math.hypot(facing[0], facing[1]) || 1;
       const facingX = facing[0] / facingLength;
       const facingZ = facing[1] / facingLength;
@@ -179,32 +204,24 @@ export function buildFrame(
             : player.action?.phase === "recovery"
               ? palette.playerRecovery
               : null;
+      // The real shield in the character's hand shows a guard (#183); the ring carries its
+      // rising, raised and blocked colours, after defeat, hurt and guard-broken.
+      const guardColor = player.guard
+        ? player.reaction?.kind === "blocked"
+          ? palette.shieldBlocked
+          : player.guard.phase === "raised"
+            ? palette.shieldRaised
+            : palette.shieldRising
+        : null;
       const color = !player.alive
         ? "#45413d"
         : player.reaction?.kind === "hurt"
           ? palette.playerHurt
           : player.reaction?.kind === "guardBroken"
             ? palette.playerGuardBroken
-            : (actionColor ??
+            : (guardColor ??
+              actionColor ??
               (player.id === focusPlayerId ? focusPlayerAccent : palette.playerPeer));
-      // The thin shield board faces along the authoritative 8-way facing, which the core's
-      // guard cone uses, not the exact aim shown by the weapon and marker.
-      const guardFacing = player.facing ?? [1, 0];
-      const guardLength = Math.hypot(guardFacing[0], guardFacing[1]) || 1;
-      const guardX = guardFacing[0] / guardLength;
-      const guardZ = guardFacing[1] / guardLength;
-      const shield = player.guard
-        ? [
-            shieldBoard(
-              `player-shield-${player.id}`,
-              position,
-              [guardX, guardZ],
-              0.42,
-              player.reaction?.kind === "blocked" ? "blocked" : player.guard.phase,
-              palette,
-            ),
-          ]
-        : [];
       const bow =
         player.weapon === "bow"
           ? [
@@ -223,24 +240,17 @@ export function buildFrame(
             ]
           : [];
       return [
-        ...shield,
         ...bow,
+        // The humanoid itself is an imported character (#55, `character-layer.ts`); this flat
+        // ground ring under it carries the action phase, hurt, guard-broken, dead and
+        // focus-accent colours (owner decision A on #55).
         {
           id: `player-${player.id}`,
-          geometry: { kind: "cylinder", radius: 0.3, height: 1 },
+          geometry: { kind: "cylinder", radius: 0.42, height: 0.03 },
           color,
-          transform: { translation: position },
-        },
-        {
-          id: `player-facing-${player.id}`,
-          geometry: { kind: "sphere", radius: 0.09 },
-          color: "#f5df9b",
+          // On the ground under the body, also while it is airborne (#59).
           transform: {
-            translation: [
-              position[0] + facingX * 0.48,
-              Math.max(position[1], 0.12),
-              position[2] + facingZ * 0.48,
-            ],
+            translation: [position[0], groundHeight(player, scale) + 0.015, position[2]],
           },
         },
       ];
@@ -366,7 +376,8 @@ export function buildFrame(
             }
         } else if (
           (phase === "windup" || phase === "active") &&
-          monster.action?.delivery === "strike" &&
+          // A burst (#64) telegraphs the same ring: it lands on everyone inside it.
+          (monster.action?.delivery === "strike" || monster.action?.delivery === "burst") &&
           monster.action.range
         ) {
           const radius = monster.action.range / scale;

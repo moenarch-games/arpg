@@ -2,10 +2,9 @@
 //!
 //! Gameplay code reports work through [`count`] and [`snapshot_requested`]. Without the
 //! `operation-work` feature both are empty inline functions, so product builds carry no
-//! counter state and no counting cost. With it, counts accumulate per thread (like the
-//! test-only physics measurements in `physics_workloads`) until [`OperationWork::take`].
-//! Physics stepping is counted by [`ArpgGame::physics_steps`]; what a step costs belongs to
-//! physics-engine.
+//! counter state and no counting cost. With it, counts accumulate per thread until
+//! [`OperationWork::take`]. Physics passes are counted by [`ArpgGame::physics_steps`]; their
+//! cost is part of the complete tick the performance journey measures.
 
 #[cfg(feature = "operation-work")]
 pub mod contract;
@@ -97,7 +96,14 @@ pub(crate) fn count(counter: Counter, amount: u64) {
 #[cfg(feature = "operation-work")]
 pub(crate) fn snapshot_requested(game: &ArpgGame) {
     let locked_doors = game.doors.iter().filter(|door| door.locked).count();
+    // A standing crate is exported as a collider and as a crate.
+    let standing_crates = game
+        .crates
+        .iter()
+        .filter(|placed| placed.health > 0)
+        .count();
     let entities = game.rooms.len()
+        + 2 * standing_crates
         + game.doors.len()
         + game.players.len()
         + game.monsters.len()
@@ -184,7 +190,7 @@ impl WorkFixture {
             monsters.push(super::MonsterState {
                 id,
                 room_id: arena.id,
-                position: Vec3i::new(center_x + offset, PLAYER_Y, center_z + 250),
+                position: Vec3i::new(center_x + offset, PLAYER_Y, center_z + 250).into(),
                 ..template
             });
         }
@@ -200,7 +206,7 @@ impl WorkFixture {
             monsters.push(super::MonsterState {
                 id: self.engaged_monsters + 1 + index,
                 room_id: room.id,
-                position,
+                position: position.into(),
                 ..template
             });
         }

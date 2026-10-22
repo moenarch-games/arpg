@@ -220,7 +220,7 @@ test("the training arena exports its session as a replayable reproduction", asyn
   await page.getByRole("button", { name: "Pause", exact: true }).click();
   const step = page.getByRole("button", { name: "Step", exact: true });
   await page.evaluate(() => document.activeElement?.blur());
-  await page.keyboard.press("Space");
+  await page.keyboard.press("r");
   for (let tick = 0; tick < 3; tick += 1) await step.click();
 
   const download = page.waitForEvent("download");
@@ -270,7 +270,7 @@ test("timed attacks chain into the light combo and a missed window starts over",
   // Commands apply immediately; the paused view updates on the next simulation step.
   const pressAndStep = async () => {
     await page.evaluate(() => document.activeElement?.blur());
-    await page.keyboard.press("Space");
+    await page.keyboard.press("r");
     await step.click();
   };
   const stepUntil = async (text) => {
@@ -307,23 +307,39 @@ test("the bow draws while held, shoots one arrow on release and cancels on blur"
   const draw = page.getByRole("button", { name: "Draw bow", exact: true });
   const arrows = page.locator(".training-diagnostics div").filter({ hasText: "Arrows" });
   await page.getByRole("button", { name: "Switch to bow", exact: true }).waitFor();
+  // Paused, the authority advances only by Step: the draw and the flight are counted in
+  // ticks, not in wall-clock time a slow runner may stretch (#224).
+  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  const step = page.getByRole("button", { name: "Step", exact: true });
+  const steps = async (count) => {
+    for (let tick = 0; tick < count; tick += 1) await step.click();
+  };
   await page.evaluate(() => document.activeElement?.blur());
   await page.keyboard.press("x");
+  await steps(1);
   await expect(draw).toBeVisible();
 
-  await page.keyboard.down("Space");
+  await page.keyboard.down("r");
+  await steps(1);
   await expect(draw).toHaveAttribute("data-draw", "drawing");
-  await page.waitForTimeout(600);
-  await page.keyboard.up("Space");
+  // Past the content's 8-tick minimum draw.
+  await steps(10);
+  await page.keyboard.up("r");
+  await steps(1);
   await expect(arrows).toContainText("Arrows1");
-  await expect(arrows).toContainText("Arrows0", { timeout: 5_000 });
+  for (let tick = 0; tick < 60 && !(await arrows.textContent()).includes("Arrows0"); tick += 1)
+    await step.click();
+  await expect(arrows).toContainText("Arrows0");
 
-  await page.keyboard.down("Space");
+  // Losing focus while drawing lowers the bow without a shot (real time again).
+  await page.getByRole("button", { name: "Resume", exact: true }).click();
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.keyboard.down("r");
   await expect(draw).toHaveAttribute("data-draw", "drawing");
   await page.waitForTimeout(600);
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));
   await expect(draw).not.toHaveAttribute("data-draw", /.+/);
-  await page.keyboard.up("Space");
+  await page.keyboard.up("r");
   await page.waitForTimeout(300);
   await expect(arrows).toContainText("Arrows0");
 });
@@ -339,8 +355,9 @@ test("all combat controls stay reachable on the narrowest phones", async ({ brow
     try {
       await page.goto(`${appUrl}?scenario=training&seed=42`);
       const controls = page.getByRole("region", { name: "Combat actions" }).getByRole("button");
-      // Heavy is encoded by an upward Attack swipe on touch layouts.
-      await expect(controls).toHaveCount(4);
+      // Attack, Guard, the weapon switch, Interact and Jump (#59). Heavy is encoded by an
+      // upward Attack swipe on touch layouts, so its button is hidden.
+      await expect(controls).toHaveCount(5);
       await expect(page.getByRole("button", { name: "Heavy attack" })).toBeHidden();
       const stick = await page.getByRole("group", { name: "Movement joystick" }).boundingBox();
       const boxes = [];

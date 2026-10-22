@@ -22,8 +22,12 @@ than treating this description as a fixed policy selection.
 
 ## Domain ownership
 
+The canonical [Decision Atlas](docs/decisions/atlas.md) records owner-approved product direction. Consult relevant Decisions/Questions before consequential product forks; nested binary implementation checkboxes identify only scoped code/test evidence, not full product acceptance. Treat GitHub issues as a mostly flat queue of bounded handoffs and use one active implementation worker per repository (independent acceptance context operates sequentially). Do not re-ask settled decisions or infer a complete product from a merged technical PR.
+
 - `crates/arpg-core` owns deterministic gameplay rules and authoritative state.
-- `physics-engine` owns collision and physical movement; `3d-lab` owns rendering.
+- Rapier (`rapier3d`, inside `arpg-core`'s Rust/WASM simulation) resolves collision
+  and physical movement until `physics-engine` is finished (Atlas 2.3.1); report concrete
+  Rapier gaps and lessons as physics-engine issues. `3d-lab` owns rendering.
 - `input-bindings` owns input semantics and rebinding; the multiplayer setup
   service owns peer rendezvous.
 - `crates/arpg-protocol` owns ARPG command and snapshot encoding.
@@ -54,7 +58,6 @@ bun run lint
 bun run test
 bun run setup
 bun run build
-bun run test:physics-wasm
 bun run test:browser
 ```
 

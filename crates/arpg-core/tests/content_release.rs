@@ -16,8 +16,10 @@ mod linux {
     use arpg_core::{ArpgGame, AuthoritativeGame, ContentBundle, base_bundle};
     use serde_json::{Value, json};
 
-    /// Entries in each sizeable bundle's `roomEncounters`.
-    const ENTRIES: usize = 16_384;
+    /// Entries in each sizeable bundle's `roomEncounters`. Large enough that one bundle's
+    /// payload dwarfs the allocator noise a game run leaves behind (several MiB in CI since
+    /// physics moved to Rapier, #185), so the control and the retention signal stay apart.
+    const ENTRIES: usize = 65_536;
     /// The longest id content allows.
     const ID_LENGTH: usize = 64;
     /// Lower bound of the string bytes one sizeable bundle holds.
@@ -107,20 +109,21 @@ mod linux {
 
     #[test]
     fn dropping_games_releases_their_content() {
-        // Bounded growth the allocator may show without retaining anything per bundle.
-        let budget = 3 * PAYLOAD;
+        // Retaining every bundle grows resident memory by at least this much.
+        let retention = CYCLES as usize * PAYLOAD;
         // Calibration: bundles that are only parsed, validated and dropped, next to built-in
-        // games.
+        // games. Allocator noise from games may reach tens of MiB on CI runners (#185, #59),
+        // so the control only has to stay clearly below the retention signal.
         let control = growth(1_000, check_and_run_built_in);
         assert!(
-            control < budget,
+            control < retention / 2,
             "resident memory is not stable enough to measure: control grew {control} bytes"
         );
-        // Games built and dropped, each with its own distinct sizeable bundle. Retaining
-        // each bundle would grow by at least CYCLES * PAYLOAD.
+        // Games built and dropped, each with its own distinct sizeable bundle. They may grow
+        // like the control plus bounded slack, never by the retention signal.
         let games = growth(2_000, run_and_drop);
         assert!(
-            games < budget,
+            games < control + retention / 2,
             "{CYCLES} dropped games with distinct {PAYLOAD}-byte bundles left {games} bytes \
              resident (control {control}); content must be freed with its last game"
         );

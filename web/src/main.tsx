@@ -10,6 +10,15 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { createThreeSceneRenderer } from "@moritzbrantner/three-d-renderer";
+import {
+  adaptImportedCharacterBundle,
+  adaptImportedItemBundle,
+  readBundleAttachment,
+} from "@moritzbrantner/three-d-renderer/imported-character";
+import { createEquipment } from "./character-equipment.ts";
+import { createCharacterAssets } from "./character-assets.ts";
+import { RANGER_BUNDLE } from "./character-bundles.js";
+import { createCharacterLayer } from "./character-layer.ts";
 import { applyProfile, validateRegistry } from "@moritzbrantner/input-bindings";
 import { keyLabelForAction } from "./binding-labels.js";
 import { createSnapshotStore } from "./snapshot-store.js";
@@ -22,15 +31,14 @@ import {
   GameSummary,
 } from "./snapshot-views.jsx";
 import { SettingsDialog } from "./settings-dialog.jsx";
+import { PROFILE_KEY, loadInputProfile } from "./input-profile.js";
 import {
-  PROFILE_KEY,
   SETUP_URL_KEY,
   DEDICATED_URL_KEY,
   MOUSE_AIM_KEY,
   DEFAULT_PRESENTATION,
   MOTION_PREFERENCES,
   TEXT_SCALES,
-  loadProfile,
   loadPresentation,
   loadMouseAim,
   normalizePresentation,
@@ -39,7 +47,7 @@ import {
   persistStoredValue,
 } from "./preferences.js";
 import { InputRuntimeController } from "@moritzbrantner/input-bindings-runtime";
-import { attachKeyboardRuntime } from "@moritzbrantner/input-bindings-web";
+import { attachKeyboardRuntime, isTextEntryTarget } from "@moritzbrantner/input-bindings-web";
 import { KeybindingEditor } from "@moritzbrantner/input-bindings-react";
 import "@moritzbrantner/input-bindings-react/styles.css";
 import initWasm, {
@@ -113,7 +121,10 @@ const inputRegistry = {
     ["game.moveBackward", "Move backward", "KeyS", "allow", "Movement"],
     ["game.moveLeft", "Move left", "KeyA", "allow", "Movement"],
     ["game.moveRight", "Move right", "KeyD", "allow", "Movement"],
-    ["game.primaryAttack", "Primary attack", "Space", "never", "Combat"],
+    // The standard scheme (#59): Space jumps and R attacks. Older stored profiles migrate
+    // once (`input-profile.js`); customized ones keep their bindings.
+    ["game.jump", "Jump", "Space", "never", "Movement"],
+    ["game.primaryAttack", "Primary attack", "KeyR", "never", "Combat"],
     ["game.secondaryAttack", "Heavy attack", "KeyQ", "never", "Combat"],
     ["game.interact", "Interact / pick up", "KeyE", "never", "Interaction"],
     ["game.guard", "Raise shield (hold)", "KeyF", "never", "Combat"],
@@ -147,6 +158,16 @@ const inputRegistry = {
     ]),
 };
 
+const inputDefaults = inputRegistry.actions.flatMap((action) => action.defaults);
+
+// Labels of the keys each action is bound to under `profile`; `null` for an unbound action.
+function actionKeyLabels(profile) {
+  const bindings = applyProfile(inputDefaults, profile).bindings;
+  return Object.fromEntries(
+    inputRegistry.actions.map((action) => [action.id, keyLabelForAction(bindings, action.id)]),
+  );
+}
+
 // Offers `text` as a JSON file download.
 function downloadJson(text, fileName) {
   const blob = new Blob([text], { type: "application/json" });
@@ -169,8 +190,47 @@ function requestedRunSeed() {
   return parseRunSeed(new URLSearchParams(location.search).get("seed"));
 }
 
+// The Ranger character bundle (#55), unpacked into the static `characters/` directory by
+// setup. Loaded once per page with the game core and shared by every session.
+const characterAssets = createCharacterAssets({
+  bundle: RANGER_BUNDLE,
+  baseUrl: `${import.meta.env.BASE_URL}characters/`,
+  fetch: (url) => fetch(url),
+  // The character, its equipment items and its sockets (#183) from the same bundle.
+  adapt: async (source, options) => {
+    const character = await adaptImportedCharacterBundle(source, options);
+    const { equipment: data } = RANGER_BUNDLE;
+    const items = Object.fromEntries(
+      await Promise.all(
+        Object.entries(data.items).map(async ([id, item]) => [
+          id,
+          await adaptImportedItemBundle({ ...source, key: item.key, variant: "default" }),
+        ]),
+      ),
+    );
+    const sockets = await readBundleAttachment({ ...source, name: "humanoid-sockets" });
+    const equipment = createEquipment({ data, items, sockets });
+    return {
+      clips: character.clips,
+      createInstance: character.createInstance,
+      equip: equipment.equip,
+    };
+  },
+});
+
+const megabytes = (bytes) => (bytes / 1_000_000).toFixed(1);
+
 // The game world canvas. One frame presenter owns its renderer, projection and resize
 // observer for as long as the canvas is mounted; view changes reconfigure it in place.
+// The keyboard owner for the focused element, highest capture priority first (#176): the
+// shared keybinding editor's recorder, then any text-entry control. `null` leaves the
+// context to the menu/gameplay state.
+function focusedInputOwner(element) {
+  if (element?.closest?.(".ib-recorder")) return "rebinding-capture";
+  if (isTextEntryTarget(element)) return "text-entry";
+  return null;
+}
+
 function GameCanvas({ snapshots, playerId, accent, graphics, effects, onPointerMove }) {
   const canvasRef = useRef(null);
   const presenterRef = useRef(null);
@@ -190,6 +250,12 @@ function GameCanvas({ snapshots, playerId, accent, graphics, effects, onPointerM
       },
       requestFrame: (callback) => requestAnimationFrame(callback),
       cancelFrame: (handle) => cancelAnimationFrame(handle),
+      characters: createCharacterLayer({
+        getAsset: characterAssets.get,
+        animation: RANGER_BUNDLE.animation,
+        // Animation follows the simulation's fixed tick (arpg-core TICK_HZ).
+        tickHz: 60,
+      }),
       view: viewRef.current,
     });
     presenterRef.current = presenter;
@@ -238,7 +304,8 @@ function App() {
   const [runtime] = useState(() =>
     createGameClientRuntime({
       snapshots: snapshotStore,
-      loadCore: () => initWasm(),
+      // The game starts once both the Rust/Wasm core and the character assets are ready.
+      loadCore: () => Promise.all([initWasm(), characterAssets.load()]),
       // Training sessions (including the default dungeon scenario) are scenario games,
       // which record their session for reproduction export; ordinary play does not.
       createGame: (seed, scenario) =>
@@ -256,9 +323,18 @@ function App() {
   const { mode, playerId, lobbyCode } = client;
   const ready = client.core === "ready";
   const coreFailed = client.core === "failed";
-  // An honest load state: no progress is known, only loading, failed (with the runtime's
-  // failure message in `status`) or ready.
-  const shownStatus = ready || coreFailed ? status : "Loading game…";
+  // An honest load state: character byte progress while it loads, failed (with the
+  // runtime's failure message in `status`) or ready.
+  const characterProgress = useSyncExternalStore(
+    characterAssets.subscribe,
+    characterAssets.getProgress,
+  );
+  const shownStatus =
+    ready || coreFailed
+      ? status
+      : characterProgress?.totalBytes
+        ? `Loading game… ${megabytes(characterProgress.loadedBytes)} / ${megabytes(characterProgress.totalBytes)} MB`
+        : "Loading game…";
   const scenario = client.training ? "training" : "adventure";
   const trainingPaused = client.training?.paused ?? false;
   const trainingSpeed = client.training?.speed ?? 1;
@@ -271,7 +347,11 @@ function App() {
   const [trainingFixture, setTrainingFixture] = useState(initialRequest.training.fixture);
   const [selectedCharacterId, setSelectedCharacterId] = useState(() => loadSelectedCharacterId());
   const [profile, setProfile] = useState(() =>
-    loadProfile((profile) => validateRegistry(inputRegistry, profile).valid),
+    loadInputProfile({
+      validate: (profile) => validateRegistry(inputRegistry, profile).valid,
+      defaults: inputDefaults,
+      foundation: { applyProfile },
+    }),
   );
   // Local display preferences (#61): never part of a save or the authority.
   const [presentation, setPresentation] = useState(() => loadPresentation());
@@ -299,10 +379,9 @@ function App() {
     () => new URLSearchParams(location.search).get("join") ?? "",
   );
 
-  const interactKey = useMemo(() => {
-    const defaults = inputRegistry.actions.flatMap((action) => action.defaults);
-    return keyLabelForAction(applyProfile(defaults, profile).bindings, "game.interact");
-  }, [profile]);
+  // Prompts and hints name the keys of the effective profile, never the defaults.
+  const keyLabels = useMemo(() => actionKeyLabels(profile), [profile]);
+  const interactKey = keyLabels["game.interact"];
 
   const selectedCharacter = useMemo(
     () => resolveCharacter(selectedCharacterId),
@@ -377,6 +456,7 @@ function App() {
       if (action === "game.cycleTarget") return runtime.cycleTarget();
       if (action === "game.clearTarget") return runtime.clearTarget();
       const type = {
+        "game.jump": "jump",
         "game.primaryAttack": "primaryAttack",
         "game.secondaryAttack": "secondaryAttack",
         "game.interact": "interact",
@@ -444,6 +524,7 @@ function App() {
         }
         if (
           [
+            "game.jump",
             "game.primaryAttack",
             "game.secondaryAttack",
             "game.interact",
@@ -621,10 +702,22 @@ function App() {
     return () => input.detach();
   }, [ready, inWorld]);
 
+  // Which keyboard owner has focus (#176): a binding recorder, a text-entry control or none.
+  const [focusOwner, setFocusOwner] = useState(() => focusedInputOwner(document.activeElement));
   useEffect(() => {
-    // Menus suppress gameplay bindings and release held input.
-    inputRef.current?.setContext(settingsOpen ? "menu" : "gameplay");
-  }, [settingsOpen]);
+    const update = () => setFocusOwner(focusedInputOwner(document.activeElement));
+    document.addEventListener("focusin", update);
+    document.addEventListener("focusout", update);
+    return () => {
+      document.removeEventListener("focusin", update);
+      document.removeEventListener("focusout", update);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Non-gameplay contexts suppress gameplay bindings and release held input.
+    inputRef.current?.setContext(focusOwner ?? (settingsOpen ? "menu" : "gameplay"));
+  }, [focusOwner, settingsOpen]);
 
   const updateProfile = (next) => {
     if (!persistStoredValue(PROFILE_KEY, JSON.stringify(next)))
@@ -1077,6 +1170,7 @@ function App() {
         playerId={playerId}
         status={shownStatus}
         interactKey={interactKey}
+        keyLabels={keyLabels}
       />
 
       {ready && !settingsOpen && (
@@ -1110,6 +1204,7 @@ function App() {
             runtime.setBowDraw("touch", held, { interrupted })
           }
           switchWeapon={switchWeapon}
+          keyLabels={keyLabels}
         />
       )}
 

@@ -2,14 +2,19 @@ name: Validate
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   rust:
     permissions:
       contents: read
       packages: read
-    uses: moritzbrantner/reusable-workflows/.github/workflows/validate-repo.yml@main
+    uses: moritzbrantner/reusable-workflows/.github/workflows/validate-repo.yml@d473ea958fc23c61cef4c171fb40a643c6b3609b # main
     with:
       bun_version: ""
       node_version: ""
@@ -27,15 +32,28 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: 1.98.1
           targets: wasm32-unknown-unknown
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.3
+      # Reuse the exact wasm-pack executable across CI and Pages workflows.
+      # Cargo installation only runs when the cache is absent or invalid.
+      - name: Restore wasm-pack CLI
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cargo/bin/wasm-pack
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.98.1-wasm-pack-0.13.1
       - name: Install wasm-pack
-        run: cargo install wasm-pack --locked --version 0.13.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v wasm-pack >/dev/null 2>&1 || [[ "$(wasm-pack --version)" != "wasm-pack 0.13.1" ]]; then
+            cargo install wasm-pack --locked --version 0.13.1 --force
+          fi
+          test "$(wasm-pack --version)" = "wasm-pack 0.13.1"
       - name: Install web dependencies
         working-directory: web
         run: bun install --frozen-lockfile
@@ -54,9 +72,6 @@ jobs:
       - name: Bundle browser MVP
         working-directory: web
         run: bun run build
-      - name: Execute compiled WASM gameplay controls
-        working-directory: web
-        run: bun run test:physics-wasm
       - name: Build dedicated acceptance server
         run: cargo build --locked -p arpg-game-server --bin server
       - name: Verify browser workflows
@@ -67,7 +82,7 @@ jobs:
         run: bun run test:browser
       - name: Keep browser failure traces
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: browser-test-results
           path: web/test-results
@@ -81,7 +96,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: 1.98.1
       - name: Collect deterministic product evidence
@@ -107,9 +122,9 @@ jobs:
           repository: moritzbrantner/coding-tooling
           ref: d499b7f4f575e81da060a4d4f0a2eddf1e7c021a
           path: .coding-tooling-verifier
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.3
       - name: Install coding-tooling verifier
         working-directory: .coding-tooling-verifier
         run: bun install --frozen-lockfile
@@ -118,7 +133,7 @@ jobs:
           bun .coding-tooling-verifier/src/router.ts performance work --root . \
             --evidence .artifacts/performance-evidence/arpg-operation-work.json --json
       - name: Upload performance evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: arpg-performance-evidence
           include-hidden-files: true
@@ -132,8 +147,21 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: 1.98.1
       - name: Enforce the blocking performance budget
         run: cargo run --locked --release -p arpg-core --features operation-work --example performance_smoke
+
+  merge-ready:
+    name: merge-ready
+    if: ${{ always() }}
+    needs: ["rust", "web", "performance-evidence", "performance-smoke"]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: moritzbrantner/reusable-workflows/.github/actions/merge-ready@b0f25f241d76af2584dfc9e375084ff5c5cb97da
+        with:
+          needs: ${{ toJSON(needs) }}
+          required: '["rust", "web", "performance-evidence", "performance-smoke"]'

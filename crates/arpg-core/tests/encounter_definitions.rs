@@ -390,8 +390,8 @@ impl Session {
         let max_health = self.snapshot().players[0].max_health;
         self.edit(|save| {
             let player = save.players.iter_mut().find(|p| p.id == 1).expect("saved");
-            player.position = [position[0], player.position[1], position[1]];
-            player.velocity = [0, 0, 0];
+            player.position = [position[0] as f32, player.position[1], position[1] as f32];
+            player.velocity = [0.0; 3];
             player.movement = [0, 0];
             player.facing = facing;
             player.aim = None;
@@ -454,11 +454,11 @@ impl Session {
                 let player = save.players.iter_mut().find(|p| p.id == 1).expect("saved");
                 let facing = [-dx as i8, -dz as i8];
                 player.position = [
-                    x + dx * SIDE_DISTANCE,
+                    (x + dx * SIDE_DISTANCE) as f32,
                     player.position[1],
-                    z + dz * SIDE_DISTANCE,
+                    (z + dz * SIDE_DISTANCE) as f32,
                 ];
-                player.velocity = [0, 0, 0];
+                player.velocity = [0.0; 3];
                 player.movement = [0, 0];
                 player.facing = facing;
                 player.aim = None;
@@ -494,8 +494,8 @@ impl Session {
         let [cx, _, cz] = chest.position;
         self.edit(|save| {
             let player = save.players.iter_mut().find(|p| p.id == 1).expect("saved");
-            player.position = [cx, player.position[1], cz - 100];
-            player.velocity = [0, 0, 0];
+            player.position = [cx as f32, player.position[1], (cz - 100) as f32];
+            player.velocity = [0.0; 3];
             player.movement = [0, 0];
             player.facing = [0, 1];
             player.aim = None;
@@ -546,7 +546,8 @@ fn opened_gold(results: &[InteractionResult]) -> Vec<u32> {
 
 #[test]
 fn base_bundle_assigns_each_combat_room_a_single_member_encounter_with_a_chest_reward() {
-    assert_eq!(CONTENT_FORMAT_VERSION, 8, "the bundle's shape changed");
+    // Format 9 added jump tuning (#59) after the encounter definitions of format 8.
+    assert_eq!(CONTENT_FORMAT_VERSION, 14, "the bundle's shape changed");
     assert_eq!(base_bundle().format_version, CONTENT_FORMAT_VERSION);
     base_bundle()
         .check()

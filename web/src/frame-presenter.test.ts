@@ -364,3 +364,47 @@ test("repeated create and dispose cycles leave no renderer, listener, observer o
   expect(h.connectedObservers()).toHaveLength(0);
   expect(h.frames.size).toBe(0);
 });
+
+// #55: imported character roots reach the renderer's scene when the set changes, again for
+// every replacement renderer, and the layer is released with the presenter.
+test("character roots are submitted on change and to a replacement renderer", () => {
+  const h = harness();
+  const syncs = [];
+  let result = { roots: ["root-1"], changed: true };
+  let layerDisposed = 0;
+  h.options.characters = {
+    sync(current) {
+      syncs.push(current);
+      return result;
+    },
+    dispose() {
+      layerDisposed += 1;
+    },
+  };
+  h.options.buildFrame = (current) => ({ snapshot: current, camera: "camera" });
+  const submitted = [];
+  const createRenderer = h.options.createRenderer;
+  h.options.createRenderer = (target, rendererOptions) => {
+    const renderer = createRenderer(target, rendererOptions);
+    renderer.renderImportedRoots = (frame) => submitted.push([renderer, frame]);
+    return renderer;
+  };
+  const presenter = createFramePresenter(h.options);
+
+  h.snapshots.publish(snapshot(1));
+  h.flushFrames();
+  expect(submitted.map(([, frame]) => frame)).toEqual([{ camera: "camera", roots: ["root-1"] }]);
+
+  result = { roots: ["root-1"], changed: false };
+  h.snapshots.publish(snapshot(2));
+  h.flushFrames();
+  expect(submitted).toHaveLength(1);
+  expect(syncs).toHaveLength(2);
+
+  presenter.configure({ graphics: { shadows: false, pixelRatioLimit: 2 } });
+  expect(submitted).toHaveLength(2);
+  expect(submitted[1][0]).toBe(h.renderers[1]);
+
+  presenter.dispose();
+  expect(layerDisposed).toBe(1);
+});
