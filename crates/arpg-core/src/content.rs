@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ActionKind, ComboInput};
 
-pub const CONTENT_FORMAT_VERSION: u16 = 9;
+pub const CONTENT_FORMAT_VERSION: u16 = 14;
 /// Touching monster and player bodies keep their centres up to √2 times their
 /// combined XZ half extents apart (85 units), and pursuit stops one navigation
 /// cell inside strike reach, so a monster strike must reach past both.
@@ -43,6 +43,9 @@ pub const MAX_DEFINITION_ID_LENGTH: usize = 64;
 pub const MAX_ENCOUNTER_SPAWNS: usize = 8;
 const _: () = assert!(MAX_ENCOUNTER_SPAWNS >= 1);
 const _: () = assert!(MAX_ENCOUNTER_SPAWNS <= crate::MAX_WORKBENCH_MONSTERS);
+/// Fastest lunge (world units per tick): a body moved this far per tick stays well inside the
+/// character controller's swept motion and a player's 60-unit width.
+const MAX_LUNGE_SPEED: u8 = 40;
 /// Slowest monster projectile: integer velocities still aim diagonally within a few degrees.
 pub(crate) const MIN_PROJECTILE_SPEED: u16 = 16;
 
@@ -72,6 +75,48 @@ pub struct ContentBundle {
     pub loot: LootData,
     pub targeting: TargetingData,
     pub jump: JumpData,
+    /// Damageable crates in combat rooms (#90).
+    #[serde(rename = "crate")]
+    pub crate_prop: CrateData,
+    /// Static poison pools in combat rooms and the poison they apply (#64).
+    pub poison: PoisonData,
+    /// The slow a player's arrow puts on a monster it hits (#64).
+    pub slow: SlowData,
+}
+
+/// Slow (#64, Atlas 5.3.2): a monster a player's arrow hits pursues at `speedPercent` of
+/// its speed for `durationTicks`; another hit refreshes the duration, never stacks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SlowData {
+    pub duration_ticks: u16,
+    pub speed_percent: u8,
+}
+
+/// Poison pools (#64, Atlas 5.3.2): a player whose body touches a pool is poisoned for
+/// `durationTicks`, taking `damage` every `intervalTicks`; touching it again refreshes the
+/// duration, never stacks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PoisonData {
+    /// The pool's radius on the floor, in world units.
+    pub pool_radius: u16,
+    pub pools_per_combat_room: u8,
+    pub duration_ticks: u16,
+    pub interval_ticks: u8,
+    pub damage: u16,
+}
+
+/// A damageable static crate (#90, Atlas 5.2.2): it blocks movement and navigation until
+/// player strikes break it, and drops nothing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CrateData {
+    pub health: u16,
+    /// World units; the crate stands on the floor.
+    pub half_extents: [u16; 3],
+    /// Crates placed in each combat room's corners, at most four.
+    pub per_combat_room: u8,
 }
 
 /// Jump and airborne-control tuning (#59). Heights are world units, durations ticks and
@@ -318,6 +363,22 @@ pub struct MonsterData {
     /// Shield user (#92): an engaged monster holds the shared shield guard (`guard`
     /// tuning, `guard_outcome` rules) while it is free and lowers it to attack.
     pub shield: bool,
+    /// The attack lunges (#90): through its active window the monster moves towards where
+    /// its target stood when the window opened, and the strike sweeps the path it travels.
+    /// `null` strikes in place.
+    pub lunge: Option<LungeData>,
+    /// The attack is a ground burst around the monster (#64, Atlas 5.3.1): its strike lands
+    /// on every player within reach (an area query through the physics seam), never on
+    /// monsters, instead of on its engaged target alone.
+    pub burst: bool,
+}
+
+/// A lunging attack's motion (#90).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LungeData {
+    /// World units per active tick.
+    pub speed: u8,
 }
 
 /// A monster projectile: it flies the shared arrow path and resolves through the
@@ -454,6 +515,10 @@ pub(crate) struct MonsterDef {
     pub retreat_range: Option<i64>,
     pub projectile: Option<ProjectileDefinition>,
     pub shield: bool,
+    /// Lunge speed in world units per active tick (#90).
+    pub lunge_speed: Option<f32>,
+    /// A ground burst around the monster (#64).
+    pub burst: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -525,6 +590,9 @@ pub(crate) struct Resolved {
     pub loot: LootData,
     pub targeting: TargetingData,
     pub jump: JumpTuning,
+    pub crate_prop: CrateData,
+    pub poison: PoisonData,
+    pub slow: SlowData,
 }
 
 impl Resolved {
@@ -920,6 +988,30 @@ impl ContentBundle {
                     );
                 }
             }
+            if monster.burst && (monster.lunge.is_some() || monster.projectile.is_some()) {
+                fail(path.clone(), "a burst can neither lunge nor shoot");
+            }
+            if monster.burst
+                && strike_by_id
+                    .get(monster.strike.as_str())
+                    .is_some_and(|(_, strike)| strike.frontal)
+            {
+                fail(path.clone(), "a burst strike cannot be frontal");
+            }
+            if let Some(lunge) = monster.lunge {
+                if !(1..=MAX_LUNGE_SPEED).contains(&lunge.speed) {
+                    fail(
+                        path.clone(),
+                        &format!("lunge speed must be within 1..={MAX_LUNGE_SPEED}"),
+                    );
+                }
+                if monster.active_ticks < 2 {
+                    fail(path.clone(), "a lunge needs at least two active ticks");
+                }
+                if monster.projectile.is_some() {
+                    fail(path.clone(), "a projectile attack cannot lunge");
+                }
+            }
             match strike_by_id.get(monster.strike.as_str()) {
                 Some(strike) => {
                     if strike.1.reach < MIN_MONSTER_STRIKE_REACH {
@@ -951,6 +1043,8 @@ impl ContentBundle {
                             lifetime_ticks: projectile.lifetime_ticks,
                         }),
                         shield: monster.shield,
+                        lunge_speed: monster.lunge.map(|lunge| f32::from(lunge.speed)),
+                        burst: monster.burst,
                     });
                 }
                 None => fail(path, "references an unknown strike"),
@@ -1143,6 +1237,55 @@ impl ContentBundle {
             }
         }
 
+        let crate_prop = self.crate_prop;
+        if crate_prop.health == 0 {
+            fail("crate.health".into(), "must be positive");
+        }
+        let [hx, hy, hz] = crate_prop.half_extents;
+        if !(10..=100).contains(&hx) || !(10..=100).contains(&hz) || !(10..=200).contains(&hy) {
+            fail(
+                "crate.halfExtents".into(),
+                "must be within 10..=100 across and 10..=200 high",
+            );
+        }
+        // A crate a jump could land on would be undeclared walkable ground (ADR 0002).
+        if 2 * hy <= jump.apex_height {
+            fail(
+                "crate.halfExtents".into(),
+                "a crate must stand taller than a jump's apex",
+            );
+        }
+        let poison = self.poison;
+        if !(20..=200).contains(&poison.pool_radius) || poison.pools_per_combat_room > 1 {
+            fail(
+                "poison".into(),
+                "pools need a radius within 20..=200 and at most one per combat room",
+            );
+        }
+        if poison.interval_ticks == 0
+            || poison.duration_ticks < u16::from(poison.interval_ticks)
+            || poison.duration_ticks > 600
+            || poison.damage == 0
+        {
+            fail(
+                "poison".into(),
+                "poison needs positive damage and interval, and a duration of 1..=600 ticks spanning one interval",
+            );
+        }
+        let slow = self.slow;
+        if !(1..=600).contains(&slow.duration_ticks) || !(1..=99).contains(&slow.speed_percent) {
+            fail(
+                "slow".into(),
+                "slow needs a duration of 1..=600 ticks and a speed of 1..=99 percent",
+            );
+        }
+        if crate_prop.per_combat_room > 4 {
+            fail(
+                "crate.perCombatRoom".into(),
+                "must be at most 4 (the room's corners)",
+            );
+        }
+
         if errors.is_empty() {
             Ok(Resolved {
                 revision: self.revision(),
@@ -1160,6 +1303,9 @@ impl ContentBundle {
                 loot,
                 targeting,
                 jump: JumpTuning::new(jump),
+                crate_prop,
+                poison,
+                slow,
             })
         } else {
             Err(errors)

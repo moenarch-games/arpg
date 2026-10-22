@@ -307,17 +307,33 @@ test("the bow draws while held, shoots one arrow on release and cancels on blur"
   const draw = page.getByRole("button", { name: "Draw bow", exact: true });
   const arrows = page.locator(".training-diagnostics div").filter({ hasText: "Arrows" });
   await page.getByRole("button", { name: "Switch to bow", exact: true }).waitFor();
+  // Paused, the authority advances only by Step: the draw and the flight are counted in
+  // ticks, not in wall-clock time a slow runner may stretch (#224).
+  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  const step = page.getByRole("button", { name: "Step", exact: true });
+  const steps = async (count) => {
+    for (let tick = 0; tick < count; tick += 1) await step.click();
+  };
   await page.evaluate(() => document.activeElement?.blur());
   await page.keyboard.press("x");
+  await steps(1);
   await expect(draw).toBeVisible();
 
   await page.keyboard.down("r");
+  await steps(1);
   await expect(draw).toHaveAttribute("data-draw", "drawing");
-  await page.waitForTimeout(600);
+  // Past the content's 8-tick minimum draw.
+  await steps(10);
   await page.keyboard.up("r");
+  await steps(1);
   await expect(arrows).toContainText("Arrows1");
-  await expect(arrows).toContainText("Arrows0", { timeout: 5_000 });
+  for (let tick = 0; tick < 60 && !(await arrows.textContent()).includes("Arrows0"); tick += 1)
+    await step.click();
+  await expect(arrows).toContainText("Arrows0");
 
+  // Losing focus while drawing lowers the bow without a shot (real time again).
+  await page.getByRole("button", { name: "Resume", exact: true }).click();
+  await page.evaluate(() => document.activeElement?.blur());
   await page.keyboard.down("r");
   await expect(draw).toHaveAttribute("data-draw", "drawing");
   await page.waitForTimeout(600);

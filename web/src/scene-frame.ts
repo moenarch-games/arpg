@@ -163,8 +163,30 @@ export function buildFrame(
           kind: "box",
           size: [fullSize[0], visualHeight, fullSize[2]],
         },
-        color: lowered ? "#62594e" : collider.kind === "pillar" ? "#5d5142" : "#403a33",
+        color: lowered
+          ? "#62594e"
+          : collider.kind === "pillar"
+            ? "#5d5142"
+            : collider.kind === "platform" ||
+                collider.kind === "ceiling" ||
+                collider.kind === "step"
+              ? "#6b5e4b"
+              : collider.kind === "crate"
+                ? "#7a5a36"
+                : "#403a33",
         transform: { translation },
+      };
+    }),
+    // Poison pools (#64): flat discs on the floor, drawn from the authority's hazards.
+    ...(snapshot.hazards ?? []).map((hazard) => {
+      const size = (hazard.radius * 2) / scale;
+      return {
+        id: `hazard-${hazard.id}`,
+        geometry: { kind: "box", size: [size, 0.02, size] },
+        color: "#4f7a2e",
+        transform: {
+          translation: [hazard.position[0] / scale, 0.011, hazard.position[2] / scale],
+        },
       };
     }),
     ...snapshot.players.flatMap((player) => {
@@ -354,7 +376,8 @@ export function buildFrame(
             }
         } else if (
           (phase === "windup" || phase === "active") &&
-          monster.action?.delivery === "strike" &&
+          // A burst (#64) telegraphs the same ring: it lands on everyone inside it.
+          (monster.action?.delivery === "strike" || monster.action?.delivery === "burst") &&
           monster.action.range
         ) {
           const radius = monster.action.range / scale;

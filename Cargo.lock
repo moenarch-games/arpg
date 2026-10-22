@@ -22,6 +22,7 @@ name = "arpg-core"
 version = "0.1.0"
 dependencies = [
  "graph-kernels",
+ "physics-engine",
  "rapier3d",
  "serde",
  "serde_json",
@@ -144,6 +145,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "bvh-kernels"
+version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-kernels?rev=61a218d873893aa2dbc6fe9b4f1b32ecb2e078ae#61a218d873893aa2dbc6fe9b4f1b32ecb2e078ae"
+dependencies = [
+ "spatial-kernels",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -197,7 +206,7 @@ dependencies = [
 [[package]]
 name = "collection-kernels"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=45a7571890e1bbffc7f2ff5f517b5c4c7859d17c#45a7571890e1bbffc7f2ff5f517b5c4c7859d17c"
+source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=5a3fab06da3c41fa522ebcfa7234457523ccda18#5a3fab06da3c41fa522ebcfa7234457523ccda18"
 
 [[package]]
 name = "const-oid"
@@ -372,12 +381,20 @@ dependencies = [
 [[package]]
 name = "game-server"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/game-server.git?rev=b591a79d0b3e88e6a66b7661464fc8631b843274#b591a79d0b3e88e6a66b7661464fc8631b843274"
+source = "git+https://github.com/moritzbrantner/game-server.git?rev=532b503904b36970761c36f78c43283930a679a9#532b503904b36970761c36f78c43283930a679a9"
 dependencies = [
  "ring",
  "tokio",
  "url",
  "wtransport",
+]
+
+[[package]]
+name = "geometry-kernels"
+version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-kernels?rev=61a218d873893aa2dbc6fe9b4f1b32ecb2e078ae#61a218d873893aa2dbc6fe9b4f1b32ecb2e078ae"
+dependencies = [
+ "spatial-kernels",
 ]
 
 [[package]]
@@ -451,7 +468,7 @@ dependencies = [
 [[package]]
 name = "graph-kernels"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=45a7571890e1bbffc7f2ff5f517b5c4c7859d17c#45a7571890e1bbffc7f2ff5f517b5c4c7859d17c"
+source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=5a3fab06da3c41fa522ebcfa7234457523ccda18#5a3fab06da3c41fa522ebcfa7234457523ccda18"
 dependencies = [
  "collection-kernels",
 ]
@@ -886,6 +903,16 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "physics-engine"
+version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/physics-engine?rev=ad5bcbf4f04294fff050d7d41af13937b234f481#ad5bcbf4f04294fff050d7d41af13937b234f481"
+dependencies = [
+ "bvh-kernels",
+ "geometry-kernels",
+ "spatial-kernels",
+]
 
 [[package]]
 name = "pin-project-lite"
@@ -1329,6 +1356,11 @@ dependencies = [
  "robust",
  "smallvec",
 ]
+
+[[package]]
+name = "spatial-kernels"
+version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-kernels?rev=61a218d873893aa2dbc6fe9b4f1b32ecb2e078ae#61a218d873893aa2dbc6fe9b4f1b32ecb2e078ae"
 
 [[package]]
 name = "stable_deref_trait"

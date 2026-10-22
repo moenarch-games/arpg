@@ -64,6 +64,54 @@ test("melee scenarios show a forward hit, an aimed-away whiff, a blocked strike 
   await expect(retreat.timeline).toContainText("No events yet");
 });
 
+test("the traversal scenario climbs the platform and the bridge", async ({ page, appUrl }) => {
+  const traversal = await openScenario(page, appUrl, "traversal");
+  await expect(traversal.diagnostics).toContainText("region 1");
+  await page.keyboard.down("d");
+  await traversal.steps(7);
+  await traversal.press("Space");
+  await traversal.stepUntil(traversal.diagnostics, "region 2", 60);
+  await traversal.stepUntil(traversal.diagnostics, "feet 60", 5);
+  // Pressed against the bridge's face, a jump climbs onto it through a transit (#210).
+  await traversal.steps(12);
+  await traversal.press("Space");
+  await traversal.stepUntil(traversal.diagnostics, "transit 3", 30);
+  await traversal.stepUntil(traversal.diagnostics, "region 3", 40);
+  await page.keyboard.up("d");
+});
+
+test("the traversal scenario's stairs climb onto the platform without a jump", async ({
+  page,
+  appUrl,
+}) => {
+  const stairs = await openScenario(page, appUrl, "traversal");
+  for (const [key, ticks] of [
+    ["w", 37],
+    ["d", 37],
+  ]) {
+    await page.keyboard.down(key);
+    await stairs.steps(ticks);
+    await page.keyboard.up(key);
+  }
+  await page.keyboard.down("s");
+  await stairs.stepUntil(stairs.diagnostics, "feet 20", 30);
+  await stairs.stepUntil(stairs.diagnostics, "region 2", 30);
+  await stairs.stepUntil(stairs.diagnostics, "feet 60", 10);
+  await page.keyboard.up("s");
+});
+
+test("the traversal scenario stops a jump at its low ceiling", async ({ page, appUrl }) => {
+  // Under the low ceiling a jump stops with the head at its underside, 140 units up.
+  const ceiling = await openScenario(page, appUrl, "traversal");
+  await page.keyboard.down("w");
+  await ceiling.steps(36);
+  await page.keyboard.up("w");
+  await ceiling.steps(10);
+  await ceiling.press("Space");
+  await ceiling.stepUntil(ceiling.diagnostics, "feet 40", 20);
+  await ceiling.stepUntil(ceiling.diagnostics, "feet 0", 40);
+});
+
 test("a block opens a counter window that expires and a counter honours reach", async ({
   page,
   appUrl,

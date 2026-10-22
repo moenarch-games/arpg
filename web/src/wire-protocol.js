@@ -28,8 +28,10 @@ const scenarios = new Set([
   "ranged",
   "heavy",
   "retreating",
+  "traversal",
 ]);
-const parties = new Set(["player", "monster"]);
+// A strike may land on a damageable crate (#90) as well as a character.
+const parties = new Set(["player", "monster", "crate", "hazard"]);
 const strikeResults = new Set(["hit", "blocked", "guardBroken", "obstructed"]);
 // Content definition ids (`monster.brute`, `sword.lightSwing`): 1..=64 characters.
 const definitionId = (value) => typeof value === "string" && value.length > 0 && value.length <= 64;
@@ -63,7 +65,7 @@ const playerReactions = new Set(["hurt", "blocked", "guardBroken"]);
 const guardPhases = new Set(["raising", "raised"]);
 const optional = (value, validate) => value === null || value === undefined || validate(value);
 // How a monster attack lands: around the monster, or as a shot at its target.
-const deliveries = new Set(["strike", "projectile"]);
+const deliveries = new Set(["strike", "projectile", "burst"]);
 // Aim is a non-zero direction whose components lie within ±1000 (AIM_COMPONENT_LIMIT).
 export const AIM_COMPONENT_LIMIT = 1000;
 const aimDirection = (value) =>
@@ -78,6 +80,10 @@ const motion = (value) =>
   integer(value.verticalVelocity) &&
   integer(value.feetY) &&
   optional(value.groundY, integer);
+// Walkable region membership or transit (#207): presentation shows it, never derives it.
+const region = (value) =>
+  (value?.kind === "region" && nonNegative(value.id)) ||
+  (value?.kind === "transit" && nonNegative(value.connection));
 const reaction = (value, kind) => value?.kind === kind && nonNegative(value.ticksRemaining);
 
 // A guest or dedicated client plays only against an authority running the same content
@@ -160,8 +166,37 @@ export function decodeSnapshot(encoded) {
         interactionPrompt(player.interaction) &&
         optional(player.aim, aimDirection) &&
         optional(player.lockedMonsterId, nonNegative) &&
-        motion(player.motion),
+        motion(player.motion) &&
+        optional(player.region, region) &&
+        optional(
+          player.poison,
+          (value) =>
+            nonNegative(value?.source) &&
+            nonNegative(value.ticksRemaining) &&
+            nonNegative(value.nextDamageIn),
+        ),
     ) &&
+    (snapshot.hazards === undefined ||
+      list(
+        "hazards",
+        (hazard) =>
+          nonNegative(hazard?.id) &&
+          nonNegative(hazard.roomId) &&
+          vector(hazard.position, 3) &&
+          nonNegative(hazard.radius),
+      )) &&
+    (snapshot.crates === undefined ||
+      list(
+        "crates",
+        (crate) =>
+          nonNegative(crate?.id) &&
+          nonNegative(crate.roomId) &&
+          vector(crate.position, 3) &&
+          vector(crate.halfExtents, 3) &&
+          nonNegative(crate.health) &&
+          nonNegative(crate.maxHealth) &&
+          crate.health <= crate.maxHealth,
+      )) &&
     list(
       "chests",
       (chest) =>
@@ -225,6 +260,8 @@ export function decodeSnapshot(encoded) {
         ) &&
         nonNegative(monster.guardPoints) &&
         nonNegative(monster.maxGuardPoints) &&
+        // Slowed by a player's arrow (#64).
+        optional(monster.slow, (value) => nonNegative(value?.ticksRemaining)) &&
         monster.guardPoints <= monster.maxGuardPoints,
     ) &&
     list(
@@ -241,7 +278,7 @@ export function decodeSnapshot(encoded) {
         vector(collider.position, 3) &&
         vector(collider.halfExtents, 3) &&
         collider.halfExtents.every((value) => value >= 0) &&
-        ["wall", "door", "pillar"].includes(collider.kind),
+        ["wall", "door", "pillar", "platform", "ceiling", "crate", "step"].includes(collider.kind),
     ) &&
     list(
       "groundLoot",

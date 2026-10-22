@@ -11,16 +11,26 @@ graph-kernels.workspace = true
 rapier3d.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Test/bench-only A/B backend (`physics-ab`): never part of product or WASM builds.
+physics-engine = { git = "https://github.com/moritzbrantner/physics-engine", rev = "ad5bcbf4f04294fff050d7d41af13937b234f481", optional = true }
 
 [features]
 # Deterministic operation work counters and scaled fixtures for the performance contract
 # (`.performance/contract.json` operations). Off in product builds, where the counter hooks
 # compile to nothing.
 operation-work = []
+# Test/bench-only: compiles the physics-engine backend next to Rapier and lets tests and the
+# `physics_ab` example pick it at runtime (physics-engine#330). Rapier stays the production
+# authority (Atlas 2.3.1); no product or WASM build enables this.
+physics-ab = ["dep:physics-engine"]
 
 [[example]]
 name = "performance_smoke"
 required-features = ["operation-work"]
+
+[[example]]
+name = "physics_ab"
+required-features = ["physics-ab"]
 
 [[test]]
 name = "operation_work"

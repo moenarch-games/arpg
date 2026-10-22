@@ -96,7 +96,14 @@ pub(crate) fn count(counter: Counter, amount: u64) {
 #[cfg(feature = "operation-work")]
 pub(crate) fn snapshot_requested(game: &ArpgGame) {
     let locked_doors = game.doors.iter().filter(|door| door.locked).count();
+    // A standing crate is exported as a collider and as a crate.
+    let standing_crates = game
+        .crates
+        .iter()
+        .filter(|placed| placed.health > 0)
+        .count();
     let entities = game.rooms.len()
+        + 2 * standing_crates
         + game.doors.len()
         + game.players.len()
         + game.monsters.len()

@@ -337,6 +337,7 @@ export function TrainingDiagnostics({ store, playerId }) {
     snapshot?.monsters.filter((monster) => monster.behavior === "pursuing").length ?? 0;
   const retreatingMonsterCount =
     snapshot?.monsters.filter((monster) => monster.behavior === "retreating").length ?? 0;
+  const slowedMonsterCount = snapshot?.monsters.filter((monster) => monster.slow).length ?? 0;
   const playerActionLabel = player?.action
     ? [
         player.action.kind,
@@ -369,6 +370,10 @@ export function TrainingDiagnostics({ store, playerId }) {
         <dd>{retreatingMonsterCount}</dd>
       </div>
       <div>
+        <dt>Slowed</dt>
+        <dd>{slowedMonsterCount}</dd>
+      </div>
+      <div>
         <dt>Player action</dt>
         <dd>{playerActionLabel}</dd>
       </div>
@@ -379,6 +384,24 @@ export function TrainingDiagnostics({ store, playerId }) {
       <div>
         <dt>Aim</dt>
         <dd>{player?.aim ? `aim ${player.aim[0]}, ${player.aim[1]}` : "facing"}</dd>
+      </div>
+      <div>
+        <dt>Feet</dt>
+        <dd>{player?.motion ? `feet ${player.motion.feetY}` : "none"}</dd>
+      </div>
+      <div>
+        <dt>Poison</dt>
+        <dd>{player?.poison ? `poison ${player.poison.ticksRemaining}` : "none"}</dd>
+      </div>
+      <div>
+        <dt>Region</dt>
+        <dd>
+          {player?.region?.kind === "transit"
+            ? `transit ${player.region.connection}`
+            : player?.region
+              ? `region ${player.region.id}`
+              : "none"}
+        </dd>
       </div>
       <div>
         <dt>Target</dt>

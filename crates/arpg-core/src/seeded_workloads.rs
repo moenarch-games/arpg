@@ -1,8 +1,11 @@
 //! Seeded whole-game workloads on the actual game tick: replay determinism for wall, corner,
-//! door, correction, combat, crowd, lifecycle and chase play, and the chase's navigation
+//! door, correction, combat, crowd, lifecycle, chase and jump play, and the chase's navigation
 //! work against the per-tick reference planner (#110).
 use super::*;
 use std::time::{Duration, Instant};
+
+// The test-only replay below; `fixture`, `commands` and `Case` also drive the `physics-ab`
+// comparison and timing (physics-engine#330).
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Case {
@@ -16,9 +19,31 @@ pub(super) enum Case {
     Crowd,
     Lifecycle,
     Chase,
+    Jump,
+    /// The traversal scenario (#208): jumping onto a platform, walking off its ledge and
+    /// jumping back on from the other side.
+    Ledge,
+    /// The traversal scenario's low ceiling (#209): walking under it and jumping into it.
+    Ceiling,
+    /// The traversal scenario end to end (#210): onto the platform, up onto the bridge,
+    /// off its side and back along the floor path beneath it.
+    Traversal,
+    /// A skirmisher chasing a player who keeps stepping away: its lunges sweep (#90).
+    Lunge,
+    /// Breaking a crate in the corner of a combat room and walking through its spot (#90).
+    Crates,
+    /// Walking up the traversal scenario's stairs onto the platform without jumping (#222).
+    Stairs,
+    /// Three players inside a bruiser's telegraphed ground burst (#64): an area query.
+    Slam,
+    /// Walking into a combat room's poison pool, lingering and walking out (#64): an area
+    /// query every tick.
+    Poison,
+    /// Shooting a pursuing monster, which the arrows slow (#64).
+    Slow,
 }
 impl Case {
-    const ALL: [Self; 10] = [
+    pub(super) const ALL: [Self; 20] = [
         Self::Quiet,
         Self::PartyQuiet,
         Self::Sparse,
@@ -29,8 +54,37 @@ impl Case {
         Self::Crowd,
         Self::Lifecycle,
         Self::Chase,
+        Self::Jump,
+        Self::Ledge,
+        Self::Ceiling,
+        Self::Traversal,
+        Self::Lunge,
+        Self::Crates,
+        Self::Stairs,
+        Self::Slam,
+        Self::Poison,
+        Self::Slow,
     ];
-    fn name(self) -> &'static str {
+    /// The workloads whose saves restore: the others move monsters out of their generated
+    /// rooms, which a save rejects.
+    #[cfg(test)]
+    pub(super) const SAVED: [Self; 14] = [
+        Self::Sparse,
+        Self::Corner,
+        Self::Door,
+        Self::Correction,
+        Self::Combat,
+        Self::Lifecycle,
+        Self::Jump,
+        Self::Ledge,
+        Self::Ceiling,
+        Self::Traversal,
+        Self::Crates,
+        Self::Stairs,
+        Self::Slam,
+        Self::Poison,
+    ];
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::Quiet => "quiet",
             Self::PartyQuiet => "party-quiet",
@@ -42,13 +96,86 @@ impl Case {
             Self::Crowd => "crowd",
             Self::Lifecycle => "lifecycle",
             Self::Chase => "chase",
+            Self::Jump => "jump",
+            Self::Ledge => "ledge",
+            Self::Ceiling => "ceiling",
+            Self::Traversal => "traversal",
+            Self::Lunge => "lunge",
+            Self::Crates => "crates",
+            Self::Stairs => "stairs",
+            Self::Slam => "slam",
+            Self::Poison => "poison",
+            Self::Slow => "slow",
         }
     }
 }
 pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
-    let mut game = ArpgGame::new_with_seed(seed).unwrap();
+    let mut game = if matches!(
+        case,
+        Case::Ledge | Case::Ceiling | Case::Traversal | Case::Stairs
+    ) {
+        ArpgGame::arranged_scenario(ScenarioId::Traversal, seed).unwrap()
+    } else if case == Case::Slam {
+        ArpgGame::arranged_scenario(ScenarioId::Heavy, seed).unwrap()
+    } else {
+        ArpgGame::new_with_seed(seed).unwrap()
+    };
     match case {
-        Case::Corner => game.player_spawns[0] = Vec3i::new(-2945, PLAYER_Y, -1745),
+        // Jumping into the outer wall the corner case presses into: airborne sliding, landing.
+        Case::Slow => {
+            // Room 2's generated monster 600 east of the player, who has a bow.
+            let (x, z) = game
+                .rooms
+                .iter()
+                .find(|room| room.id == 2)
+                .unwrap()
+                .center();
+            game.player_spawns[0] = Vec3i::new(x, PLAYER_Y, z);
+            game.monsters
+                .iter_mut()
+                .find(|monster| monster.room_id == 2)
+                .unwrap()
+                .position = Vec3i::new(x + 600, PLAYER_Y, z).into();
+        }
+        Case::Poison => {
+            // East of room 2's pool, walking into it.
+            let pool = game
+                .pools
+                .iter()
+                .find(|pool| pool.room_id == 2)
+                .copied()
+                .unwrap();
+            game.player_spawns[0] = Vec3i::new(pool.position.x + 220, PLAYER_Y, pool.position.z);
+        }
+        Case::Crates => {
+            // East of the north-west crate of room 2, facing it.
+            let placed = game
+                .crates
+                .iter()
+                .find(|placed| placed.room_id == 2)
+                .copied()
+                .unwrap();
+            game.player_spawns[0] = Vec3i::new(placed.position.x + 90, PLAYER_Y, placed.position.z);
+        }
+        Case::Lunge => {
+            // The player stands at the centre of the first skirmisher's room.
+            let room_id = game
+                .monsters
+                .iter()
+                .find(|monster| *game.content.id(monster.definition().id) == *"monster.skirmisher")
+                .unwrap()
+                .room_id;
+            let (x, z) = game
+                .rooms
+                .iter()
+                .find(|room| room.id == room_id)
+                .unwrap()
+                .center();
+            game.player_spawns[0] = Vec3i::new(x, PLAYER_Y, z);
+        }
+        Case::Corner | Case::Jump => {
+            game.player_spawns[0] = Vec3i::new(-2945, PLAYER_Y, -1745);
+        }
         Case::Correction => game.player_spawns[0] = Vec3i::new(-2970, PLAYER_Y, -1600),
         Case::Door => {
             let door = game
@@ -106,6 +233,8 @@ pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
     }
     let count = if matches!(case, Case::PartyQuiet | Case::Sparse | Case::Lifecycle) {
         4
+    } else if case == Case::Slam {
+        3
     } else {
         1
     };
@@ -139,6 +268,66 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
         }
         Case::Corner if tick == 0 => Some(ArpgCommand::SetMovement { x: -1, z: -1 }),
         Case::Door if tick == 0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
+        Case::Jump if tick == 0 => Some(ArpgCommand::SetMovement { x: -1, z: 1 }),
+        Case::Jump if tick % 40 == 5 => Some(ArpgCommand::Jump),
+        // Onto the platform, off its south side, and back up onto it from the south.
+        Case::Ledge if tick == 0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
+        Case::Ledge if tick == 40 => Some(ArpgCommand::SetMovement { x: 0, z: 1 }),
+        Case::Ledge if tick == 70 => Some(ArpgCommand::SetMovement { x: 0, z: -1 }),
+        Case::Ledge if tick == 7 || tick == 78 => Some(ArpgCommand::Jump),
+        // North under the ceiling, a standing jump into it, then jumps while walking out.
+        Case::Ceiling if tick == 0 => Some(ArpgCommand::SetMovement { x: 0, z: -1 }),
+        Case::Ceiling if tick == 36 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
+        Case::Ceiling if tick == 70 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
+        Case::Ceiling if tick == 40 || tick == 72 || tick == 100 => Some(ArpgCommand::Jump),
+        // A full-draw arrow east at the room's far crate (#223), then the sword on the near
+        // one, and a walk through its spot.
+        Case::Crates if tick == 0 => Some(ArpgCommand::EquipWeapon {
+            weapon: Weapon::Bow,
+        }),
+        Case::Crates if tick == 1 => Some(ArpgCommand::SetAim {
+            direction: Some([1_000, 0]),
+        }),
+        Case::Crates if tick == 2 => Some(ArpgCommand::DrawBow),
+        Case::Crates if tick == 34 => Some(ArpgCommand::ReleaseBow { aim: None }),
+        Case::Crates if tick == 70 => Some(ArpgCommand::EquipWeapon {
+            weapon: Weapon::SwordAndShield,
+        }),
+        Case::Crates if tick == 72 || tick == 88 => Some(ArpgCommand::PrimaryAttack {
+            aim: Some([-1_000, 0]),
+        }),
+        Case::Crates if tick == 104 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
+        // North, east to the stairs' line, then south up them onto the platform.
+        Case::Slow if tick == 0 => Some(ArpgCommand::EquipWeapon {
+            weapon: Weapon::Bow,
+        }),
+        Case::Slow if tick == 1 => Some(ArpgCommand::SetAim {
+            direction: Some([1_000, 0]),
+        }),
+        Case::Slow if tick == 2 || tick == 50 => Some(ArpgCommand::DrawBow),
+        Case::Slow if tick == 34 || tick == 82 => Some(ArpgCommand::ReleaseBow { aim: None }),
+        Case::Poison if tick == 0 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
+        Case::Poison if tick == 30 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
+        Case::Poison if tick == 70 => Some(ArpgCommand::SetMovement { x: 1, z: -1 }),
+        // A raised guard does not block the burst; stepping away makes the next one miss.
+        Case::Slam if tick == 0 => Some(ArpgCommand::SetGuard { raised: true }),
+        Case::Slam if tick == 50 => Some(ArpgCommand::SetMovement { x: -1, z: 0 }),
+        Case::Slam if tick == 90 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
+        Case::Stairs if tick == 0 => Some(ArpgCommand::SetMovement { x: 0, z: -1 }),
+        Case::Stairs if tick == 37 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
+        Case::Stairs if tick == 74 => Some(ArpgCommand::SetMovement { x: 0, z: 1 }),
+        Case::Stairs if tick == 104 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
+        // Stepping away and pausing, so lunges start both in and out of static reach.
+        Case::Lunge if tick.is_multiple_of(20) => {
+            let (x, z) =
+                [(-1, 0), (0, 0), (0, 1), (0, 0), (0, -1), (0, 0)][(tick / 20) as usize % 6];
+            Some(ArpgCommand::SetMovement { x, z })
+        }
+        Case::Traversal if tick == 0 => Some(ArpgCommand::SetMovement { x: 1, z: 0 }),
+        Case::Traversal if tick == 7 || tick == 47 => Some(ArpgCommand::Jump),
+        Case::Traversal if tick == 75 => Some(ArpgCommand::SetMovement { x: 0, z: 1 }),
+        Case::Traversal if tick == 100 => Some(ArpgCommand::SetMovement { x: 0, z: -1 }),
+        Case::Traversal if tick == 115 => Some(ArpgCommand::SetMovement { x: 0, z: 0 }),
         Case::Combat if tick < 64 && tick.is_multiple_of(16) => {
             Some(ArpgCommand::PrimaryAttack { aim: None })
         }
@@ -174,13 +363,15 @@ pub(super) fn commands(game: &mut ArpgGame, case: Case, tick: u32) -> (Vec<Strin
     }
     (outcomes, elapsed)
 }
+#[cfg(test)]
 fn timed_tick(game: &mut ArpgGame) -> Duration {
     let start = Instant::now();
     game.advance_tick().unwrap();
     start.elapsed()
 }
 /// One frame of the trace: the snapshot payload and the private state it does not show.
-fn frame(game: &ArpgGame, payload: &[u8], commands: &[String]) -> Vec<u8> {
+#[cfg(test)]
+pub(super) fn frame(game: &ArpgGame, payload: &[u8], commands: &[String]) -> Vec<u8> {
     let hidden = format!(
         "{:?}",
         (
@@ -201,6 +392,7 @@ fn frame(game: &ArpgGame, payload: &[u8], commands: &[String]) -> Vec<u8> {
     }
     bytes
 }
+#[cfg(test)]
 struct Measurement {
     trace: Vec<u8>,
     tick: u128,
@@ -209,9 +401,11 @@ struct Measurement {
     /// Largest per-tick navigation work, by expansions.
     peak_navigation_tick: NavigationWork,
 }
+#[cfg(test)]
 fn replay(case: Case, seed: u32, ticks: u32) -> Measurement {
     replay_navigating(case, seed, ticks, NavigationMode::Retained)
 }
+#[cfg(test)]
 fn replay_navigating(case: Case, seed: u32, ticks: u32, mode: NavigationMode) -> Measurement {
     let mut game = fixture(case, seed);
     game.navigation_mode = mode;
@@ -322,16 +516,8 @@ fn chase_navigation_work_against_the_per_tick_reference() {
 /// tick publishes the same snapshot (with its events) and saves the same `f32` state.
 #[test]
 fn saves_taken_mid_play_continue_exactly_as_the_uninterrupted_game() {
-    let cases = [
-        Case::Sparse,
-        Case::Corner,
-        Case::Door,
-        Case::Correction,
-        Case::Combat,
-        Case::Lifecycle,
-    ];
     for seed in [42, 0xDEAD_BEEF] {
-        for case in cases {
+        for case in Case::SAVED {
             for save_at in [1, 25, 60] {
                 let mut game = fixture(case, seed);
                 for tick in 0..save_at {

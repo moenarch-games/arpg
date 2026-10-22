@@ -838,7 +838,7 @@ mod tests {
                     game.advance_tick().unwrap();
                     game.arrows.iter().find_map(|arrow| match arrow.source {
                         crate::StrikeSource::Monster(id) => Some(id),
-                        crate::StrikeSource::Player(_) => None,
+                        crate::StrikeSource::Player(_) | crate::StrikeSource::Hazard(_) => None,
                     })
                 })
                 .expect("the archer shoots");

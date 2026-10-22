@@ -152,7 +152,7 @@ mod tests {
         let decoded = protocol.decode_snapshot(&bytes).unwrap();
         assert_eq!(decoded, snapshot);
         assert_eq!(decoded.run_seed, 0xCAFE_BABE);
-        assert_eq!(decoded.schema_version, 22);
+        assert_eq!(decoded.schema_version, 26);
     }
 
     #[test]
