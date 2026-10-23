@@ -14,7 +14,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: moritzbrantner/reusable-workflows/.github/workflows/validate-repo.yml@d473ea958fc23c61cef4c171fb40a643c6b3609b # main
+    uses: moritzbrantner/reusable-workflows/.github/workflows/validate-repo.yml@3b01b02c90cd295e6a395a15255ae540848bc714 # main
     with:
       bun_version: ""
       node_version: ""
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.1
           targets: wasm32-unknown-unknown
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -98,7 +98,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.1
       - name: Collect deterministic product evidence
         run: python scripts/collect_performance_evidence.py
       - name: Check out canonical Performance Evidence contract
@@ -149,7 +149,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.1
       - name: Enforce the blocking performance budget
         run: cargo run --locked --release -p arpg-core --features operation-work --example performance_smoke
 

@@ -408,3 +408,18 @@ test("character roots are submitted on change and to a replacement renderer", ()
   presenter.dispose();
   expect(layerDisposed).toBe(1);
 });
+
+test("a hidden preload canvas retains its renderer and draws when shown", () => {
+  const h = harness();
+  h.setRect({ width: 0, height: 0 });
+  const presenter = createFramePresenter(h.options);
+  h.snapshots.publish(snapshot(1));
+  h.flushFrames();
+  expect(h.renderers).toHaveLength(1);
+  expect(h.renderers[0].rendered).toHaveLength(0);
+  h.setRect({ width: 800, height: 600 });
+  h.observers[0].onResize();
+  expect(h.renderers).toHaveLength(1);
+  expect(h.renderers[0].rendered).toHaveLength(1);
+  presenter.dispose();
+});

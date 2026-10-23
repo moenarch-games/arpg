@@ -12,21 +12,21 @@
     "test": "bun test src scripts",
     "test:browser": "playwright test",
     "setup": "bun run vendor && bun run characters && bun run wasm",
-    "characters": "bun scripts/fetch-character-assets.mjs",
+    "characters": "bun scripts/fetch-character-assets.ts",
     "build": "vite build",
     "dev": "vite"
   },
   "dependencies": {
-    "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#c850bda5f37f65f79655469625baf5f1644ac2a0",
-    "react": "19.1.1",
-    "react-dom": "19.1.1",
-    "three": "0.185.1"
+    "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#d8130b38b74d58325d917c426d1b7b91fcda4b4d",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "three": "0.186.1"
   },
   "devDependencies": {
-    "@playwright/test": "1.63.0",
-    "oxfmt": "0.71.0",
-    "oxlint": "1.86.0",
-    "vite": "8.3.1"
+    "@playwright/test": "1.64.1",
+    "oxfmt": "0.74.0",
+    "oxlint": "1.89.0",
+    "vite": "8.3.4"
   },
-  "packageManager": "bun@1.4.2"
+  "packageManager": "bun@1.4.3"
 }
