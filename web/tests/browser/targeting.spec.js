@@ -88,9 +88,10 @@ test("holding right mouse moves toward the cursor and releasing stops", async ({
   await openDummy(page, appUrl);
   const box = await page.locator("canvas.game-canvas").boundingBox();
   const point = (x, y) => [box.x + box.width * x, box.y + box.height * y];
-  await page.mouse.move(...point(0.8, 0.45));
+  // The training panel covers the right of the canvas; stay on the exposed left half.
+  await page.mouse.move(...point(0.2, 0.3));
   await page.mouse.down({ button: "right" });
-  await page.mouse.move(...point(0.2, 0.55));
+  await page.mouse.move(...point(0.2, 0.7));
   await page.mouse.up({ button: "right" });
 
   const commands = await recordedCommands(page);
@@ -107,10 +108,10 @@ test("holding right mouse moves toward the cursor and releasing stops", async ({
 test("losing focus cancels a right-mouse hold without resuming it", async ({ page, appUrl }) => {
   await openDummy(page, appUrl);
   const box = await page.locator("canvas.game-canvas").boundingBox();
-  await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.5);
+  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.5);
   await page.mouse.down({ button: "right" });
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));
-  await page.mouse.move(box.x + box.width * 0.75, box.y + box.height * 0.55);
+  await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.55);
   await page.mouse.up({ button: "right" });
   const moves = (await recordedCommands(page)).filter((command) => command.type === "setMovement");
   expect(moves).toHaveLength(2);
@@ -132,7 +133,7 @@ test("cancelled right-button capture stops moving exactly once", async ({ page, 
       { once: true },
     );
   });
-  await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.45);
+  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.45);
   await page.mouse.down({ button: "right" });
   await page.evaluate(() => {
     document.querySelector("canvas.game-canvas").dispatchEvent(
@@ -143,7 +144,7 @@ test("cancelled right-button capture stops moving exactly once", async ({ page, 
       }),
     );
   });
-  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.55);
+  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.7);
   await page.mouse.up({ button: "right" });
   const moves = (await recordedCommands(page)).filter((command) => command.type === "setMovement");
   expect(moves).toHaveLength(2);
