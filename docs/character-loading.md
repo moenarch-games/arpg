@@ -21,7 +21,7 @@ body compression. Medians are observations of this controlled local environment;
 GitHub Pages compression, cache state, real GPUs and networks may change the result.
 Before: current main plus PR #244’s full-archive change, old renderer `c850bda`.
 After: the same Rust/WASM build and default equipment with compressed entries and
-renderer `79ecba1` (3d-lab #158). The shared loader separately compares every one of the
+renderer `d8130b3` (3d-lab #158; validated candidate `79ecba1`). The shared loader separately compares every one of the
 52 clips at three sample times with plain Three.js on default and knight entries.
 
 | Observation | Before | After | Reduction |

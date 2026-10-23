@@ -17,7 +17,7 @@
     "dev": "vite"
   },
   "dependencies": {
-    "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#79ecba1934a9f82955ce9c33e979710fbb7b4252",
+    "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#d8130b38b74d58325d917c426d1b7b91fcda4b4d",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "three": "0.186.1"
