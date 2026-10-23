@@ -2,9 +2,8 @@
 // setup step unpacks each into `public/characters/<release>/`.
 export const RANGER_BUNDLE = Object.freeze({
   release: "humanoid-ranger-male",
-  url: "https://github.com/moritzbrantner/asset-tooling/releases/download/humanoid-ranger-male/humanoid.ranger.male.tar",
-  // The release is rolling (asset-tooling Atlas 7.1.5): its assets are replaced in place.
-  // Setup compares this small reference with the unpacked copy to notice an update.
+  index:
+    "https://github.com/moritzbrantner/asset-tooling/releases/download/humanoid-ranger-male/humanoid-ranger-male.index.json",
   ref: "https://github.com/moritzbrantner/asset-tooling/releases/download/humanoid-ranger-male/export.ref.json",
   key: "humanoid.ranger.male",
   variant: "default",

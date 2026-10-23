@@ -1432,3 +1432,8 @@ select {
     );
   }
 }
+
+/* Keep one drawing renderer available while the selected character preloads. */
+main[hidden] {
+  display: none;
+}
