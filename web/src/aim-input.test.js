@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { aimFromPointer } from "./aim-input.js";
+import { aimFromPointer, movementFromAim } from "./aim-input.js";
 
 const WIDTH = 1200;
 const HEIGHT = 800;
@@ -35,4 +35,14 @@ test("aim directions are bounded integers quantised to two-degree steps", () => 
 test("the player's own position and empty canvases give no aim", () => {
   expect(aimFromPointer(WIDTH / 2, HEIGHT / 2, WIDTH, HEIGHT)).toBeNull();
   expect(aimFromPointer(10, 10, 0, 0)).toBeNull();
+});
+
+test("mouse locomotion maps aim to canonical eight-way movement", () => {
+  expect(movementFromAim(null)).toEqual([0, 0]);
+  expect(movementFromAim([1000, 0])).toEqual([1, 0]);
+  expect(movementFromAim([0, -1000])).toEqual([0, -1]);
+  expect(movementFromAim([707, -707])).toEqual([1, -1]);
+  expect(movementFromAim([-1000, -1000])).toEqual([-1, -1]);
+  expect(movementFromAim([200, 1000])).toEqual([0, 1]);
+  expect(movementFromAim([-1000, -100])).toEqual([-1, 0]);
 });

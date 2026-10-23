@@ -217,7 +217,8 @@ test("reset restores display defaults, keeps input preferences and keeps focus",
   await ui.textSize.selectOption("1.5");
   await ui.settings.getByLabel("Enable shadows").uncheck();
   const mouseAim = ui.settings.getByLabel("Aim melee and bow with the mouse");
-  await mouseAim.check();
+  // Mouse facing is on by default; opting out stores an explicit input preference.
+  await mouseAim.uncheck();
 
   await ui.reset.focus();
   await page.keyboard.press("Enter");
@@ -232,8 +233,8 @@ test("reset restores display defaults, keeps input preferences and keeps focus",
   await expect(root(page)).toHaveAttribute("data-flashes", "full");
   expect(await storedDocument(page)).toEqual(DEFAULT_DOCUMENT);
   // Input preferences have their own owner and reset.
-  await expect(mouseAim).toBeChecked();
-  expect(await page.evaluate((key) => localStorage.getItem(key), MOUSE_AIM_KEY)).toBe("on");
+  await expect(mouseAim).not.toBeChecked();
+  expect(await page.evaluate((key) => localStorage.getItem(key), MOUSE_AIM_KEY)).toBe("off");
 });
 
 test("the system motion preference is followed live unless overridden", async ({

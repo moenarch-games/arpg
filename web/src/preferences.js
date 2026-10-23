@@ -38,9 +38,9 @@ export function loadGraphics(storage) {
   return { shadows: true, pixelRatioLimit: 2 };
 }
 
-// Mouse aim is opt-in: by default melee and the bow follow committed facing.
+// Mouse facing is the desktop default; an explicit opt-out keeps legacy controls available.
 export function loadMouseAim(storage) {
-  return readStoredValue(MOUSE_AIM_KEY, "off", storage) === "on";
+  return readStoredValue(MOUSE_AIM_KEY, "on", storage) !== "off";
 }
 
 // Versioned local presentation preferences (#61): graphics and accessibility in one

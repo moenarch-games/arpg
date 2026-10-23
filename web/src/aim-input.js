@@ -35,3 +35,14 @@ export function aimFromPointer(pointerX, pointerY, width, height) {
   // `+ 0` folds negative zero, so equal directions compare equal.
   return [Math.round(Math.cos(angle) * AIM_SCALE) + 0, Math.round(Math.sin(angle) * AIM_SCALE) + 0];
 }
+
+// The core accepts only eight-way {-1,0,1} movement, not the continuous aim vector.
+// Match arpg-core::facing_for's sector boundaries so right-click locomotion takes the
+// normal, Rust-authoritative movement path instead of inventing another resolver.
+export function movementFromAim(direction) {
+  if (!direction) return [0, 0];
+  const [x, z] = direction;
+  const axis = (own, other) =>
+    Math.abs(own) * 100_000 < Math.abs(other) * 41_421 ? 0 : Math.sign(own);
+  return [axis(x, z), axis(z, x)];
+}

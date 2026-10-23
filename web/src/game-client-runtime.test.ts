@@ -296,6 +296,30 @@ test("commands carry increasing sequences to the active local authority", () => 
   expect(games[1].commands).toEqual([{ playerId: 1, sequence: 1, payload: { type: "interact" } }]);
 });
 
+test("mouse movement uses existing authoritative commands and releases independently", () => {
+  const { runtime, games } = harness();
+  runtime.startLocal({ seed: 1 });
+  runtime.setMouseMovement(1, -1);
+  runtime.setMouseMovement(1, -1);
+  runtime.setMouseMovement(0, -1);
+  runtime.setHeldMovement("right", true);
+  runtime.setMouseMovement(0, 0);
+  runtime.setHeldMovement("right", false);
+  runtime.setMouseMovement(-1, 0);
+  runtime.releaseInput();
+  runtime.releaseInput();
+
+  expect(games[0].commands.map(({ payload }) => payload)).toEqual([
+    { type: "setMovement", x: 1, z: -1 },
+    { type: "setMovement", x: 0, z: -1 },
+    { type: "setMovement", x: 1, z: -1 },
+    { type: "setMovement", x: 1, z: 0 },
+    { type: "setMovement", x: 0, z: 0 },
+    { type: "setMovement", x: -1, z: 0 },
+    { type: "setMovement", x: 0, z: 0 },
+  ]);
+});
+
 test("held input is cleared when the source is replaced", () => {
   const { runtime, games } = harness();
   runtime.startLocal({ seed: 1 });
