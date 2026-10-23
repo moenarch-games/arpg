@@ -721,6 +721,70 @@ test("aim intent is sent when it changes and cleared on focus loss and restore",
   ]);
 });
 
+// Aim and the aimed one-shots that reached a remote authority, in send order (#159).
+const remoteAimCommands = (payloads) =>
+  payloads
+    .map((encoded) => JSON.parse(encoded).payload)
+    .filter((payload) => payload.type !== "setGuard" && payload.type !== "setMovement");
+
+test("a guest's aim pointed while joining or re-joining reaches the host on assignment", async () => {
+  const { runtime, peers, attachments } = harness();
+  const joining = runtime.joinPeer("https://api", "ABCD");
+  const peer = peers[0];
+  const options = attachments[0].options;
+  runtime.setAim([300, 400]);
+  options.onPlayer(2);
+  runtime.dispatch({ type: "primaryAttack" });
+  runtime.setBowDraw("mouse", true);
+  runtime.setBowDraw("mouse", false);
+  // The host re-added this player after a re-join: the pointed aim is asserted again.
+  runtime.setAim([-500, 0]);
+  options.onPlayer(2);
+  runtime.dispatch({ type: "secondaryAttack" });
+  peer.join.resolve();
+  await joining;
+
+  expect(remoteAimCommands(peer.sent.map((message) => message.data.encoded))).toEqual([
+    { type: "setAim", direction: [300, 400] },
+    { type: "primaryAttack", aim: [300, 400] },
+    { type: "drawBow" },
+    { type: "releaseBow", aim: [300, 400] },
+    { type: "setAim", direction: [-500, 0] },
+    { type: "setAim", direction: [-500, 0] },
+    { type: "secondaryAttack", aim: [-500, 0] },
+  ]);
+});
+
+test("dedicated aim pointed while connecting or reconnecting reaches the authority", async () => {
+  const { runtime, dedicatedSessions } = harness();
+  const connecting = runtime.startDedicated("https://server/arpg");
+  const session = dedicatedSessions[0];
+  runtime.setAim([300, 400]);
+  session.callbacks.onWelcome({ playerId: 2, tickHz: 20 });
+  session.ready.resolve();
+  await connecting;
+  runtime.dispatch({ type: "primaryAttack" });
+
+  session.callbacks.onStateChange("disconnected");
+  runtime.setAim([0, -900]);
+  session.callbacks.onWelcome({ playerId: 2, tickHz: 20 });
+  runtime.dispatch({ type: "primaryAttack" });
+  runtime.setBowDraw("mouse", true);
+  runtime.setBowDraw("mouse", false);
+  await Promise.resolve();
+
+  expect(remoteAimCommands(session.commands.map((command) => command.payload))).toEqual([
+    { type: "setAim", direction: [300, 400] },
+    { type: "setAim", direction: [0, -900] },
+  ]);
+  expect(remoteAimCommands(session.reliable.map((command) => command.payload))).toEqual([
+    { type: "primaryAttack", aim: [300, 400] },
+    { type: "primaryAttack", aim: [0, -900] },
+    { type: "drawBow" },
+    { type: "releaseBow", aim: [0, -900] },
+  ]);
+});
+
 test("a held bow draw shoots on release and is cancelled, never fired, on focus loss", () => {
   const { runtime, games } = harness();
   runtime.startLocal({ seed: 1 });
