@@ -1,7 +1,7 @@
 // #55: the released Ranger bundle loads with the game core and stands in for every player.
 import { expect, test } from "./fixtures.js";
 
-const MANIFEST = "**/characters/humanoid-ranger-male-v4/manifest.json";
+const MANIFEST = "**/characters/humanoid-ranger-male/manifest.json";
 
 test("the game waits for the character bundle, then enters the world with the humanoid", async ({
   page,
@@ -14,10 +14,13 @@ test("the game waits for the character bundle, then enters the world with the hu
   });
   await page.goto(appUrl);
   await expect(page.getByRole("status").first()).toHaveText("Ready", { timeout: 60_000 });
-  expect(requested).toContain("/arpg/characters/humanoid-ranger-male-v4/manifest.json");
+  expect(requested).toContain("/arpg/characters/humanoid-ranger-male/manifest.json");
   expect(requested.some((path) => path.endsWith(".gltf"))).toBe(true);
-  // The character's 14 resources plus one geometry buffer per equipment item (#183).
-  expect(requested.filter((path) => path.includes("/resources/"))).toHaveLength(16);
+  expect(requested.filter((path) => path.endsWith(".ktx2")).length).toBeGreaterThan(0);
+  expect(requested.filter((path) => path.endsWith(".clips.glb"))).toHaveLength(1);
+  expect(requested.filter((path) => path.endsWith(".bin"))).toHaveLength(3);
+  expect(requested.some((path) => path.endsWith(".tar"))).toBe(false);
+  expect(requested.some((path) => path.includes("/resources/"))).toBe(false);
 
   await page.getByRole("button", { name: "Enter World", exact: true }).click();
   const canvas = page
@@ -78,8 +81,8 @@ test("the humanoid carries the real sword and shield and raises the shield to gu
   await page.goto(appUrl);
   await expect(page.getByRole("status").first()).toHaveText("Ready", { timeout: 60_000 });
   for (const entry of ["equipment.sword.arming", "equipment.shield.heater"])
-    expect(requested.some((path) => path.endsWith(`/scenes/${entry}/default.gltf`))).toBe(true);
-  expect(requested.some((path) => path.includes("/attachments/"))).toBe(true);
+    expect(requested.some((path) => path.endsWith(`/${entry}.default.gltf`))).toBe(true);
+  expect(requested.some((path) => path.endsWith(".humanoid-sockets.json"))).toBe(true);
   await page.getByRole("button", { name: "Enter World", exact: true }).click();
   const canvas = page.locator("canvas.game-canvas");
   await expect(canvas).toBeVisible();

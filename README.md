@@ -10,7 +10,7 @@ The browser slice currently proves:
 
 - WASD top-down movement with diagonal normalization;
 - a procedurally partitioned, seeded dungeon whose walls and doorways are resolved by Rapier physics inside the Rust simulation;
-- an isometric follow camera and 3D scene rendered through `3d-lab`, with players shown as the released asset-tooling Ranger humanoid (unpacked by `bun run setup`);
+- an isometric follow camera and 3D scene rendered through `3d-lab`, with players shown as the released asset-tooling Ranger humanoid (selected per-entry downloads prepared by `bun run setup`; [loading evidence](docs/character-loading.md));
 - nearby primary attacks against deterministic monster state;
 - deterministic character progression exposed through authoritative snapshots;
 - a deterministic combat training arena available through the character screen or `?scenario=training&seed=<u32>`, with pause, single-step, explicit simulation speed, seed restart, and live combat diagnostics;

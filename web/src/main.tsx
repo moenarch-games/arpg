@@ -192,19 +192,35 @@ function requestedRunSeed() {
 
 // The Ranger character bundle (#55), unpacked into the static `characters/` directory by
 // setup. Loaded once per page with the game core and shared by every session.
+// Preloading and drawing share the persistent game canvas and actual renderer.
+let characterRenderer = null;
+const textureCapabilities = {
+  configureTextureLoader(loader) {
+    if (!characterRenderer) throw new Error("Character renderer is not ready");
+    characterRenderer.configureTextureLoader(loader);
+  },
+};
 const characterAssets = createCharacterAssets({
   bundle: RANGER_BUNDLE,
   baseUrl: `${import.meta.env.BASE_URL}characters/`,
   fetch: (url) => fetch(url),
   // The character, its equipment items and its sockets (#183) from the same bundle.
   adapt: async (source, options) => {
-    const character = await adaptImportedCharacterBundle(source, options);
+    const decoderOptions = {
+      ...options,
+      renderer: textureCapabilities,
+      transcoderPath: `${import.meta.env.BASE_URL}decoders/basis/`,
+    };
+    const character = await adaptImportedCharacterBundle(source, decoderOptions);
     const { equipment: data } = RANGER_BUNDLE;
     const items = Object.fromEntries(
       await Promise.all(
         Object.entries(data.items).map(async ([id, item]) => [
           id,
-          await adaptImportedItemBundle({ ...source, key: item.key, variant: "default" }),
+          await adaptImportedItemBundle(
+            { ...source, key: item.key, variant: "default" },
+            { renderer: textureCapabilities, transcoderPath: decoderOptions.transcoderPath },
+          ),
         ]),
       ),
     );
@@ -254,7 +270,11 @@ function GameCanvas({
     const presenter = createFramePresenter({
       canvas: canvasRef.current,
       snapshots,
-      createRenderer: createThreeSceneRenderer,
+      createRenderer: (canvas, options) => {
+        const renderer = createThreeSceneRenderer(canvas, options);
+        characterRenderer = renderer;
+        return renderer;
+      },
       buildFrame,
       observeResize: (canvas, onResize) => {
         const observer = new ResizeObserver(() => onResize());
@@ -275,6 +295,7 @@ function GameCanvas({
     return () => {
       presenterRef.current = null;
       presenter.dispose();
+      characterRenderer = null;
     };
   }, [snapshots]);
 
@@ -984,350 +1005,115 @@ function App() {
             ? "Peer guest"
             : "Dedicated online";
 
-  if (!inWorld) {
-    return (
-      <main className="character-select-shell" aria-label="Character selection">
-        <div className="character-select-atmosphere" aria-hidden="true" />
-        <header className="character-select-header">
-          <div>
-            <span className="character-select-eyebrow">ARPG</span>
-            <h1 className="visually-hidden">Character selection</h1>
-          </div>
-        </header>
-
-        <div className="character-select-layout">
-          <section className="character-stage" aria-live="polite">
-            <div className="character-stage-ground" aria-hidden="true" />
-            <div
-              className={`character-avatar character-avatar-${selectedCharacter.tone}`}
-              style={{ "--character-accent": selectedCharacter.accent }}
-              aria-hidden="true"
-            >
-              <span className="character-aura" />
-              <span className="character-head" />
-              <span className="character-torso" />
-              <span className="character-arm character-arm-left" />
-              <span className="character-arm character-arm-right" />
-              <span className="character-leg character-leg-left" />
-              <span className="character-leg character-leg-right" />
-              <span className="character-weapon" />
-            </div>
-            <div className="character-stage-copy">
-              <span>{selectedCharacter.role}</span>
-              <h2>{selectedCharacter.name}</h2>
-              <p>
-                {selectedCharacter.appearance} appearance · {selectedCharacter.location}
-              </p>
-            </div>
-          </section>
-
-          <aside className="character-roster" aria-label="Characters">
-            <div className="character-roster-heading">
-              <span>Characters</span>
-              <strong>{CHARACTER_PRESETS.length}</strong>
-            </div>
-            <div className="character-roster-list">
-              {CHARACTER_PRESETS.map((character) => {
-                const selected = character.id === selectedCharacter.id;
-                return (
-                  <button
-                    key={character.id}
-                    type="button"
-                    className={`character-card ${selected ? "is-selected" : ""}`}
-                    aria-pressed={selected}
-                    onClick={() => selectCharacter(character.id)}
-                  >
-                    <span
-                      className={`character-card-portrait character-card-portrait-${character.tone}`}
-                      style={{ "--character-accent": character.accent }}
-                      aria-hidden="true"
-                    />
-                    <span className="character-card-copy">
-                      <strong>{character.name}</strong>
-                      <small>{character.role}</small>
-                    </span>
-                    <span className="character-card-meta">{character.appearance}</span>
-                  </button>
-                );
-              })}
-            </div>
-            <p className="character-selection-note">
-              Appearance profiles currently share the same authoritative gameplay rules.
-            </p>
-          </aside>
-        </div>
-
-        <footer className="character-select-footer">
-          <span className="character-select-status" role="status">
-            {ready && status === "Select a character" ? "Ready" : shownStatus}
-          </span>
-          {coreFailed && (
-            <button type="button" className="core-retry-button" onClick={retryCoreLoad}>
-              Retry
-            </button>
-          )}
-          <div className="character-select-save-actions">
-            <button type="button" onClick={loadSavedGame} disabled={!ready || !savedGameAvailable}>
-              Load Saved Game
-            </button>
-            <button type="button" onClick={requestSaveImport} disabled={!ready}>
-              Import Save
-            </button>
-            <button
-              type="button"
-              className="training-entry-button"
-              onClick={() => enterTrainingArena(trainingSeedDraft)}
-              disabled={!ready}
-            >
-              Training Arena
-            </button>
-            <button
-              type="button"
-              className="enter-world-button"
-              onClick={enterWorld}
-              disabled={!ready}
-            >
-              Enter World
-            </button>
-          </div>
-          <input
-            ref={saveFileInputRef}
-            className="save-file-input"
-            type="file"
-            accept=".json,application/json"
-            aria-label="Save file"
-            onChange={importSave}
-          />
-        </footer>
-      </main>
-    );
-  }
-
   return (
-    <main className="game-shell">
-      <GameCanvas
-        snapshots={snapshotStore}
-        playerId={playerId}
-        accent={selectedCharacter.accent}
-        graphics={graphics}
-        effects={presentationEffects}
-        onPointerMove={aimWithPointer}
-        onPointerDown={beginMouseMovement}
-        onPointerUp={endMouseMovement}
-        onPointerCancel={endMouseMovement}
-        onLostPointerCapture={endMouseMovement}
-        onMouseUp={mouseUp}
-        onContextMenu={(event) => event.preventDefault()}
-      />
-      <header className="game-header">
-        <div>
-          <strong>ARPG</strong>
-          <span>{modeLabel}</span>
-        </div>
-        <div className="game-header-actions">
-          {coreFailed && (
-            <button type="button" className="core-retry-button" onClick={retryCoreLoad}>
-              Retry
-            </button>
-          )}
-          <button type="button" onClick={returnToCharacters}>
-            Characters
-          </button>
-          <button ref={settingsTriggerRef} type="button" onClick={() => setSettingsOpen(true)}>
-            Settings
-          </button>
-        </div>
-      </header>
-
-      {scenario === "training" && (
-        <aside className="training-panel" aria-label="Training arena controls">
-          <header>
-            <strong>Training arena</strong>
-            <TrainingTick store={snapshotStore} />
-          </header>
-
-          <div className="training-actions">
-            <button type="button" onClick={() => runtime.setTrainingPaused(!trainingPaused)}>
-              {trainingPaused ? "Resume" : "Pause"}
-            </button>
-            <button type="button" onClick={stepTrainingArena} disabled={!trainingPaused}>
-              Step
-            </button>
-            <label>
-              <span>Speed</span>
-              <select
-                value={trainingSpeed}
-                onChange={(event) => runtime.setTrainingSpeed(Number(event.target.value))}
-              >
-                {TRAINING_SPEEDS.map((speed) => (
-                  <option key={speed} value={speed}>
-                    {speed}×
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <label className="training-scenario">
-            <span>Scenario</span>
-            <select
-              value={trainingFixture}
-              onChange={(event) => {
-                const seed = parseRunSeed(trainingSeedDraft) ?? DEFAULT_TRAINING_SEED;
-                startTraining(seed, event.target.value);
-                setStatus(`Training scenario · ${event.target.value} · seed ${seed}`);
-              }}
-            >
-              {SCENARIOS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <div className="training-seed">
-            <label>
-              <span>Seed</span>
-              <input
-                type="number"
-                min="0"
-                max="4294967295"
-                step="1"
-                inputMode="numeric"
-                value={trainingSeedDraft}
-                onChange={(event) => setTrainingSeedDraft(event.target.value)}
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => restartTrainingArena(trainingSeedDraft)}
-              disabled={parseRunSeed(trainingSeedDraft) === null}
-            >
-              Restart
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const seed = freshRunSeed();
-                setTrainingSeedDraft(String(seed));
-                restartTrainingArena(seed);
-              }}
-            >
-              New seed
-            </button>
-          </div>
-
-          <div className="training-actions">
-            <button type="button" onClick={exportReproduction}>
-              Export reproduction
-            </button>
-          </div>
-
-          <WorkbenchControls
-            key={client.sourceGeneration}
-            runtime={runtime}
-            store={snapshotStore}
-            setStatus={setStatus}
-          />
-
-          <TrainingDiagnostics store={snapshotStore} playerId={playerId} />
-          <StrikeTimeline store={snapshotStore} />
-        </aside>
-      )}
-
-      <PlayerHud
-        store={snapshotStore}
-        playerId={playerId}
-        status={shownStatus}
-        interactKey={interactKey}
-        keyLabels={keyLabels}
-      />
-
-      {ready && !settingsOpen && (
-        <section className="mobile-controls" aria-label="Touch controls">
-          <div
-            ref={touchStickRef}
-            className="virtual-stick"
-            role="group"
-            aria-label="Movement joystick"
-            aria-disabled={!playerId}
-            onPointerDown={beginTouchStick}
-            onPointerMove={updateTouchStick}
-            onPointerUp={endTouchStick}
-            onPointerCancel={endTouchStick}
-            onLostPointerCapture={endTouchStick}
-            onContextMenu={(event) => event.preventDefault()}
-          >
-            <span ref={touchKnobRef} className="virtual-stick-knob" />
-          </div>
-        </section>
-      )}
-
-      {ready && !settingsOpen && (
-        <CombatActions
-          store={snapshotStore}
-          playerId={playerId}
-          triggerCombatAction={triggerCombatAction}
-          gestureEpochRef={touchGestureEpochRef}
-          setTouchGuard={(held) => runtime.setGuard("touch", held)}
-          setTouchDraw={(held, interrupted = false) =>
-            runtime.setBowDraw("touch", held, { interrupted })
-          }
-          switchWeapon={switchWeapon}
-          keyLabels={keyLabels}
-        />
-      )}
-
-      {settingsOpen && (
-        <SettingsDialog onClose={() => setSettingsOpen(false)} returnFocusTo={settingsTriggerRef}>
-          <header>
+    <>
+      {!inWorld && (
+        <main className="character-select-shell" aria-label="Character selection">
+          <div className="character-select-atmosphere" aria-hidden="true" />
+          <header className="character-select-header">
             <div>
-              <h1 id="settings-heading">Settings</h1>
+              <span className="character-select-eyebrow">ARPG</span>
+              <h1 className="visually-hidden">Character selection</h1>
             </div>
-            <button type="button" autoFocus onClick={() => setSettingsOpen(false)}>
-              Close
-            </button>
           </header>
 
-          <section>
-            <h2>Game</h2>
-            <GameSummary store={snapshotStore} mode={mode} playerId={playerId} />
-            <button type="button" onClick={startLocal}>
-              Start local game
-            </button>
-          </section>
-
-          <section>
-            <h2>Save & load</h2>
-            <div className="save-state-summary">
-              <strong>{savedGameAvailable ? "Local save available" : "No local save yet"}</strong>
-              <span>
-                {mode === "local"
-                  ? "Current local authority can be saved or exported."
-                  : "Loading a save returns to local play; network sessions are not overwritten."}
-              </span>
-            </div>
-            <div className="settings-actions save-state-actions">
-              <button
-                type="button"
-                onClick={saveGameLocally}
-                disabled={mode !== "local" || !playerId}
+          <div className="character-select-layout">
+            <section className="character-stage" aria-live="polite">
+              <div className="character-stage-ground" aria-hidden="true" />
+              <div
+                className={`character-avatar character-avatar-${selectedCharacter.tone}`}
+                style={{ "--character-accent": selectedCharacter.accent }}
+                aria-hidden="true"
               >
-                Save game
+                <span className="character-aura" />
+                <span className="character-head" />
+                <span className="character-torso" />
+                <span className="character-arm character-arm-left" />
+                <span className="character-arm character-arm-right" />
+                <span className="character-leg character-leg-left" />
+                <span className="character-leg character-leg-right" />
+                <span className="character-weapon" />
+              </div>
+              <div className="character-stage-copy">
+                <span>{selectedCharacter.role}</span>
+                <h2>{selectedCharacter.name}</h2>
+                <p>
+                  {selectedCharacter.appearance} appearance · {selectedCharacter.location}
+                </p>
+              </div>
+            </section>
+
+            <aside className="character-roster" aria-label="Characters">
+              <div className="character-roster-heading">
+                <span>Characters</span>
+                <strong>{CHARACTER_PRESETS.length}</strong>
+              </div>
+              <div className="character-roster-list">
+                {CHARACTER_PRESETS.map((character) => {
+                  const selected = character.id === selectedCharacter.id;
+                  return (
+                    <button
+                      key={character.id}
+                      type="button"
+                      className={`character-card ${selected ? "is-selected" : ""}`}
+                      aria-pressed={selected}
+                      onClick={() => selectCharacter(character.id)}
+                    >
+                      <span
+                        className={`character-card-portrait character-card-portrait-${character.tone}`}
+                        style={{ "--character-accent": character.accent }}
+                        aria-hidden="true"
+                      />
+                      <span className="character-card-copy">
+                        <strong>{character.name}</strong>
+                        <small>{character.role}</small>
+                      </span>
+                      <span className="character-card-meta">{character.appearance}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="character-selection-note">
+                Appearance profiles currently share the same authoritative gameplay rules.
+              </p>
+            </aside>
+          </div>
+
+          <footer className="character-select-footer">
+            <span className="character-select-status" role="status">
+              {ready && status === "Select a character" ? "Ready" : shownStatus}
+            </span>
+            {coreFailed && (
+              <button type="button" className="core-retry-button" onClick={retryCoreLoad}>
+                Retry
               </button>
+            )}
+            <div className="character-select-save-actions">
               <button
                 type="button"
                 onClick={loadSavedGame}
                 disabled={!ready || !savedGameAvailable}
               >
-                Load saved game
-              </button>
-              <button type="button" onClick={exportSave} disabled={mode !== "local" || !playerId}>
-                Export save
+                Load Saved Game
               </button>
               <button type="button" onClick={requestSaveImport} disabled={!ready}>
-                Import save
+                Import Save
+              </button>
+              <button
+                type="button"
+                className="training-entry-button"
+                onClick={() => enterTrainingArena(trainingSeedDraft)}
+                disabled={!ready}
+              >
+                Training Arena
+              </button>
+              <button
+                type="button"
+                className="enter-world-button"
+                onClick={enterWorld}
+                disabled={!ready}
+              >
+                Enter World
               </button>
             </div>
             <input
@@ -1338,148 +1124,410 @@ function App() {
               aria-label="Save file"
               onChange={importSave}
             />
-            <p className="settings-note">
-              Saves are versioned and validated by the Rust authority before they replace the
-              current game. Exported JSON can be imported on another browser or device.
-            </p>
-          </section>
-
-          <section>
-            <h2>Dedicated online</h2>
-            <label>
-              WebTransport endpoint
-              <input
-                value={dedicatedUrl}
-                onChange={(event) => updateDedicatedUrl(event.target.value)}
-                placeholder="https://127.0.0.1:4433/arpg"
-              />
-            </label>
-            <button
-              type="button"
-              onClick={startDedicated}
-              disabled={!ready || !dedicatedUrl.trim()}
-            >
-              Connect dedicated server
-            </button>
-          </section>
-
-          <section>
-            <h2>Peer co-op</h2>
-            <label>
-              Setup service URL
-              <input value={setupUrl} onChange={(event) => updateSetupUrl(event.target.value)} />
-            </label>
-            <div className="settings-actions">
-              <button type="button" onClick={hostPeerGame} disabled={!ready}>
-                Host co-op
-              </button>
-              {lobbyCode && (
-                <button type="button" onClick={copyInvite}>
-                  Copy invite {lobbyCode}
-                </button>
-              )}
-            </div>
-            <label>
-              Lobby code
-              <input value={joinCode} onChange={(event) => setJoinCode(event.target.value)} />
-            </label>
-            <button type="button" onClick={joinPeerGame} disabled={!joinCode.trim()}>
-              Join host
-            </button>
-          </section>
-
-          <section>
-            <h2>Graphics</h2>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={graphics.shadows}
-                onChange={(event) => updateGraphics({ shadows: event.target.checked })}
-              />
-              Enable shadows
-            </label>
-            <label>
-              Pixel ratio limit
-              <select
-                value={graphics.pixelRatioLimit}
-                onChange={(event) =>
-                  updateGraphics({ pixelRatioLimit: Number(event.target.value) })
-                }
-              >
-                <option value="1">1×</option>
-                <option value="1.5">1.5×</option>
-                <option value="2">2×</option>
-              </select>
-            </label>
-          </section>
-
-          <section aria-labelledby="accessibility-heading">
-            <h2 id="accessibility-heading">Accessibility</h2>
-            <div className="settings-field">
-              <label htmlFor="motion-effects">Motion effects</label>
-              <select
-                id="motion-effects"
-                value={accessibility.motion}
-                onChange={(event) => updateAccessibility({ motion: event.target.value })}
-              >
-                {MOTION_PREFERENCES.map((motion) => (
-                  <option key={motion} value={motion}>
-                    {MOTION_LABELS[motion]}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={accessibility.reducedFlashes}
-                onChange={(event) => updateAccessibility({ reducedFlashes: event.target.checked })}
-              />
-              Reduce bright flashes
-            </label>
-            <div className="settings-field">
-              <label htmlFor="text-size">Text size</label>
-              <select
-                id="text-size"
-                value={accessibility.textScale}
-                onChange={(event) => updateAccessibility({ textScale: Number(event.target.value) })}
-              >
-                {TEXT_SCALES.map((scale) => (
-                  <option key={scale} value={scale}>
-                    {`${scale * 100}%`}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <p className="settings-note">
-              Display settings stay in this browser. They never change saves or game rules.
-            </p>
-            <div className="settings-actions">
-              <button type="button" onClick={() => updatePresentation(DEFAULT_PRESENTATION)}>
-                Reset display settings
-              </button>
-            </div>
-          </section>
-
-          <section className="keybindings-section">
-            <h2>Controls</h2>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={mouseAim}
-                onChange={(event) => updateMouseAim(event.target.checked)}
-              />
-              Aim melee and bow with the mouse
-            </label>
-            <KeybindingEditor
-              registry={inputRegistry}
-              profile={profile}
-              onProfileChange={updateProfile}
-            />
-          </section>
-        </SettingsDialog>
+          </footer>
+        </main>
       )}
-    </main>
+      <main hidden={!inWorld} className="game-shell">
+        <GameCanvas
+          snapshots={snapshotStore}
+          playerId={playerId}
+          accent={selectedCharacter.accent}
+          graphics={graphics}
+          effects={presentationEffects}
+          onPointerMove={aimWithPointer}
+          onPointerDown={beginMouseMovement}
+          onPointerUp={endMouseMovement}
+          onPointerCancel={endMouseMovement}
+          onLostPointerCapture={endMouseMovement}
+          onMouseUp={mouseUp}
+          onContextMenu={(event) => event.preventDefault()}
+        />
+        {inWorld && (
+          <>
+            <header className="game-header">
+              <div>
+                <strong>ARPG</strong>
+                <span>{modeLabel}</span>
+              </div>
+              <div className="game-header-actions">
+                {coreFailed && (
+                  <button type="button" className="core-retry-button" onClick={retryCoreLoad}>
+                    Retry
+                  </button>
+                )}
+                <button type="button" onClick={returnToCharacters}>
+                  Characters
+                </button>
+                <button
+                  ref={settingsTriggerRef}
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  Settings
+                </button>
+              </div>
+            </header>
+
+            {scenario === "training" && (
+              <aside className="training-panel" aria-label="Training arena controls">
+                <header>
+                  <strong>Training arena</strong>
+                  <TrainingTick store={snapshotStore} />
+                </header>
+
+                <div className="training-actions">
+                  <button type="button" onClick={() => runtime.setTrainingPaused(!trainingPaused)}>
+                    {trainingPaused ? "Resume" : "Pause"}
+                  </button>
+                  <button type="button" onClick={stepTrainingArena} disabled={!trainingPaused}>
+                    Step
+                  </button>
+                  <label>
+                    <span>Speed</span>
+                    <select
+                      value={trainingSpeed}
+                      onChange={(event) => runtime.setTrainingSpeed(Number(event.target.value))}
+                    >
+                      {TRAINING_SPEEDS.map((speed) => (
+                        <option key={speed} value={speed}>
+                          {speed}×
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                <label className="training-scenario">
+                  <span>Scenario</span>
+                  <select
+                    value={trainingFixture}
+                    onChange={(event) => {
+                      const seed = parseRunSeed(trainingSeedDraft) ?? DEFAULT_TRAINING_SEED;
+                      startTraining(seed, event.target.value);
+                      setStatus(`Training scenario · ${event.target.value} · seed ${seed}`);
+                    }}
+                  >
+                    {SCENARIOS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="training-seed">
+                  <label>
+                    <span>Seed</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="4294967295"
+                      step="1"
+                      inputMode="numeric"
+                      value={trainingSeedDraft}
+                      onChange={(event) => setTrainingSeedDraft(event.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => restartTrainingArena(trainingSeedDraft)}
+                    disabled={parseRunSeed(trainingSeedDraft) === null}
+                  >
+                    Restart
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const seed = freshRunSeed();
+                      setTrainingSeedDraft(String(seed));
+                      restartTrainingArena(seed);
+                    }}
+                  >
+                    New seed
+                  </button>
+                </div>
+
+                <div className="training-actions">
+                  <button type="button" onClick={exportReproduction}>
+                    Export reproduction
+                  </button>
+                </div>
+
+                <WorkbenchControls
+                  key={client.sourceGeneration}
+                  runtime={runtime}
+                  store={snapshotStore}
+                  setStatus={setStatus}
+                />
+
+                <TrainingDiagnostics store={snapshotStore} playerId={playerId} />
+                <StrikeTimeline store={snapshotStore} />
+              </aside>
+            )}
+
+            <PlayerHud
+              store={snapshotStore}
+              playerId={playerId}
+              status={shownStatus}
+              interactKey={interactKey}
+              keyLabels={keyLabels}
+            />
+
+            {ready && !settingsOpen && (
+              <section className="mobile-controls" aria-label="Touch controls">
+                <div
+                  ref={touchStickRef}
+                  className="virtual-stick"
+                  role="group"
+                  aria-label="Movement joystick"
+                  aria-disabled={!playerId}
+                  onPointerDown={beginTouchStick}
+                  onPointerMove={updateTouchStick}
+                  onPointerUp={endTouchStick}
+                  onPointerCancel={endTouchStick}
+                  onLostPointerCapture={endTouchStick}
+                  onContextMenu={(event) => event.preventDefault()}
+                >
+                  <span ref={touchKnobRef} className="virtual-stick-knob" />
+                </div>
+              </section>
+            )}
+
+            {ready && !settingsOpen && (
+              <CombatActions
+                store={snapshotStore}
+                playerId={playerId}
+                triggerCombatAction={triggerCombatAction}
+                gestureEpochRef={touchGestureEpochRef}
+                setTouchGuard={(held) => runtime.setGuard("touch", held)}
+                setTouchDraw={(held, interrupted = false) =>
+                  runtime.setBowDraw("touch", held, { interrupted })
+                }
+                switchWeapon={switchWeapon}
+                keyLabels={keyLabels}
+              />
+            )}
+
+            {settingsOpen && (
+              <SettingsDialog
+                onClose={() => setSettingsOpen(false)}
+                returnFocusTo={settingsTriggerRef}
+              >
+                <header>
+                  <div>
+                    <h1 id="settings-heading">Settings</h1>
+                  </div>
+                  <button type="button" autoFocus onClick={() => setSettingsOpen(false)}>
+                    Close
+                  </button>
+                </header>
+
+                <section>
+                  <h2>Game</h2>
+                  <GameSummary store={snapshotStore} mode={mode} playerId={playerId} />
+                  <button type="button" onClick={startLocal}>
+                    Start local game
+                  </button>
+                </section>
+
+                <section>
+                  <h2>Save & load</h2>
+                  <div className="save-state-summary">
+                    <strong>
+                      {savedGameAvailable ? "Local save available" : "No local save yet"}
+                    </strong>
+                    <span>
+                      {mode === "local"
+                        ? "Current local authority can be saved or exported."
+                        : "Loading a save returns to local play; network sessions are not overwritten."}
+                    </span>
+                  </div>
+                  <div className="settings-actions save-state-actions">
+                    <button
+                      type="button"
+                      onClick={saveGameLocally}
+                      disabled={mode !== "local" || !playerId}
+                    >
+                      Save game
+                    </button>
+                    <button
+                      type="button"
+                      onClick={loadSavedGame}
+                      disabled={!ready || !savedGameAvailable}
+                    >
+                      Load saved game
+                    </button>
+                    <button
+                      type="button"
+                      onClick={exportSave}
+                      disabled={mode !== "local" || !playerId}
+                    >
+                      Export save
+                    </button>
+                    <button type="button" onClick={requestSaveImport} disabled={!ready}>
+                      Import save
+                    </button>
+                  </div>
+                  <input
+                    ref={saveFileInputRef}
+                    className="save-file-input"
+                    type="file"
+                    accept=".json,application/json"
+                    aria-label="Save file"
+                    onChange={importSave}
+                  />
+                  <p className="settings-note">
+                    Saves are versioned and validated by the Rust authority before they replace the
+                    current game. Exported JSON can be imported on another browser or device.
+                  </p>
+                </section>
+
+                <section>
+                  <h2>Dedicated online</h2>
+                  <label>
+                    WebTransport endpoint
+                    <input
+                      value={dedicatedUrl}
+                      onChange={(event) => updateDedicatedUrl(event.target.value)}
+                      placeholder="https://127.0.0.1:4433/arpg"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={startDedicated}
+                    disabled={!ready || !dedicatedUrl.trim()}
+                  >
+                    Connect dedicated server
+                  </button>
+                </section>
+
+                <section>
+                  <h2>Peer co-op</h2>
+                  <label>
+                    Setup service URL
+                    <input
+                      value={setupUrl}
+                      onChange={(event) => updateSetupUrl(event.target.value)}
+                    />
+                  </label>
+                  <div className="settings-actions">
+                    <button type="button" onClick={hostPeerGame} disabled={!ready}>
+                      Host co-op
+                    </button>
+                    {lobbyCode && (
+                      <button type="button" onClick={copyInvite}>
+                        Copy invite {lobbyCode}
+                      </button>
+                    )}
+                  </div>
+                  <label>
+                    Lobby code
+                    <input value={joinCode} onChange={(event) => setJoinCode(event.target.value)} />
+                  </label>
+                  <button type="button" onClick={joinPeerGame} disabled={!joinCode.trim()}>
+                    Join host
+                  </button>
+                </section>
+
+                <section>
+                  <h2>Graphics</h2>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={graphics.shadows}
+                      onChange={(event) => updateGraphics({ shadows: event.target.checked })}
+                    />
+                    Enable shadows
+                  </label>
+                  <label>
+                    Pixel ratio limit
+                    <select
+                      value={graphics.pixelRatioLimit}
+                      onChange={(event) =>
+                        updateGraphics({ pixelRatioLimit: Number(event.target.value) })
+                      }
+                    >
+                      <option value="1">1×</option>
+                      <option value="1.5">1.5×</option>
+                      <option value="2">2×</option>
+                    </select>
+                  </label>
+                </section>
+
+                <section aria-labelledby="accessibility-heading">
+                  <h2 id="accessibility-heading">Accessibility</h2>
+                  <div className="settings-field">
+                    <label htmlFor="motion-effects">Motion effects</label>
+                    <select
+                      id="motion-effects"
+                      value={accessibility.motion}
+                      onChange={(event) => updateAccessibility({ motion: event.target.value })}
+                    >
+                      {MOTION_PREFERENCES.map((motion) => (
+                        <option key={motion} value={motion}>
+                          {MOTION_LABELS[motion]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={accessibility.reducedFlashes}
+                      onChange={(event) =>
+                        updateAccessibility({ reducedFlashes: event.target.checked })
+                      }
+                    />
+                    Reduce bright flashes
+                  </label>
+                  <div className="settings-field">
+                    <label htmlFor="text-size">Text size</label>
+                    <select
+                      id="text-size"
+                      value={accessibility.textScale}
+                      onChange={(event) =>
+                        updateAccessibility({ textScale: Number(event.target.value) })
+                      }
+                    >
+                      {TEXT_SCALES.map((scale) => (
+                        <option key={scale} value={scale}>
+                          {`${scale * 100}%`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <p className="settings-note">
+                    Display settings stay in this browser. They never change saves or game rules.
+                  </p>
+                  <div className="settings-actions">
+                    <button type="button" onClick={() => updatePresentation(DEFAULT_PRESENTATION)}>
+                      Reset display settings
+                    </button>
+                  </div>
+                </section>
+
+                <section className="keybindings-section">
+                  <h2>Controls</h2>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={mouseAim}
+                      onChange={(event) => updateMouseAim(event.target.checked)}
+                    />
+                    Aim melee and bow with the mouse
+                  </label>
+                  <KeybindingEditor
+                    registry={inputRegistry}
+                    profile={profile}
+                    onProfileChange={updateProfile}
+                  />
+                </section>
+              </SettingsDialog>
+            )}
+          </>
+        )}
+      </main>
+    </>
   );
 }
 

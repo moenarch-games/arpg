@@ -114,6 +114,7 @@ export function createFramePresenter<
     const snapshot = cues.take(snapshots.getSnapshot());
     if (!snapshot) return;
     const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
     const frame = options.buildFrame(
       snapshot,
       view.playerId,
@@ -142,6 +143,7 @@ export function createFramePresenter<
   const resize = () => {
     if (disposed) return;
     const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
     renderer.setSize(rect.width, rect.height, pixelRatio());
     // A resized drawing buffer is blank until the next draw. Draw now and drop any queued
     // frame: this draw already consumes its cue, and a second draw before paint would
