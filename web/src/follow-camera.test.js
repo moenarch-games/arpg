@@ -142,3 +142,10 @@ test("barriers also lower in front of a telegraphing monster", () => {
   snapshot.monsters[0].action = { phase: "windup" };
   expect(heightOf(buildFrame(snapshot, 1, 800, 600), "static-1")).toBeLessThan(1);
 });
+
+test("without smoothing the camera snaps and is settled at once", () => {
+  const camera = createFollowCamera();
+  camera.follow([0, 0, 0], 0);
+  expect(camera.follow([1, 0, 0], 16, false)).toBe(true);
+  expect(camera.pose().target).toEqual([1, 0, 0]);
+});

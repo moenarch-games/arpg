@@ -268,6 +268,7 @@ function GameCanvas({
   graphics,
   effects,
   camera,
+  cameraSmoothing,
   onWheel,
   onPointerMove,
   onPointerDown,
@@ -281,7 +282,13 @@ function GameCanvas({
   const presenterRef = useRef(null);
   const { shadows, pixelRatioLimit } = graphics;
   // The view the presenter is (or will be) created with; later changes apply in place.
-  const viewRef = useRef({ playerId, accent, graphics: { shadows, pixelRatioLimit }, effects });
+  const viewRef = useRef({
+    playerId,
+    accent,
+    graphics: { shadows, pixelRatioLimit },
+    effects,
+    cameraSmoothing,
+  });
   useEffect(() => {
     // A new session starts with the camera on its player, not gliding from the last one.
     camera.recenter();
@@ -289,7 +296,8 @@ function GameCanvas({
       canvas: canvasRef.current,
       snapshots,
       camera: {
-        update: (snapshot, id, time) => camera.follow(focusPoint(snapshot, id), time),
+        update: (snapshot, id, time, smoothing) =>
+          camera.follow(focusPoint(snapshot, id), time, smoothing),
         pose: () => camera.pose(),
         subscribe: (listener) => camera.subscribe(listener),
       },
@@ -323,9 +331,15 @@ function GameCanvas({
   }, [snapshots, camera]);
 
   useEffect(() => {
-    viewRef.current = { playerId, accent, graphics: { shadows, pixelRatioLimit }, effects };
+    viewRef.current = {
+      playerId,
+      accent,
+      graphics: { shadows, pixelRatioLimit },
+      effects,
+      cameraSmoothing,
+    };
     presenterRef.current?.configure(viewRef.current);
-  }, [playerId, accent, shadows, pixelRatioLimit, effects]);
+  }, [playerId, accent, shadows, pixelRatioLimit, effects, cameraSmoothing]);
 
   return (
     <canvas
@@ -1190,6 +1204,7 @@ function App() {
           graphics={graphics}
           effects={presentationEffects}
           camera={followCamera}
+          cameraSmoothing={!trainingPaused}
           onWheel={zoomWithWheel}
           onPointerMove={(event) => {
             pinchPointer(event, "move");

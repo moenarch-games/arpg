@@ -85,8 +85,10 @@ export function createFollowCamera({ zoom = DEFAULT_ZOOM } = {}) {
 
   return {
     // Moves the followed point toward `target` for a frame drawn at `time` (ms). Returns
-    // whether the camera has settled, so the caller can stop drawing frames for it.
-    follow(target, time) {
+    // whether the camera has settled, so the caller can stop drawing frames for it. Without
+    // `smoothing` (a paused, single-stepped session) it snaps: a glide would only cost
+    // extra full redraws for every step.
+    follow(target, time, smoothing = true) {
       focus = [target[0], target[1], target[2]];
       const step =
         lastTime === null || time === undefined
@@ -96,7 +98,7 @@ export function createFollowCamera({ zoom = DEFAULT_ZOOM } = {}) {
       const gap = followed
         ? Math.hypot(target[0] - followed[0], target[1] - followed[1], target[2] - followed[2])
         : Infinity;
-      if (gap > SNAP_DISTANCE || gap <= SETTLED_DISTANCE) {
+      if (!smoothing || gap > SNAP_DISTANCE || gap <= SETTLED_DISTANCE) {
         followed = [...focus];
         return true;
       }

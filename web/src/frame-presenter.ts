@@ -27,6 +27,8 @@ export interface PresenterView {
   graphics: GraphicsOptions;
   // From `resolvePresentationEffects`; FULL_EFFECTS when omitted.
   effects?: PresentationEffects;
+  // False snaps the follow camera instead of gliding (a paused, single-stepped session).
+  cameraSmoothing?: boolean;
 }
 
 export type PresentationEffects = typeof FULL_EFFECTS;
@@ -56,7 +58,12 @@ export interface CameraPose {
 
 export interface FollowCameraLike<Snapshot> {
   // Follows the focus of `snapshot` for a frame drawn at `time` (ms); true once settled.
-  update(snapshot: Snapshot, playerId: number | null, time: number | undefined): boolean;
+  update(
+    snapshot: Snapshot,
+    playerId: number | null,
+    time: number | undefined,
+    smoothing: boolean,
+  ): boolean;
   pose(): CameraPose;
   // Zoom/reset changes redraw the latest snapshot.
   subscribe(listener: () => void): () => void;
@@ -132,7 +139,8 @@ export function createFramePresenter<
     if (!snapshot) return;
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
-    const settled = options.camera?.update(snapshot, view.playerId, time) ?? true;
+    const settled =
+      options.camera?.update(snapshot, view.playerId, time, view.cameraSmoothing ?? true) ?? true;
     const frame = options.buildFrame(
       snapshot,
       view.playerId,
