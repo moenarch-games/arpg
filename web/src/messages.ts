@@ -98,6 +98,7 @@ export const en = {
   "settings.motion.reduced": "Reduced",
   "settings.motion.full": "Full",
   "settings.flashes": "Reduce bright flashes",
+  "settings.combatEffects": "Combat particles and camera impulse",
   "settings.textSize": "Text size",
   "settings.displayNote":
     "Display settings stay in this browser. They never change saves or game rules.",

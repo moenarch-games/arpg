@@ -63,9 +63,14 @@ export function resolvePresentationEffects(preferences, { prefersReducedMotion =
   const reducedMotion =
     accessibility.motion === "reduced" ||
     (accessibility.motion === "system" && prefersReducedMotion === true);
+  // Combat particles, weapon trails and the camera impulse (#67 67b) are motion: off with the
+  // "combat effects" switch and under reduced motion.
+  const combatEffects = accessibility.combatEffects && !reducedMotion;
   return {
     reducedMotion,
     reducedFlashes: accessibility.reducedFlashes,
+    combatEffects,
+    cameraImpulse: combatEffects,
     textScale: accessibility.textScale,
     staggerLift: reducedMotion ? 0 : STAGGER_LIFT,
     palette: combatPalette(accessibility.reducedFlashes),
