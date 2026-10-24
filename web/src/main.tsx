@@ -24,6 +24,7 @@ import { keyLabelForAction } from "./binding-labels.js";
 import { createSnapshotStore } from "./snapshot-store.js";
 import { attachPresentationCues, createPresentationCues } from "./presentation-cues.js";
 import { CueFeed, DamageNumbers } from "./cue-views.jsx";
+import { createCombatVfx } from "./combat-vfx.js";
 import {
   PlayerHud,
   CombatActions,
@@ -307,6 +308,7 @@ function GameCanvas({
   onLostPointerCapture,
   onMouseUp,
   onContextMenu,
+  cues,
 }) {
   const canvasRef = useRef(null);
   const presenterRef = useRef(null);
@@ -322,6 +324,7 @@ function GameCanvas({
   useEffect(() => {
     // A new session starts with the camera on its player, not gliding from the last one.
     camera.recenter();
+    const combatVfx = createCombatVfx();
     const presenter = createFramePresenter({
       canvas: canvasRef.current,
       snapshots,
@@ -350,6 +353,9 @@ function GameCanvas({
         // Animation follows the simulation's fixed tick (arpg-core TICK_HZ).
         tickHz: 60,
       }),
+      vfx: {
+        frame: (input) => combatVfx.frame({ ...input, cues: cues.getCues() }),
+      },
       view: viewRef.current,
     });
     presenterRef.current = presenter;
@@ -358,7 +364,7 @@ function GameCanvas({
       presenter.dispose();
       characterRenderer = null;
     };
-  }, [snapshots, camera]);
+  }, [snapshots, camera, cues]);
 
   useEffect(() => {
     viewRef.current = {
@@ -1324,6 +1330,7 @@ function App() {
       <main hidden={!inWorld} className="game-shell">
         <GameCanvas
           snapshots={snapshotStore}
+          cues={presentationCues}
           playerId={playerId}
           accent={selectedCharacter.accent}
           graphics={graphics}
@@ -1766,6 +1773,16 @@ function App() {
                       }
                     />
                     {t("settings.flashes")}
+                  </label>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={accessibility.combatEffects}
+                      onChange={(event) =>
+                        updateAccessibility({ combatEffects: event.target.checked })
+                      }
+                    />
+                    {t("settings.combatEffects")}
                   </label>
                   <div className="settings-field">
                     <label htmlFor="text-size">{t("settings.textSize")}</label>

@@ -20,7 +20,10 @@ async function download(page, trigger) {
   return JSON.parse(await readFile(await (await pending).path(), "utf8"));
 }
 
-async function changeSettings(page, { motion, reducedFlashes, textScale, graphics }) {
+async function changeSettings(
+  page,
+  { motion, reducedFlashes, combatEffects, textScale, graphics },
+) {
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "Settings", exact: true });
   if (graphics) {
@@ -33,6 +36,9 @@ async function changeSettings(page, { motion, reducedFlashes, textScale, graphic
   await accessibility
     .getByLabel("Reduce bright flashes", { exact: true })
     .setChecked(reducedFlashes);
+  await accessibility
+    .getByLabel("Combat particles and camera impulse", { exact: true })
+    .setChecked(combatEffects);
   await accessibility.getByLabel("Text size", { exact: true }).selectOption(String(textScale));
   await settings.getByRole("button", { name: "Close", exact: true }).click();
   await expect(settings).not.toBeVisible();
@@ -92,7 +98,7 @@ async function run(browser, appUrl, { stored = null, midRun = null } = {}) {
   }
 }
 
-test("accessibility and quality preferences do not change the authoritative trace", async ({
+test("accessibility, combat effects and quality preferences do not change the authoritative trace", async ({
   browser,
   appUrl,
 }) => {
@@ -101,11 +107,18 @@ test("accessibility and quality preferences do not change the authoritative trac
     stored: {
       version: 2,
       graphics: { shadows: true, pixelRatioLimit: 2 },
-      accessibility: { motion: "reduced", reducedFlashes: true, textScale: 1.5 },
+      accessibility: {
+        motion: "reduced",
+        reducedFlashes: true,
+        combatEffects: false,
+        textScale: 1.5,
+      },
     },
     midRun: {
       motion: "full",
       reducedFlashes: false,
+      // Combat particles and the camera impulse turn on mid-run (#67 67b).
+      combatEffects: true,
       textScale: 1.25,
       graphics: { shadows: false, pixelRatioLimit: 1 },
     },
@@ -129,7 +142,7 @@ test("accessibility and quality preferences do not change the authoritative trac
   expect(adjusted.presentation).toEqual({
     version: 2,
     graphics: { shadows: false, pixelRatioLimit: 1 },
-    accessibility: { motion: "full", reducedFlashes: false, textScale: 1.25 },
+    accessibility: { motion: "full", reducedFlashes: false, combatEffects: true, textScale: 1.25 },
     camera: { zoom: 1 },
   });
 });
