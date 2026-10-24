@@ -16218,6 +16218,164 @@ mod tests {
         );
     }
 
+    // ---------------------------------------------------------------------------------
+    // Exact continuation across every saved mechanic at once (#68)
+    // ---------------------------------------------------------------------------------
+
+    /// One scripted fight, saved at the first tick each listed mechanic is in progress:
+    /// mid-jump, a monster's wind-up, pursuit, an arrow in flight while a slow runs, and a
+    /// partly cleared encounter. Every save goes through the JSON load path and then gets
+    /// the same remaining commands as the uninterrupted game. On every later tick the
+    /// restored game's save state, snapshot (with its strike and interaction events) and
+    /// encoded snapshot bytes (the wire payload `arpg-protocol` frames) match the
+    /// uninterrupted game's.
+    #[test]
+    fn saves_at_each_mechanic_continue_the_uninterrupted_fight_exactly() {
+        on_each_backend(|| {
+            const END: u64 = 260;
+            // The brute encounter is a pack of three instead of the base lone brute.
+            let mut bundle = serde_json::to_value(base_bundle()).unwrap();
+            for encounter in bundle["encounters"].as_array_mut().unwrap() {
+                if encounter["id"] == "encounter.brute" {
+                    encounter["spawnGroup"] = serde_json::json!([{ "monster": BRUTE, "count": 3 }]);
+                }
+            }
+            let bundle = ContentBundle::from_json(&bundle.to_string()).unwrap();
+            let mut game = ArpgGame::new_with_content(bundle.clone(), 42).unwrap();
+            let (x, z) = game
+                .rooms
+                .iter()
+                .find(|room| room.id == STRIKE_ROOM)
+                .unwrap()
+                .center();
+            game.player_spawns[0] = Vec3i::new(x, PLAYER_Y, z);
+            game.add_player(1).unwrap();
+            game.reconcile_encounters().unwrap();
+            command(
+                &mut game,
+                ArpgCommand::EquipWeapon {
+                    weapon: Weapon::Bow,
+                },
+            );
+            let pack: Vec<u32> = game
+                .monsters
+                .iter()
+                .filter(|monster| monster.room_id == STRIKE_ROOM)
+                .map(|monster| monster.id)
+                .collect();
+            assert_eq!(pack.len(), 3);
+            // The first arrow defeats a weakened member, leaving the encounter partly done.
+            game.monsters
+                .iter_mut()
+                .find(|monster| monster.id == pack[0])
+                .unwrap()
+                .health = 1;
+
+            let start = game.tick;
+            // Aim at a pack member where it stands now: both branches stand identically.
+            let aim_at = |game: &ArpgGame, id: u32| {
+                let from = game.players.get(&1).unwrap().position;
+                let to = game.monsters.iter().find(|m| m.id == id).unwrap().position;
+                let (dx, dz) = (to.x - from.x, to.z - from.z);
+                let scale = 1_000.0 / dx.abs().max(dz.abs());
+                ArpgCommand::SetAim {
+                    direction: Some([(dx * scale) as i16, (dz * scale) as i16]),
+                }
+            };
+            let plan = |game: &ArpgGame| -> Vec<ArpgCommand> {
+                match game.tick - start {
+                    0 => vec![aim_at(game, pack[0]), ArpgCommand::DrawBow],
+                    31 | 63 | 115 => vec![aim_at(game, pack[1]), ArpgCommand::DrawBow],
+                    30 | 62 | 94 | 146 => vec![ArpgCommand::ReleaseBow { aim: None }],
+                    110 => vec![ArpgCommand::SetMovement { x: 0, z: 1 }],
+                    130 => vec![ArpgCommand::SetMovement { x: 0, z: 0 }],
+                    170 => vec![ArpgCommand::Jump],
+                    _ => Vec::new(),
+                }
+            };
+            let step = |game: &mut ArpgGame| {
+                for next in plan(game) {
+                    command(game, next);
+                }
+                game.advance_tick().unwrap();
+            };
+            let encoded = |game: &ArpgGame| serde_json::to_vec(&game.snapshot().unwrap()).unwrap();
+
+            type Moment = fn(&ArpgSnapshot) -> bool;
+            let moments: [(&str, Moment); 5] = [
+                ("mid-jump", |snapshot| !snapshot.players[0].motion.grounded),
+                ("wind-up", |snapshot| {
+                    snapshot.monsters.iter().any(|monster| {
+                        monster
+                            .action
+                            .is_some_and(|action| action.phase == ActionPhase::Windup)
+                    })
+                }),
+                ("pursuit", |snapshot| {
+                    snapshot
+                        .monsters
+                        .iter()
+                        .any(|monster| monster.behavior == MonsterBehavior::Pursuing)
+                }),
+                ("arrow in flight while slowed", |snapshot| {
+                    !snapshot.arrows.is_empty()
+                        && snapshot
+                            .monsters
+                            .iter()
+                            .any(|monster| monster.slow.is_some())
+                }),
+                ("partly cleared encounter", |snapshot| {
+                    snapshot.rooms.iter().any(|room| {
+                        room.id == STRIKE_ROOM && room.encounter_state == RoomEncounterState::Active
+                    }) && [false, true].into_iter().all(|alive| {
+                        snapshot
+                            .monsters
+                            .iter()
+                            .any(|monster| monster.room_id == STRIKE_ROOM && monster.alive == alive)
+                    })
+                }),
+            ];
+
+            // The uninterrupted fight, recorded tick by tick.
+            let mut recorded = std::collections::BTreeMap::new();
+            let mut saves = Vec::new();
+            while game.tick < start + END {
+                step(&mut game);
+                let snapshot = game.snapshot().unwrap();
+                let save = game.save_state().unwrap();
+                for (name, holds) in moments {
+                    if holds(&snapshot) && !saves.iter().any(|(saved, _, _)| *saved == name) {
+                        saves.push((name, game.tick, serde_json::to_string(&save).unwrap()));
+                    }
+                }
+                recorded.insert(game.tick, (save, snapshot, encoded(&game)));
+            }
+            for (name, _) in moments {
+                assert!(
+                    saves.iter().any(|(saved, _, _)| *saved == name),
+                    "the fight never reached: {name}"
+                );
+            }
+
+            for (name, tick, json) in saves {
+                let mut restored = ArpgGame::from_save_state_with_content(
+                    ArpgSaveState::from_json(&json).unwrap(),
+                    bundle.clone(),
+                )
+                .unwrap();
+                assert_eq!(restored.save_state().unwrap(), recorded[&tick].0, "{name}");
+                while restored.tick < start + END {
+                    step(&mut restored);
+                    let (save, snapshot, bytes) = &recorded[&restored.tick];
+                    let at = format!("{name}, saved at {tick}, tick {}", restored.tick);
+                    assert_eq!(&restored.save_state().unwrap(), save, "{at}");
+                    assert_eq!(&restored.snapshot().unwrap(), snapshot, "{at}");
+                    assert_eq!(&encoded(&restored), bytes, "{at}");
+                }
+            }
+        });
+    }
+
     /// Every encounter of the dungeon won, its monsters defeated.
     fn clear_every_encounter(game: &mut ArpgGame) {
         for monster in &mut game.monsters {
