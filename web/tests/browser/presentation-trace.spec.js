@@ -131,5 +131,6 @@ test("accessibility and quality preferences do not change the authoritative trac
     graphics: { shadows: false, pixelRatioLimit: 1 },
     accessibility: { motion: "full", reducedFlashes: false, textScale: 1.25 },
     camera: { zoom: 1 },
+    audio: { master: 1, effects: 1, ui: 1, muted: false },
   });
 });
