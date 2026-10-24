@@ -3,7 +3,7 @@
 
 import * as THREE from "three";
 import { presentedFacing } from "./character-layer.ts";
-import { CAMERA_FOV_DEGREES, CAMERA_OFFSET } from "./aim-input.js";
+import { CAMERA_FOV_DEGREES, cameraPose, focusPoint, poseCamera } from "./follow-camera.js";
 import { FULL_EFFECTS } from "./presentation-effects.js";
 
 // Monster head cues by published behaviour (#109). Body colours by behaviour, attack
@@ -16,20 +16,20 @@ const MONSTER_BEHAVIOR_CUES: Record<string, string> = {
   returning: "#9a9aa8",
 };
 
-function segmentIntersectsRect(startX, startZ, endX, endZ, minX, maxX, minZ, maxZ) {
+// Whether the segment start→end crosses the box [minimum, maximum] (per axis), ignoring
+// the few percent at either end so a box touching the camera or the target does not count.
+function segmentIntersectsBox(start, end, boxMinimum, boxMaximum) {
   let minimumT = 0;
   let maximumT = 1;
-  for (const [start, end, minimum, maximum] of [
-    [startX, endX, minX, maxX],
-    [startZ, endZ, minZ, maxZ],
-  ]) {
-    const delta = end - start;
+  for (let axis = 0; axis < 3; axis += 1) {
+    const [minimum, maximum] = [boxMinimum[axis], boxMaximum[axis]];
+    const delta = end[axis] - start[axis];
     if (Math.abs(delta) < 1e-9) {
-      if (start < minimum || start > maximum) return false;
+      if (start[axis] < minimum || start[axis] > maximum) return false;
       continue;
     }
-    const first = (minimum - start) / delta;
-    const second = (maximum - start) / delta;
+    const first = (minimum - start[axis]) / delta;
+    const second = (maximum - start[axis]) / delta;
     const enter = Math.min(first, second);
     const exit = Math.max(first, second);
     minimumT = Math.max(minimumT, enter);
@@ -72,23 +72,29 @@ function rampGeometry([sizeX, sizeY, sizeZ]) {
   };
 }
 
-function barrierOccludesFocus(collider, target, scale) {
-  if (!target || (collider.kind !== "wall" && collider.kind !== "door")) return false;
-  const centerX = collider.position[0] / scale;
-  const centerZ = collider.position[2] / scale;
-  const halfX = collider.halfExtents[0] / scale + 0.35;
-  const halfZ = collider.halfExtents[2] / scale + 0.35;
-  const cameraX = target[0] + 10;
-  const cameraZ = target[2] + 10;
-  return segmentIntersectsRect(
-    cameraX,
-    cameraZ,
-    target[0],
-    target[2],
-    centerX - halfX,
-    centerX + halfX,
-    centerZ - halfZ,
-    centerZ + halfZ,
+// Margin (m) around a barrier's footprint, so a body brushing past its edge stays visible.
+const OCCLUSION_MARGIN = 0.35;
+// Height (m) above the ground of the points kept visible: the upper body and its telegraphs.
+const READABLE_HEIGHT = 1.2;
+
+// Whether a wall or door blocks the actual camera's line of sight to any readable point
+// (the focused player, and monsters showing a strike telegraph). Visual only: the collider
+// itself is never changed.
+function barrierOccludes(collider, cameraPosition, readablePoints, scale) {
+  const center = collider.position.map((value) => value / scale);
+  const half = collider.halfExtents.map((value) => value / scale);
+  const minimum = [
+    center[0] - half[0] - OCCLUSION_MARGIN,
+    center[1] - half[1],
+    center[2] - half[2] - OCCLUSION_MARGIN,
+  ];
+  const maximum = [
+    center[0] + half[0] + OCCLUSION_MARGIN,
+    center[1] + half[1],
+    center[2] + half[2] + OCCLUSION_MARGIN,
+  ];
+  return readablePoints.some((point) =>
+    segmentIntersectsBox(cameraPosition, point, minimum, maximum),
   );
 }
 
@@ -146,12 +152,20 @@ export function buildFrame(
   height,
   focusPlayerAccent = "#d6b45f",
   effects = FULL_EFFECTS,
+  // The follow camera's drawn pose (follow-camera.js); centred on the focus when omitted.
+  pose = cameraPose(focusPoint(snapshot, focusPlayerId)),
 ) {
   const { palette } = effects;
   const scale = snapshot.worldUnitsPerMeter;
   const focus =
     snapshot.players.find((player) => player.id === focusPlayerId) ?? snapshot.players[0];
-  const target = focus ? [focus.position[0] / scale, 0, focus.position[2] / scale] : [0, 0, 0];
+  const readablePoints = [
+    ...(focus ? [focus] : []),
+    ...snapshot.monsters.filter(
+      (monster) =>
+        monster.alive && (monster.action?.phase === "windup" || monster.action?.phase === "active"),
+    ),
+  ].map((body) => [body.position[0] / scale, READABLE_HEIGHT, body.position[2] / scale]);
   const aspect = Math.max(1, width) / Math.max(1, height);
   const near = 0.1;
   const far = 100;
@@ -170,10 +184,7 @@ export function buildFrame(
     THREE.WebGPUCoordinateSystem,
     false,
   );
-  const camera = new THREE.PerspectiveCamera(CAMERA_FOV_DEGREES, aspect, near, far);
-  camera.position.set(target[0] + CAMERA_OFFSET[0], CAMERA_OFFSET[1], target[2] + CAMERA_OFFSET[2]);
-  camera.lookAt(target[0], 0, target[2]);
-  camera.updateMatrixWorld(true);
+  const camera = poseCamera(pose, aspect);
   const floor = dungeonFloor(snapshot, scale);
 
   const nodes = [
@@ -186,7 +197,7 @@ export function buildFrame(
     ...snapshot.staticColliders.map((collider) => {
       const fullSize = collider.halfExtents.map((value) => (value * 2) / scale);
       const isBarrier = collider.kind === "wall" || collider.kind === "door";
-      const lowered = isBarrier && barrierOccludesFocus(collider, target, scale);
+      const lowered = isBarrier && barrierOccludes(collider, pose.position, readablePoints, scale);
       const visualHeight = lowered ? Math.min(fullSize[1], 0.55) : fullSize[1];
       const translation = collider.position.map((value) => value / scale);
       if (isBarrier) translation[1] = visualHeight / 2;
