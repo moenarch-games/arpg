@@ -1,3 +1,5 @@
+import { DEFAULT_ZOOM, clampZoom } from "./follow-camera.js";
+
 export const SETUP_URL_KEY = "arpg-setup-service-url-v1";
 export const DEDICATED_URL_KEY = "arpg-dedicated-url-v1";
 export const GRAPHICS_KEY = "arpg-graphics-v1";
@@ -43,8 +45,8 @@ export function loadMouseAim(storage) {
   return readStoredValue(MOUSE_AIM_KEY, "on", storage) !== "off";
 }
 
-// Versioned local presentation preferences (#61): graphics and accessibility in one
-// document. Local browser state only; never part of a character save or the authority.
+// Versioned local presentation preferences (#61): graphics, accessibility and the follow
+// camera's zoom in one document. Local browser state only; never part of a character save or the authority.
 export const PRESENTATION_KEY = "arpg-presentation";
 export const PRESENTATION_VERSION = 2;
 export const MOTION_PREFERENCES = Object.freeze(["system", "reduced", "full"]);
@@ -54,6 +56,7 @@ const PIXEL_RATIO_LIMITS = [1, 1.5, 2];
 export const DEFAULT_PRESENTATION = Object.freeze({
   graphics: Object.freeze({ shadows: true, pixelRatioLimit: 2 }),
   accessibility: Object.freeze({ motion: "system", reducedFlashes: false, textScale: 1 }),
+  camera: Object.freeze({ zoom: DEFAULT_ZOOM }),
 });
 
 const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -63,6 +66,7 @@ const pick = (value, valid, fallback) => (valid ? value : fallback);
 export function normalizePresentation(value) {
   const graphics = isRecord(value?.graphics) ? value.graphics : {};
   const accessibility = isRecord(value?.accessibility) ? value.accessibility : {};
+  const camera = isRecord(value?.camera) ? value.camera : {};
   const defaults = DEFAULT_PRESENTATION;
   return {
     graphics: {
@@ -93,6 +97,10 @@ export function normalizePresentation(value) {
         TEXT_SCALES.includes(accessibility.textScale),
         defaults.accessibility.textScale,
       ),
+    },
+    // Out-of-range zoom clamps to the follow camera's bounds; a non-number is the default.
+    camera: {
+      zoom: typeof camera.zoom === "number" ? clampZoom(camera.zoom) : DEFAULT_ZOOM,
     },
   };
 }

@@ -21,9 +21,29 @@ function movementKeys(keyLabels) {
   return keys.every((key) => key.length === 1) ? keys.join("") : keys.join("/");
 }
 
+// The most urgent monster attack telegraphed at `playerId` (an active one before a
+// wind-up), so the HUD names the phase in text as well as the ring's colour and shape (#61).
+const THREAT_LABELS = { strike: "strike", burst: "burst", projectile: "shot" };
+export function incomingThreat(snapshot, playerId) {
+  let threat = null;
+  for (const monster of snapshot?.monsters ?? []) {
+    const action = monster.alive ? monster.action : null;
+    if (action?.targetPlayerId !== playerId || !THREAT_LABELS[action.delivery]) continue;
+    if (action.phase !== "windup" && action.phase !== "active") continue;
+    if (!threat || (action.phase === "active" && threat.phase !== "active"))
+      threat = { delivery: action.delivery, phase: action.phase };
+  }
+  return threat;
+}
+
+export function incomingThreatText(threat) {
+  return `Incoming ${THREAT_LABELS[threat.delivery]} · ${threat.phase === "active" ? "now" : "wind-up"}`;
+}
+
 export function PlayerHud({ store, playerId, status, interactKey = "E", keyLabels }) {
   const snapshot = useSnapshot(store);
   const player = focusedPlayer(snapshot, playerId);
+  const threat = player?.alive ? incomingThreat(snapshot, player.id) : null;
   const healthPercent = player?.maxHealth
     ? Math.max(0, Math.min(100, (player.health / player.maxHealth) * 100))
     : 0;
@@ -71,6 +91,11 @@ export function PlayerHud({ store, playerId, status, interactKey = "E", keyLabel
           {/* Announced once when the opportunity opens; the per-tick countdown is visual only. */}
           <span role="alert">Counter!</span>{" "}
           <span aria-hidden="true">· {player.counter.expiresAtTick - snapshot.tick}t</span>
+        </p>
+      )}
+      {threat && (
+        <p className="threat-status" data-phase={threat.phase}>
+          {incomingThreatText(threat)}
         </p>
       )}
       {player?.action && (
