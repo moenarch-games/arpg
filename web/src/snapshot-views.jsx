@@ -40,7 +40,22 @@ export function incomingThreatText(threat) {
   return `Incoming ${THREAT_LABELS[threat.delivery]} · ${threat.phase === "active" ? "now" : "wind-up"}`;
 }
 
-export function PlayerHud({ store, playerId, status, interactKey = "E", keyLabels }) {
+// Where a defeat returns the player (#66): the authority's checkpoint room. Credited XP,
+// gold and equipment stay; an encounter the whole party lost starts over.
+export function checkpointText(snapshot, roomId) {
+  const room = snapshot?.rooms.find((candidate) => candidate.id === roomId);
+  if (!room || room.kind === "start") return "You return to the entrance with full health.";
+  return "You return to the last room you cleared with full health.";
+}
+
+export function PlayerHud({
+  store,
+  playerId,
+  status,
+  interactKey = "E",
+  keyLabels,
+  onReturnToCheckpoint,
+}) {
   const snapshot = useSnapshot(store);
   const player = focusedPlayer(snapshot, playerId);
   const threat = player?.alive ? incomingThreat(snapshot, player.id) : null;
@@ -69,7 +84,17 @@ export function PlayerHud({ store, playerId, status, interactKey = "E", keyLabel
         </div>
       )}
       <p>{status}</p>
-      {player && !player.alive && <p className="defeated-status">Defeated</p>}
+      {player && !player.alive && (
+        <div className="defeat-panel" role="group" aria-label="Defeated">
+          <p className="defeated-status">Defeated</p>
+          <p>{checkpointText(snapshot, player.checkpointRoom)}</p>
+          {onReturnToCheckpoint && (
+            <button type="button" onClick={onReturnToCheckpoint}>
+              Return to checkpoint
+            </button>
+          )}
+        </div>
+      )}
       {player?.alive && interactionPromptText(player.interaction, interactKey) && (
         <p className="interaction-prompt">
           {interactionPromptText(player.interaction, interactKey)}

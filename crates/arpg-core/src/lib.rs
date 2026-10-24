@@ -113,7 +113,8 @@ pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// 21: poison (#64): a player's poison status; schema 20 saves are refused.
 /// 22: slow (#64): a monster's slow; schema 21 saves are refused.
 /// 23: a player action's phase length (#56); schema 22 saves are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 23;
+/// 24: a player's checkpoint room (#66); schema 23 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 24;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -125,7 +126,8 @@ pub const SAVE_STATE_SCHEMA_VERSION: u16 = 23;
 // 10: ranged spacing and monster projectiles on the shared arrow path (#108).
 // 11: shield monsters guard on the shared guard path (#92).
 // 12: jumping, gravity and grounded-only guard and counter (#59).
-pub const SAVE_STATE_RULES_VERSION: u16 = 12;
+// 13: checkpoints, return after defeat, party-wipe encounter reset and Leave (#66).
+pub const SAVE_STATE_RULES_VERSION: u16 = 13;
 // Velocities are world units per simulation tick. At 60 Hz and 100 world units per
 // meter, 7 units/tick is 4.2 m/s.
 const PLAYER_SPEED: i32 = 7;
@@ -478,6 +480,15 @@ pub enum ArpgCommand {
     /// leaving it without jumping, and not while an action is committed. Repeated presses
     /// only renew the window; a press never stacks a second jump.
     Jump,
+    /// Gives up the running encounter the player stands in (#66): an ordinary defeat,
+    /// exactly as if the encounter had defeated it. Refused outside an active encounter;
+    /// already defeated, it does nothing.
+    LeaveEncounter,
+    /// A defeated player's return to its checkpoint (#66): the last cleared room it stood
+    /// in, the start room until it has stood in another. It comes back there with full
+    /// health and no action or status, keeping progression, equipment and gold. Alive, or
+    /// with no free spawn spot anywhere, it does nothing.
+    ReturnToCheckpoint,
 }
 
 impl ArpgCommand {
@@ -1360,6 +1371,8 @@ pub struct PlayerSnapshot {
     pub region: RegionMembership,
     /// Poison from a pool (#64).
     pub poison: Option<PoisonStatus>,
+    /// The room a defeat returns it to (#66): the last cleared room it stood in.
+    pub checkpoint_room: RoomId,
 }
 
 /// A player body's height and support (#59), for presentation and animation: they place
@@ -1647,6 +1660,8 @@ pub struct PlayerSaveState {
     pub health: u16,
     pub experience: u32,
     pub gold: u32,
+    /// The last cleared room it stood in, where a defeat returns it (#66).
+    pub checkpoint_room: RoomId,
     /// Datagram-lane watermark.
     pub last_sequence: u32,
     /// Reliable-lane watermark. Saves written before the reliable lane omit it and load
@@ -1983,6 +1998,8 @@ struct PlayerState {
     health: u16,
     experience: u32,
     gold: u32,
+    /// The last cleared room it stood in, where a defeat returns it (#66).
+    checkpoint_room: RoomId,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2337,6 +2354,9 @@ pub struct ArpgGame {
     doors: Vec<DoorSnapshot>,
     player_spawns: [Vec3i; MAX_PLAYERS],
     monsters: Vec<MonsterState>,
+    /// Every generated monster as the dungeon spawned it: a party wipe restores its room's
+    /// encounter from here (#66). Derived from the seed, never saved.
+    encounter_roster: Vec<MonsterState>,
     ground_loot: Vec<GroundLootState>,
     next_ground_loot_id: GroundLootId,
     static_colliders: Vec<StaticColliderSnapshot>,
@@ -2470,6 +2490,7 @@ impl ArpgGame {
             rooms,
             doors,
             player_spawns,
+            encounter_roster: monsters.clone(),
             monsters,
             ground_loot: Vec::new(),
             next_ground_loot_id: GROUND_LOOT_ID_BASE,
@@ -2759,6 +2780,7 @@ impl ArpgGame {
                     health: state.health,
                     experience: state.experience,
                     gold: state.gold,
+                    checkpoint_room: state.checkpoint_room,
                     last_sequence: self.last_sequences.get(&id).copied().unwrap_or_default(),
                     last_reliable_sequence: self
                         .last_reliable_sequences
@@ -3336,6 +3358,12 @@ impl ArpgGame {
         }
 
         for player in save.players {
+            // A checkpoint is a cleared room, and a cleared room never runs again.
+            if !game.room_cleared(player.checkpoint_room) {
+                return Err(GameError::new(
+                    "saved player checkpoint is not a cleared room",
+                ));
+            }
             game.add_player(player.id)?;
             let position = Vector::from_array(player.position);
             game.physics
@@ -3379,6 +3407,7 @@ impl ArpgGame {
                 health: player.health,
                 experience: player.experience,
                 gold: player.gold,
+                checkpoint_room: player.checkpoint_room,
             };
             game.last_sequences.insert(player.id, player.last_sequence);
             game.last_reliable_sequences
@@ -5892,14 +5921,12 @@ impl ArpgGame {
     }
 
     fn reconcile_encounters(&mut self) -> Result<(), GameError> {
+        // Only the living enter a room: a defeated body never starts an encounter.
         let occupied_rooms = self
             .players
-            .keys()
-            .filter_map(|&player_id| {
-                self.players
-                    .get(&player_id)
-                    .and_then(|state| self.room_at_position(state.position))
-            })
+            .values()
+            .filter(|state| state.health > 0)
+            .filter_map(|state| self.room_at_position(state.position))
             .collect::<BTreeSet<_>>();
         let rooms_with_living_monsters = self
             .monsters
@@ -5944,7 +5971,175 @@ impl ArpgGame {
                 _ => {}
             }
         }
+
+        // A party wipe (#66): a running encounter whose players inside are all defeated resets
+        // to its untouched start, so nothing is lost but what it had not yet paid out. (A
+        // fight its last player disconnected from waits for the reconnect policy, #71.)
+        let wiped = self
+            .rooms
+            .iter()
+            .filter(|room| room.encounter_state == RoomEncounterState::Active)
+            .filter(|room| {
+                let inside = |state: &&PlayerState| room.contains_xz(state.position);
+                let mut players = self.players.values().filter(inside);
+                players.clone().any(|state| state.health == 0)
+                    && players.all(|state| state.health == 0)
+            })
+            .map(|room| room.id)
+            .collect::<Vec<_>>();
+        for room_id in wiped {
+            self.reset_encounter(room_id);
+        }
+
+        // A living player standing in a cleared room makes it its checkpoint.
+        let checkpoints = self
+            .players
+            .iter()
+            .filter(|(_, state)| state.health > 0)
+            .filter_map(|(&player_id, state)| {
+                let room_id = self.room_at_position(state.position)?;
+                self.room_cleared(room_id).then_some((player_id, room_id))
+            })
+            .collect::<Vec<_>>();
+        for (player_id, room_id) in checkpoints {
+            self.players
+                .get_mut(&player_id)
+                .expect("checkpoint player exists")
+                .checkpoint_room = room_id;
+        }
         self.sync_door_locks()
+    }
+
+    /// Resets a wiped encounter (#66): every monster of the room as the dungeon spawned it
+    /// (one placed there otherwise keeps its place, at full health), the room dormant again and
+    /// the ground loot nobody picked up there gone. Credited experience and gold stay.
+    fn reset_encounter(&mut self, room_id: RoomId) {
+        let guard_max_points = self.content.guard.max_points;
+        for monster in self
+            .monsters
+            .iter_mut()
+            .filter(|monster| monster.room_id == room_id)
+        {
+            // A dormant encounter's monsters have no body: drop it now, so the restored
+            // position is never seen as motion.
+            let body_id = Self::monster_body_id(monster.id);
+            if self.physics.has_character(body_id) {
+                self.physics.remove_character(body_id);
+            }
+            *monster = self
+                .encounter_roster
+                .iter()
+                .find(|fresh| fresh.id == monster.id && fresh.room_id == room_id)
+                .copied()
+                .unwrap_or_else(|| {
+                    MonsterState::new(
+                        monster.id,
+                        monster.definition,
+                        room_id,
+                        Vec3i::rounded(monster.position),
+                        guard_max_points,
+                    )
+                });
+        }
+        let rooms = &self.rooms;
+        self.ground_loot.retain(|loot| {
+            !rooms
+                .iter()
+                .any(|room| room.id == room_id && room.contains_xz(loot.position))
+        });
+        if let Some(room) = self.rooms.iter_mut().find(|room| room.id == room_id) {
+            room.encounter_state = RoomEncounterState::Dormant;
+        }
+    }
+
+    /// The start room: every dungeon has exactly one.
+    fn start_room_id(&self) -> RoomId {
+        self.rooms
+            .iter()
+            .find(|room| room.kind == RoomKind::Start)
+            .map(|room| room.id)
+            .expect("every dungeon has a start room")
+    }
+
+    /// Leave encounter (#66): the ordinary defeat, from inside a running encounter only.
+    fn leave_encounter(&mut self, player_id: PlayerId) -> Result<(), GameError> {
+        let state = self.players[&player_id];
+        if state.health == 0 {
+            return Ok(());
+        }
+        let in_encounter = self.rooms.iter().any(|room| {
+            room.encounter_state == RoomEncounterState::Active && room.contains_xz(state.position)
+        });
+        if !in_encounter {
+            return Err(GameError::new("no running encounter to leave"));
+        }
+        let state = self
+            .players
+            .get_mut(&player_id)
+            .expect("player existence checked");
+        state.health = 0;
+        state.action = None;
+        state.guard.stance = None;
+        state.draw_ticks = None;
+        state.counter = None;
+        state.poison = None;
+        state.jump_buffer_ticks_remaining = 0;
+        Ok(())
+    }
+
+    /// Return to checkpoint (#66): a defeated player comes back on the first free spawn spot
+    /// of its checkpoint room, else of the start room.
+    fn return_to_checkpoint(&mut self, player_id: PlayerId) -> Result<(), GameError> {
+        let state = self.players[&player_id];
+        if state.health > 0 {
+            return Ok(());
+        }
+        let Some(spawn) = self.checkpoint_spawn(player_id, state.checkpoint_room) else {
+            return Ok(());
+        };
+        let level = Self::level_for_experience(&self.content, state.experience);
+        let restored = PlayerState {
+            position: spawn,
+            velocity: Vector::ZERO,
+            grounded: true,
+            coyote_ticks_remaining: 0,
+            jump_buffer_ticks_remaining: 0,
+            region: RegionMembership::Region {
+                id: self.topology.base(),
+            },
+            ground_contact: true,
+            poison: None,
+            last_supported: spawn,
+            action: None,
+            hurt_ticks_remaining: 0,
+            guard: GuardState::ready(self.tuning.guard.max_points),
+            counter: None,
+            draw_ticks: None,
+            locked_monster_id: None,
+            health: Self::max_health_for_level(&self.content, level),
+            ..state
+        };
+        self.players.insert(player_id, restored);
+        self.physics
+            .place_character(Self::player_body_id(player_id), spawn)
+    }
+
+    fn checkpoint_spawn(&self, player_id: PlayerId, room_id: RoomId) -> Option<Vector> {
+        let start = self.start_room_id();
+        let half = PLAYER_HALF_EXTENTS;
+        [room_id, start]
+            .into_iter()
+            .filter_map(|id| self.rooms.iter().find(|room| room.id == id))
+            .flat_map(generated_player_spawns)
+            .map(vector)
+            .find(|&spawn| {
+                self.character_fits(spawn.to_array(), half)
+                    && !self.players.iter().any(|(&other, state)| {
+                        other != player_id
+                            && (state.position.x - spawn.x).abs() < (2 * half.x) as f32
+                            && (state.position.z - spawn.z).abs() < (2 * half.z) as f32
+                    })
+            })
     }
 
     /// The tick's physics pass: Rapier's character controller moves every player by its
@@ -6300,6 +6495,7 @@ impl AuthoritativeGame for ArpgGame {
                 health: self.content.progression.base_max_health,
                 experience: 0,
                 gold: 0,
+                checkpoint_room: self.start_room_id(),
             },
         );
         self.last_sequences.insert(player_id, 0);
@@ -6483,6 +6679,8 @@ impl AuthoritativeGame for ArpgGame {
                     state.jump_buffer_ticks_remaining = buffer_ticks;
                 }
             }
+            ArpgCommand::LeaveEncounter => self.leave_encounter(command.player_id)?,
+            ArpgCommand::ReturnToCheckpoint => self.return_to_checkpoint(command.player_id)?,
         }
         count(Counter::CommandBookkeeping, 1);
         self.lane_sequences_mut(lane)
@@ -6597,6 +6795,7 @@ impl AuthoritativeGame for ArpgGame {
                     },
                     region: state.region,
                     poison: state.poison,
+                    checkpoint_room: state.checkpoint_room,
                 })
             })
             .collect::<Result<Vec<_>, GameError>>()?;
@@ -7482,6 +7681,7 @@ mod tests {
             health: BASE_MAX_HEALTH,
             experience: 0,
             gold: 0,
+            checkpoint_room: 0,
         }
     }
 
@@ -12448,7 +12648,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 23"
+            "unsupported ARPG save schema version 12; expected 24"
         );
     }
 
@@ -12463,7 +12663,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 13; expected 23"
+            "unsupported ARPG save schema version 13; expected 24"
         );
     }
 
@@ -12945,7 +13145,9 @@ mod tests {
         game.advance_tick().unwrap();
         assert_eq!(published(&game, 1), (MonsterBehavior::Pursuing, Some(2)));
 
-        // Its new target disconnects mid-chase and rejoins during the search.
+        // Its new target disconnects mid-chase and rejoins during the search. The defeated
+        // first player leaves too: left alone in the fight, its body would wipe it (#66).
+        assert!(game.remove_player(1));
         assert!(game.remove_player(2));
         game.advance_tick().unwrap();
         assert_eq!(published(&game, 1), (MonsterBehavior::Searching, None));
@@ -15497,5 +15699,188 @@ mod tests {
             }
             assert!(target(&game).slow.is_none());
         });
+    }
+
+    /// Player 1 in the middle of room 2's running encounter, its generated group intact; a
+    /// second player added later joins beside it.
+    fn recovery_arena() -> ArpgGame {
+        let mut game = ArpgGame::new_with_seed(42).unwrap();
+        let (x, z) = game
+            .rooms
+            .iter()
+            .find(|room| room.id == STRIKE_ROOM)
+            .unwrap()
+            .center();
+        game.player_spawns[0] = Vec3i::new(x, PLAYER_Y, z);
+        game.player_spawns[1] = Vec3i::new(x, PLAYER_Y, z + 120);
+        game.add_player(1).unwrap();
+        game.reconcile_encounters().unwrap();
+        assert_eq!(room_state(&game, STRIKE_ROOM), RoomEncounterState::Active);
+        game
+    }
+
+    fn send(game: &mut ArpgGame, id: PlayerId, command: ArpgCommand) -> Result<(), GameError> {
+        let sequence = next_sequence(game, id);
+        game.apply_command(PlayerCommand::new(id, sequence, command).unwrap())
+    }
+
+    fn room_doors_locked(game: &ArpgGame, room_id: RoomId) -> Vec<bool> {
+        game.doors
+            .iter()
+            .filter(|door| door.room_a == room_id || door.room_b == room_id)
+            .map(|door| door.locked)
+            .collect()
+    }
+
+    fn player_room(game: &ArpgGame, id: PlayerId) -> Option<RoomId> {
+        game.room_at_position(game.players[&id].position)
+    }
+
+    #[test]
+    fn a_solo_defeat_wipes_the_encounter_and_returning_keeps_progression() {
+        let mut game = recovery_arena();
+        let start = game.start_room_id();
+        let fresh = game
+            .encounter_roster
+            .iter()
+            .filter(|monster| monster.room_id == STRIKE_ROOM)
+            .copied()
+            .collect::<Vec<_>>();
+        assert!(!fresh.is_empty());
+        // Progress inside the fight: a wounded monster, a drop nobody picked up, and credited
+        // XP and gold.
+        let wounded = game
+            .monsters
+            .iter_mut()
+            .find(|monster| monster.room_id == STRIKE_ROOM)
+            .unwrap();
+        wounded.health = 1;
+        let drop = wounded.position;
+        game.spawn_ground_loot(drop).unwrap();
+        let player = game.players.get_mut(&1).unwrap();
+        player.experience = 40;
+        player.gold = 9;
+        game.advance_tick().unwrap();
+        assert!(
+            room_doors_locked(&game, STRIKE_ROOM)
+                .iter()
+                .all(|&locked| locked)
+        );
+
+        send(&mut game, 1, ArpgCommand::LeaveEncounter).unwrap();
+        assert_eq!(game.players[&1].health, 0, "leaving is an ordinary defeat");
+        // Repeating it changes nothing.
+        send(&mut game, 1, ArpgCommand::LeaveEncounter).unwrap();
+        game.advance_tick().unwrap();
+
+        // The wipe: the encounter as the dungeon spawned it, doors open, the drop gone.
+        assert_eq!(room_state(&game, STRIKE_ROOM), RoomEncounterState::Dormant);
+        assert!(
+            room_doors_locked(&game, STRIKE_ROOM)
+                .iter()
+                .all(|&locked| !locked)
+        );
+        let reset = game
+            .monsters
+            .iter()
+            .filter(|monster| monster.room_id == STRIKE_ROOM)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(monster_layout(&reset), monster_layout(&fresh));
+        assert!(
+            reset
+                .iter()
+                .all(|monster| monster.health == monster.definition.health)
+        );
+        assert!(game.ground_loot.is_empty());
+        // A defeated body never restarts the fight, and a save of the wiped state loads.
+        game.advance_tick().unwrap();
+        assert_eq!(room_state(&game, STRIKE_ROOM), RoomEncounterState::Dormant);
+        ArpgGame::from_save_state(game.save_state().unwrap()).unwrap();
+        let snapshot = game.snapshot().unwrap();
+        assert!(!snapshot.players[0].alive);
+        assert_eq!(snapshot.players[0].checkpoint_room, start);
+
+        send(&mut game, 1, ArpgCommand::ReturnToCheckpoint).unwrap();
+        let back = game.snapshot().unwrap().players[0].clone();
+        assert!(back.alive);
+        assert_eq!(back.health, back.max_health);
+        assert_eq!((back.experience, back.gold), (40, 9));
+        assert_eq!(player_room(&game, 1), Some(start));
+        // Alive, returning again does nothing; there is no encounter to leave here.
+        send(&mut game, 1, ArpgCommand::ReturnToCheckpoint).unwrap();
+        assert_eq!(game.snapshot().unwrap().players[0].position, back.position);
+        assert!(send(&mut game, 1, ArpgCommand::LeaveEncounter).is_err());
+        assert!(game.players[&1].health > 0);
+    }
+
+    #[test]
+    fn a_downed_partner_returns_outside_the_fight_and_the_last_defeat_wipes_it() {
+        let mut game = recovery_arena();
+        game.add_player(2).unwrap();
+        send(&mut game, 1, ArpgCommand::LeaveEncounter).unwrap();
+        game.advance_tick().unwrap();
+        assert_eq!(
+            room_state(&game, STRIKE_ROOM),
+            RoomEncounterState::Active,
+            "a living partner keeps the fight running"
+        );
+
+        // Back at the checkpoint, the locked doors keep it out of the unfinished fight.
+        send(&mut game, 1, ArpgCommand::ReturnToCheckpoint).unwrap();
+        assert_eq!(player_room(&game, 1), Some(game.start_room_id()));
+        game.advance_tick().unwrap();
+        assert_eq!(room_state(&game, STRIKE_ROOM), RoomEncounterState::Active);
+        assert!(
+            room_doors_locked(&game, STRIKE_ROOM)
+                .iter()
+                .all(|&locked| locked)
+        );
+
+        // The partner falls too: no living player is left in the fight.
+        game.players.get_mut(&2).unwrap().health = 0;
+        game.advance_tick().unwrap();
+        assert_eq!(room_state(&game, STRIKE_ROOM), RoomEncounterState::Dormant);
+        assert!(game.players[&1].health > 0);
+    }
+
+    #[test]
+    fn a_cleared_room_stood_in_becomes_the_checkpoint_and_saves_keep_it() {
+        let mut game = recovery_arena();
+        for monster in game
+            .monsters
+            .iter_mut()
+            .filter(|monster| monster.room_id == STRIKE_ROOM)
+        {
+            monster.health = 0;
+        }
+        game.advance_tick().unwrap();
+        assert_eq!(room_state(&game, STRIKE_ROOM), RoomEncounterState::Cleared);
+        assert_eq!(
+            game.snapshot().unwrap().players[0].checkpoint_room,
+            STRIKE_ROOM
+        );
+
+        let save = game.save_state().unwrap();
+        assert_eq!(save.players[0].checkpoint_room, STRIKE_ROOM);
+        let mut restored = ArpgGame::from_save_state(save.clone()).unwrap();
+        restored.players.get_mut(&1).unwrap().health = 0;
+        send(&mut restored, 1, ArpgCommand::ReturnToCheckpoint).unwrap();
+        assert!(restored.players[&1].health > 0);
+        assert_eq!(player_room(&restored, 1), Some(STRIKE_ROOM));
+
+        // A checkpoint is always a cleared room.
+        let dormant = game
+            .rooms
+            .iter()
+            .find(|room| room.encounter_state == RoomEncounterState::Dormant)
+            .unwrap()
+            .id;
+        let mut invalid = save;
+        invalid.players[0].checkpoint_room = dormant;
+        assert_eq!(
+            ArpgGame::from_save_state(invalid).unwrap_err().message(),
+            "saved player checkpoint is not a cleared room"
+        );
     }
 }

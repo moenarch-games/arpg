@@ -1448,6 +1448,7 @@ function App() {
               status={shownStatus}
               interactKey={interactKey}
               keyLabels={keyLabels}
+              onReturnToCheckpoint={() => runtime.returnToCheckpoint()}
             />
 
             {ready && !overlayOpen && (
