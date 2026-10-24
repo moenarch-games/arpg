@@ -99,7 +99,26 @@ export interface FramePresenterOptions<Canvas extends CanvasLike, Snapshot, Fram
   pixelRatio?: () => number;
   background?: string;
   characters?: CharacterLayerLike<Snapshot>;
+  // Combat VFX (#67 67b): cosmetic renderer effects and a camera impulse from presentation
+  // cues. While an effect plays the presenter keeps drawing frames.
+  vfx?: CombatVfxLike<Snapshot>;
+  // The display clock in milliseconds; `performance.now` when omitted.
+  now?: () => number;
   view: PresenterView;
+}
+
+export interface CombatVfxLike<Snapshot> {
+  frame(input: {
+    snapshot: Snapshot;
+    playerId: number | null;
+    time: number;
+    enabled: boolean;
+    subtle: boolean;
+  }): {
+    effects: unknown;
+    active: boolean;
+    impulse: number[] | null;
+  };
 }
 
 export const DEFAULT_BACKGROUND = "#11100f";
@@ -141,22 +160,41 @@ export function createFramePresenter<
     if (rect.width <= 0 || rect.height <= 0) return;
     const settled =
       options.camera?.update(snapshot, view.playerId, time, view.cameraSmoothing ?? true) ?? true;
+    const effects = view.effects ?? FULL_EFFECTS;
+    const vfx = options.vfx?.frame({
+      snapshot,
+      playerId: view.playerId,
+      time: (time ?? options.now?.() ?? performance.now()) / 1000,
+      enabled: effects.combatEffects,
+      // Reduced flashes draw the lighter (`subtle`) combat effects.
+      subtle: effects.reducedFlashes,
+    });
+    let pose = options.camera?.pose();
+    // The impulse moves only the drawn camera: aim and the follow camera never see it.
+    if (pose && vfx?.impulse && effects.cameraImpulse) {
+      const offset = vfx.impulse;
+      pose = {
+        position: pose.position.map((value, axis) => value + offset[axis]),
+        target: pose.target.map((value, axis) => value + offset[axis]),
+      };
+    }
     const frame = options.buildFrame(
       snapshot,
       view.playerId,
       rect.width,
       rect.height,
       view.accent,
-      view.effects ?? FULL_EFFECTS,
-      options.camera?.pose(),
+      effects,
+      pose,
     );
+    if (vfx) (frame as Frame & { effects?: unknown }).effects = vfx.effects;
     if (options.characters && renderer.renderImportedRoots) {
       const { roots, changed } = options.characters.sync(snapshot);
       if (changed || !rootsSubmitted) renderer.renderImportedRoots({ camera: frame.camera, roots });
       rootsSubmitted = true;
     }
     renderer.render(frame);
-    if (!settled) scheduleDraw();
+    if (!settled || vfx?.active) scheduleDraw();
   };
 
   // Coalesces every request until the next animation frame into one draw.

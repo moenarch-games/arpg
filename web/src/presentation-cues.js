@@ -133,6 +133,16 @@ export function createPresentationCues(options = {}) {
       const was = beforePlayers.get(player.id);
       const action = player.action;
       if (!action || action.phase === "windup") struck.set(player.id, false);
+      // The swing itself (its active window opening), for weapon trails.
+      if (action && MELEE_KINDS.has(action.kind) && action.phase === "active")
+        add({
+          key: `swing:${player.id}:${action.kind}:${phaseStartTick(tick, action)}`,
+          kind: "swing",
+          playerId: player.id,
+          action: action.kind,
+          position: player.position,
+          direction: action.aim ?? action.facing,
+        });
       // A melee swing that reached recovery without resolving against anything: a whiff,
       // distinct from a block or an obstruction, and never given a damage number.
       if (
@@ -221,6 +231,15 @@ export function createPresentationCues(options = {}) {
           kind: "encounter",
           roomId: room.id,
           state: room.encounterState,
+        });
+      // A phased encounter moving on (#66); a wipe's return to the first phase is the reset.
+      if (was && (room.phase ?? 0) > (was.phase ?? 0))
+        add({
+          key: `phase:${room.id}:${room.phase}:${tick}`,
+          kind: "phase",
+          roomId: room.id,
+          phase: room.phase,
+          phaseCount: room.phaseCount ?? 0,
         });
     }
 

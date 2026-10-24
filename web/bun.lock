@@ -5,8 +5,8 @@
     "": {
       "name": "arpg-web",
       "dependencies": {
-        "@moritzbrantner/game-audio": "github:moritzbrantner/game-audio#c16f8894c0a1876e2bb7db2b767b83a231c8d597",
-        "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#d8130b38b74d58325d917c426d1b7b91fcda4b4d",
+        "@moritzbrantner/game-audio": "github:moritzbrantner/game-audio#396afc6b92aed549e2dd0841ec9d499d29de133d",
+        "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#231a70c9e8a4cc6575117d734507eaf81371f423",
         "react": "19.3.1",
         "react-dom": "19.3.1",
         "three": "0.186.1",
@@ -20,9 +20,9 @@
     },
   },
   "packages": {
-    "@moritzbrantner/game-audio": ["@moritzbrantner/game-audio@github:moritzbrantner/game-audio#c16f889", {}, "moritzbrantner-game-audio-c16f889", "sha512-NiAZZI1G+ybMys6XoOfR3f0EwiWTh6CMKftIBKflT8gjHrwp+7Rm6/u8RX0hKz2o3icGMe6LstRJnVSIy3KcnQ=="],
+    "@moritzbrantner/game-audio": ["@moritzbrantner/game-audio@github:moritzbrantner/game-audio#396afc6", {}, "moritzbrantner-game-audio-396afc6", "sha512-NA4Tc+wH+VFykpQWLwF9yBe3lVklo5PD7l0dhIQ0C7tQhJarHJNcwBXY8AChEWJqfZD2B63a8wQnxnlhe6C+Gw=="],
 
-    "@moritzbrantner/three-d-renderer": ["@moritzbrantner/three-d-renderer@github:moritzbrantner/3d-lab#d8130b3", { "dependencies": { "three": "0.186.1" } }, "moritzbrantner-3d-lab-d8130b3", "sha512-DWRS+0Fj6AgsV/0nK5LqpnBrM4+JWBwjlbzTZimYz3W+zRKEhvcy6jWiWSyaGqIF4P7fk2nv+epqDWpImkZk6w=="],
+    "@moritzbrantner/three-d-renderer": ["@moritzbrantner/three-d-renderer@github:moritzbrantner/3d-lab#231a70c", { "dependencies": { "three": "0.186.1" } }, "moritzbrantner-3d-lab-231a70c", "sha512-H0mcQc4g35LrPBzApmFpyM4P6/HzzYUrPDhdAmjxfYj3xbV63g7g2hq5SyLzXxBVyww8CwRkygyEt1fDykFUMA=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.152.0", "", {}, "sha512-oM/5rLBm2tPkg0iBgkH/FOeR3PCDpY19GTgAZjMFM8h9WI9VW7cLgzp6nwtarYKmovavIQZ+Fe/RKX/8C8O/Rw=="],
 

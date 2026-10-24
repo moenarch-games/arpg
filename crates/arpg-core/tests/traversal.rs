@@ -61,6 +61,14 @@ impl Session {
         }
         panic!("the player never landed");
     }
+
+    /// Onto the platform and on east, past the ramp below its south face's west part.
+    fn onto_the_ledge(&mut self) {
+        self.jump_east(7);
+        for _ in 0..6 {
+            self.tick();
+        }
+    }
 }
 
 #[test]
@@ -103,7 +111,7 @@ fn a_jump_lands_on_the_platform_top_and_settles_in_its_region() {
 #[test]
 fn walking_off_the_ledge_drops_back_to_the_floor_region() {
     let mut session = Session::new();
-    session.jump_east(7);
+    session.onto_the_ledge();
     // South, off the platform's side (the bridge adjoins its far edge).
     session.send(ArpgCommand::SetMovement { x: 0, z: 1 });
     let mut left_the_ledge = false;
@@ -149,7 +157,7 @@ fn walking_into_the_platform_without_a_jump_is_blocked_by_its_side() {
 fn saves_on_the_platform_and_during_the_drop_continue_exactly() {
     for save_after in [0_u32, 6] {
         let mut session = Session::new();
-        session.jump_east(7);
+        session.onto_the_ledge();
         session.send(ArpgCommand::SetMovement { x: 0, z: 1 });
         // On the top, then (with `save_after` 6 more ticks of walking) maybe in the air.
         for _ in 0..(save_after * 4) {
@@ -328,8 +336,8 @@ fn the_floor_path_runs_under_the_bridge_in_the_floor_region() {
         .filter(|collider| collider.kind == StaticColliderKind::Platform)
         .max_by_key(|collider| collider.position[1])
         .unwrap();
-    // South past the platform, east to the bridge's middle, then north beneath it.
-    for (x, z, ticks) in [(0, 1, 24), (1, 0, 74), (0, -1, 24)] {
+    // South past the ramp's foot, east to the bridge's middle, then north beneath it.
+    for (x, z, ticks) in [(0, 1, 46), (1, 0, 74), (0, -1, 46)] {
         session.send(ArpgCommand::SetMovement { x, z });
         for _ in 0..ticks {
             session.tick();
@@ -451,6 +459,102 @@ fn a_save_on_a_step_continues_exactly() {
     };
     session.send(ArpgCommand::SetMovement { x: 0, z: 1 });
     restored.send(ArpgCommand::SetMovement { x: 0, z: 1 });
+    for tick in 0..30 {
+        assert_eq!(restored.tick(), session.tick(), "tick {tick}");
+    }
+}
+
+impl Session {
+    /// South past the ramp's foot, east to its line, then north: the moves to the ramp.
+    fn walk_to_the_ramp(&mut self) {
+        for (x, z, ticks) in [(0, 1, 46), (1, 0, 29)] {
+            self.send(ArpgCommand::SetMovement { x, z });
+            for _ in 0..ticks {
+                self.tick();
+            }
+        }
+        self.send(ArpgCommand::SetMovement { x: 0, z: -1 });
+    }
+}
+
+#[test]
+fn a_walking_player_follows_the_ramp_onto_the_platform_and_back_down() {
+    let mut session = Session::new();
+    let ramp = session
+        .game
+        .snapshot()
+        .unwrap()
+        .static_colliders
+        .into_iter()
+        .find(|collider| collider.kind == StaticColliderKind::Ramp)
+        .expect("the scenario has a ramp");
+    assert_eq!(ramp.position[1] + ramp.half_extents[1], PLATFORM_TOP);
+    session.walk_to_the_ramp();
+    let climb = (0..40).map(|_| session.tick()).collect::<Vec<_>>();
+    let heights = climb
+        .iter()
+        .map(|player| player.motion.feet_y)
+        .collect::<Vec<_>>();
+    // A continuous slope: grounded the whole way, rising a few units per tick, never jumping
+    // and never stepping (cresting the top may overshoot it by a unit).
+    assert!(
+        climb
+            .iter()
+            .all(|player| player.motion.grounded && player.motion.vertical_velocity <= 0),
+        "{climb:?}"
+    );
+    assert!(
+        heights
+            .windows(2)
+            .all(|pair| (-1..=5).contains(&(pair[1] - pair[0]))),
+        "{heights:?}"
+    );
+    assert!(
+        heights
+            .iter()
+            .filter(|feet| (10..50).contains(*feet))
+            .count()
+            >= 15,
+        "{heights:?}"
+    );
+    let top = climb.last().unwrap();
+    assert_eq!(top.motion.feet_y, PLATFORM_TOP);
+    assert_eq!(top.region, PLATFORM);
+    // On the slope it kept the floor's membership: no transit, no undeclared crossing.
+    assert!(
+        climb
+            .iter()
+            .filter(|player| player.motion.feet_y < PLATFORM_TOP - 6)
+            .all(|player| player.region == FLOOR),
+        "{climb:?}"
+    );
+    // And back down the same way, grounded, to the floor's region.
+    session.send(ArpgCommand::SetMovement { x: 0, z: 1 });
+    let descent = (0..40).map(|_| session.tick()).collect::<Vec<_>>();
+    assert!(
+        descent.iter().all(|player| player.motion.grounded),
+        "{descent:?}"
+    );
+    let bottom = descent.last().unwrap();
+    assert_eq!(bottom.motion.feet_y, 0);
+    assert_eq!(bottom.region, FLOOR);
+}
+
+#[test]
+fn a_save_on_the_ramp_continues_exactly() {
+    let mut session = Session::new();
+    session.walk_to_the_ramp();
+    for _ in 0..12 {
+        session.tick();
+    }
+    let player = session.player();
+    assert!(player.motion.grounded);
+    assert!((10..=50).contains(&player.motion.feet_y), "{player:?}");
+    let save = session.game.save_state().unwrap();
+    let mut restored = Session {
+        game: ArpgGame::from_save_state(save).unwrap(),
+        sequence: session.sequence,
+    };
     for tick in 0..30 {
         assert_eq!(restored.tick(), session.tick(), "tick {tick}");
     }

@@ -1,0 +1,215 @@
+{
+  "effects": [
+    {
+      "atlas": {
+        "alpha": "straight",
+        "cell": 64,
+        "colorSpace": "srgb",
+        "columns": 4,
+        "filter": "linear",
+        "frameCount": 16,
+        "height": 256,
+        "rowOrder": "top-first",
+        "rows": 4,
+        "transparentRgb": [226, 112, 34],
+        "width": 256
+      },
+      "description": "warm radial embers: an amber flash whose six orange streaks fly outward, shorten and fade by the last frame",
+      "key": "spark.flipbook",
+      "png": {
+        "byteLength": 9326,
+        "sha256": "f5298db40ac0d7eb965e6a33964efce0dd97b34da953d787fedff94cb40a7a69"
+      },
+      "presets": {
+        "standard": {
+          "count": 10,
+          "direction": [0, 1, 0],
+          "emitDuration": 0,
+          "endScale": 0.4,
+          "fadeOut": false,
+          "gravity": [0, -6, 0],
+          "lifetime": 0.28,
+          "speed": [1.6, 3],
+          "spread": 1.1
+        },
+        "subtle": {
+          "count": 5,
+          "direction": [0, 1, 0],
+          "emitDuration": 0,
+          "endScale": 0.4,
+          "fadeOut": false,
+          "gravity": [0, -6, 0],
+          "lifetime": 0.24,
+          "speed": [1.4, 2.4],
+          "spread": 1
+        }
+      },
+      "role": "spark",
+      "scale": 0.16,
+      "variant": "arpg"
+    },
+    {
+      "atlas": {
+        "alpha": "straight",
+        "cell": 64,
+        "colorSpace": "srgb",
+        "columns": 4,
+        "filter": "linear",
+        "frameCount": 16,
+        "height": 256,
+        "rowOrder": "top-first",
+        "rows": 4,
+        "transparentRgb": [92, 140, 204],
+        "width": 256
+      },
+      "description": "a cool steel-blue four-point glint with shorter diagonal points and four chips, which turns slightly, shrinks and fades",
+      "key": "block-spark.flipbook",
+      "png": {
+        "byteLength": 11742,
+        "sha256": "3ab710b7d3a4931fd23b8c96dcd16533a69a1af9f9d0973fa3c2fda5da1fe6ea"
+      },
+      "presets": {
+        "heavy": {
+          "count": 18,
+          "direction": [0, 1, 0],
+          "emitDuration": 0,
+          "endScale": 0.5,
+          "fadeOut": false,
+          "gravity": [0, -5, 0],
+          "lifetime": 0.45,
+          "speed": [1.6, 3.4],
+          "spread": 1.4
+        },
+        "standard": {
+          "count": 8,
+          "direction": [0, 1, 0],
+          "emitDuration": 0,
+          "endScale": 0.5,
+          "fadeOut": false,
+          "gravity": [0, -4, 0],
+          "lifetime": 0.3,
+          "speed": [1.2, 2.4],
+          "spread": 0.9
+        },
+        "subtle": {
+          "count": 4,
+          "direction": [0, 1, 0],
+          "emitDuration": 0,
+          "endScale": 0.5,
+          "fadeOut": false,
+          "gravity": [0, -4, 0],
+          "lifetime": 0.26,
+          "speed": [1, 2],
+          "spread": 0.8
+        }
+      },
+      "role": "block-spark",
+      "scale": 0.22,
+      "variant": "arpg"
+    },
+    {
+      "atlas": {
+        "alpha": "straight",
+        "cell": 64,
+        "colorSpace": "srgb",
+        "columns": 4,
+        "filter": "linear",
+        "frameCount": 16,
+        "height": 256,
+        "rowOrder": "top-first",
+        "rows": 4,
+        "transparentRgb": [104, 92, 78],
+        "width": 256
+      },
+      "description": "a low grey-brown puff of flattened blobs that spreads sideways, rises a little, thins and fades by the last frame",
+      "key": "impact-dust.flipbook",
+      "png": {
+        "byteLength": 12371,
+        "sha256": "fee6bfc5c8efe66916d0b6363bea9065b577ff435af4e122ccd521069f06dbf0"
+      },
+      "presets": {
+        "standard": {
+          "count": 6,
+          "direction": [0, 1, 0],
+          "emitDuration": 0,
+          "endScale": 1.8,
+          "fadeOut": false,
+          "gravity": [0, -0.4, 0],
+          "lifetime": 0.5,
+          "speed": [0.3, 0.8],
+          "spread": 1.2
+        },
+        "subtle": {
+          "count": 3,
+          "direction": [0, 1, 0],
+          "emitDuration": 0,
+          "endScale": 1.6,
+          "fadeOut": false,
+          "gravity": [0, -0.4, 0],
+          "lifetime": 0.45,
+          "speed": [0.25, 0.6],
+          "spread": 1.2
+        }
+      },
+      "role": "impact-dust",
+      "scale": 0.3,
+      "variant": "arpg"
+    },
+    {
+      "atlas": {
+        "alpha": "straight",
+        "cell": 64,
+        "colorSpace": "srgb",
+        "columns": 4,
+        "filter": "linear",
+        "frameCount": 16,
+        "height": 256,
+        "rowOrder": "top-first",
+        "rows": 4,
+        "transparentRgb": [190, 180, 156],
+        "width": 256
+      },
+      "description": "a soft horizontal streak, brighter toward its leading end, that thins and fades out by the last frame",
+      "instances": {
+        "standard": { "segments": 5, "stagger": 0.025 },
+        "subtle": { "segments": 3, "stagger": 0.03 }
+      },
+      "key": "trail.flipbook",
+      "png": {
+        "byteLength": 5390,
+        "sha256": "50cfa6fbfb3a38dd65ab479e58cdc3dca3b68604d35c1f28a20b4363c82f45c0"
+      },
+      "presets": {
+        "standard": {
+          "count": 1,
+          "direction": [0, 1, 0],
+          "emitDuration": 0,
+          "endScale": 1,
+          "fadeOut": false,
+          "gravity": [0, 0, 0],
+          "lifetime": 0.22,
+          "speed": [0, 0],
+          "spread": 0
+        },
+        "subtle": {
+          "count": 1,
+          "direction": [0, 1, 0],
+          "emitDuration": 0,
+          "endScale": 1,
+          "fadeOut": false,
+          "gravity": [0, 0, 0],
+          "lifetime": 0.18,
+          "speed": [0, 0],
+          "spread": 0
+        }
+      },
+      "role": "trail",
+      "scale": 0.5,
+      "variant": "arpg"
+    }
+  ],
+  "renderer": "three-d-renderer frame.effects",
+  "schema": "combat-effects-descriptor-v1",
+  "units": { "distance": "metre", "time": "second" },
+  "up": "+Y"
+}

@@ -33,7 +33,7 @@ const AUDIO = { master: 1, effects: 1, ui: 1, muted: false };
 const DEFAULT_DOCUMENT = {
   version: 2,
   graphics: { shadows: true, pixelRatioLimit: 2 },
-  accessibility: { motion: "system", reducedFlashes: false, textScale: 1 },
+  accessibility: { motion: "system", reducedFlashes: false, combatEffects: true, textScale: 1 },
   camera: { zoom: 1 },
   audio: AUDIO,
 };
@@ -148,7 +148,7 @@ test("accessibility settings persist across reload as one version 2 document", a
   expect(await storedDocument(page)).toEqual({
     version: 2,
     graphics: { shadows: true, pixelRatioLimit: 1.5 },
-    accessibility: { motion: "full", reducedFlashes: true, textScale: 1.25 },
+    accessibility: { motion: "full", reducedFlashes: true, combatEffects: true, textScale: 1.25 },
     camera: { zoom: 1 },
     audio: AUDIO,
   });
@@ -216,7 +216,7 @@ test("legacy graphics settings migrate and the legacy value is kept", async ({ p
   expect(await storedDocument(page)).toEqual({
     version: 2,
     graphics: { shadows: false, pixelRatioLimit: 1 },
-    accessibility: { motion: "system", reducedFlashes: false, textScale: 1.5 },
+    accessibility: { motion: "system", reducedFlashes: false, combatEffects: true, textScale: 1.5 },
     camera: { zoom: 1 },
     audio: AUDIO,
   });
@@ -321,6 +321,9 @@ test("settings are keyboard operable in order and focus returns to the opener", 
   const accessibility = settings.getByRole("region", { name: "Accessibility", exact: true });
   const motion = accessibility.getByLabel("Motion effects", { exact: true });
   const flashes = accessibility.getByLabel("Reduce bright flashes", { exact: true });
+  const combatEffects = accessibility.getByLabel("Combat particles and camera impulse", {
+    exact: true,
+  });
   const textSize = accessibility.getByLabel("Text size", { exact: true });
   const reset = settings.getByRole("button", { name: "Reset display settings", exact: true });
   await expect(settings.getByRole("button", { name: "Close", exact: true })).toBeFocused();
@@ -330,6 +333,10 @@ test("settings are keyboard operable in order and focus returns to the opener", 
   await expect(flashes).toBeFocused();
   await page.keyboard.press("Space");
   await expect(flashes).toBeChecked();
+  await page.keyboard.press("Tab");
+  await expect(combatEffects).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(combatEffects).not.toBeChecked();
   await page.keyboard.press("Tab");
   await expect(textSize).toBeFocused();
   await page.keyboard.press("ArrowDown");
@@ -342,6 +349,7 @@ test("settings are keyboard operable in order and focus returns to the opener", 
   await page.keyboard.press("Shift+Tab");
   await page.keyboard.press("Shift+Tab");
   await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Shift+Tab");
   await expect(motion).toBeFocused();
 
   await page.keyboard.press("Escape");
@@ -350,6 +358,7 @@ test("settings are keyboard operable in order and focus returns to the opener", 
   await page.keyboard.press("Enter");
   await expect(settings.getByRole("button", { name: "Close", exact: true })).toBeFocused();
   await expect(flashes).toBeChecked();
+  await expect(combatEffects).not.toBeChecked();
   await expect(textSize).toHaveValue("1.25");
 });
 
@@ -371,7 +380,12 @@ test("enlarged text on a narrow phone keeps every required action visible and op
     await seedStorage(page, {
       [KEY]: JSON.stringify({
         ...DEFAULT_DOCUMENT,
-        accessibility: { motion: "system", reducedFlashes: false, textScale: 1.5 },
+        accessibility: {
+          motion: "system",
+          reducedFlashes: false,
+          combatEffects: true,
+          textScale: 1.5,
+        },
       }),
     });
     await page.goto(`${appUrl}${TRAINING}`);

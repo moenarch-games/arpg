@@ -7,4 +7,5 @@ playwright-report/
 .cache/
 public/characters/
 public/decoders/
+public/effects/
 public/sounds/

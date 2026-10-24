@@ -107,10 +107,11 @@ test("admits region membership and platforms and rejects malformed ones", () => 
   const platform = { id: 9, kind: "platform", position: [0, 30, 0], halfExtents: [100, 30, 100] };
   const ceiling = { id: 10, kind: "ceiling", position: [0, 160, 0], halfExtents: [100, 20, 100] };
   const step = { id: 11, kind: "step", position: [0, 10, 0], halfExtents: [60, 10, 20] };
+  const ramp = { id: 12, kind: "ramp", position: [0, 30, 190], halfExtents: [40, 30, 90] };
   const decoded = decodeSnapshot(
-    encode({ ...payload, scenario: "traversal", staticColliders: [platform, ceiling, step] }),
+    encode({ ...payload, scenario: "traversal", staticColliders: [platform, ceiling, step, ramp] }),
   );
-  expect(decoded.staticColliders).toEqual([platform, ceiling, step]);
+  expect(decoded.staticColliders).toEqual([platform, ceiling, step, ramp]);
 });
 
 test("admits a slowed monster and rejects a malformed slow", () => {
@@ -288,6 +289,17 @@ test("rooms publish their encounter definition and malformed ones are rejected",
   expect(decoded.rooms[1].encounter).toBe("encounter.brute");
   for (const encounter of ["", "e".repeat(65), 7])
     expect(() => decodeSnapshot(encode({ ...payload, rooms: [{ ...room, encounter }] }))).toThrow();
+});
+
+test("rooms publish a phased encounter's progress (#66) and malformed ones are rejected", () => {
+  const room = { id: 2, minX: 0, maxX: 100, minZ: 0, maxZ: 100, kind: "combat" };
+  const phased = { ...room, phase: 1, phaseCount: 2, remaining: 3 };
+  expect(decodeSnapshot(encode({ ...payload, rooms: [phased] })).rooms[0].phase).toBe(1);
+  for (const candidate of [
+    { ...phased, phase: 3 },
+    { ...phased, remaining: -1 },
+  ])
+    expect(() => decodeSnapshot(encode({ ...payload, rooms: [candidate] }))).toThrow();
 });
 
 test("requires the authority's content revision", () => {

@@ -25,6 +25,7 @@ import { createSnapshotStore } from "./snapshot-store.js";
 import { attachPresentationCues, createPresentationCues } from "./presentation-cues.js";
 import { CueFeed, DamageNumbers } from "./cue-views.jsx";
 import { attachCueAudio, loadCueAudio } from "./cue-audio.js";
+import { createAtlasSource, createCombatVfx, loadCombatAtlases } from "./combat-vfx.js";
 import {
   PlayerHud,
   CombatActions,
@@ -241,11 +242,20 @@ const followCamera = createFollowCamera({
   zoom: loadPresentation().camera.zoom,
 });
 const pinchZoom = createPinchZoom();
-// The page's one game-audio handle (#67, 67c), loaded on first use and kept for the page's
-// lifetime; the App attaches the cue stream to it.
+// The page's one game-audio handle (#67, 67c), like the effect atlases: loaded on first use
+// and kept for the page's lifetime (one AudioContext, clips decoded once, even across a
+// StrictMode remount); the App attaches the cue stream to it.
 let soundLoad = null;
 const pageSound = () =>
   (soundLoad ??= loadCueAudio({ baseUrl: `${import.meta.env.BASE_URL}sounds/combat-sounds/` }));
+// The combat-effects flipbooks (#67 67b, asset-tooling#362), unpacked into the static
+// `effects/combat-effects/` directory by setup. Loaded once, on the first game view; if they
+// fail to load the game plays without combat effects.
+let combatAtlasSource = null;
+const combatAtlases = () =>
+  (combatAtlasSource ??= createAtlasSource(() =>
+    loadCombatAtlases({ baseUrl: `${import.meta.env.BASE_URL}effects/combat-effects/` }),
+  )).current();
 const textureCapabilities = {
   configureTextureLoader(loader) {
     if (!characterRenderer) throw new Error("Character renderer is not ready");
@@ -313,6 +323,7 @@ function GameCanvas({
   onLostPointerCapture,
   onMouseUp,
   onContextMenu,
+  cues,
 }) {
   const canvasRef = useRef(null);
   const presenterRef = useRef(null);
@@ -328,6 +339,7 @@ function GameCanvas({
   useEffect(() => {
     // A new session starts with the camera on its player, not gliding from the last one.
     camera.recenter();
+    const combatVfx = createCombatVfx({ atlases: combatAtlases });
     const presenter = createFramePresenter({
       canvas: canvasRef.current,
       snapshots,
@@ -356,6 +368,9 @@ function GameCanvas({
         // Animation follows the simulation's fixed tick (arpg-core TICK_HZ).
         tickHz: 60,
       }),
+      vfx: {
+        frame: (input) => combatVfx.frame({ ...input, cues: cues.getCues() }),
+      },
       view: viewRef.current,
     });
     presenterRef.current = presenter;
@@ -364,7 +379,7 @@ function GameCanvas({
       presenter.dispose();
       characterRenderer = null;
     };
-  }, [snapshots, camera]);
+  }, [snapshots, camera, cues]);
 
   useEffect(() => {
     viewRef.current = {
@@ -1370,6 +1385,7 @@ function App() {
       <main hidden={!inWorld} className="game-shell">
         <GameCanvas
           snapshots={snapshotStore}
+          cues={presentationCues}
           playerId={playerId}
           accent={selectedCharacter.accent}
           graphics={graphics}
@@ -1812,6 +1828,16 @@ function App() {
                       }
                     />
                     {t("settings.flashes")}
+                  </label>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={accessibility.combatEffects}
+                      onChange={(event) =>
+                        updateAccessibility({ combatEffects: event.target.checked })
+                      }
+                    />
+                    {t("settings.combatEffects")}
                   </label>
                   <div className="settings-field">
                     <label htmlFor="text-size">{t("settings.textSize")}</label>

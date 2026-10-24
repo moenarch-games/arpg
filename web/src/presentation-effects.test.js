@@ -51,7 +51,13 @@ import {
 
 const preferences = (accessibility = {}) => ({
   graphics: { shadows: true, pixelRatioLimit: 2 },
-  accessibility: { motion: "system", reducedFlashes: false, textScale: 1, ...accessibility },
+  accessibility: {
+    motion: "system",
+    reducedFlashes: false,
+    combatEffects: true,
+    textScale: 1,
+    ...accessibility,
+  },
 });
 
 function luminance(hex) {
@@ -119,7 +125,7 @@ test("motion follows the system only when the preference says so", () => {
 
 test("reduced flashes and text scale map independently of motion", () => {
   const effects = resolvePresentationEffects(
-    preferences({ motion: "full", reducedFlashes: true, textScale: 1.5 }),
+    preferences({ motion: "full", reducedFlashes: true, combatEffects: true, textScale: 1.5 }),
     { prefersReducedMotion: true },
   );
   expect(effects).toMatchObject({
@@ -211,7 +217,7 @@ test("the document root receives scale, motion and flash state", () => {
   applyDocumentPresentation(
     root,
     resolvePresentationEffects(
-      preferences({ motion: "reduced", reducedFlashes: true, textScale: 1.5 }),
+      preferences({ motion: "reduced", reducedFlashes: true, combatEffects: true, textScale: 1.5 }),
     ),
   );
   expect(root.style.fontSize).toBe("150%");

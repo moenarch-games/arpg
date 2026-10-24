@@ -151,7 +151,19 @@ fn invariants(
     current: &BTreeMap<BodyKey, Body>,
 ) -> Vec<String> {
     let mut violations = Vec::new();
-    let boxes = game.physics.fixed_boxes().collect::<Vec<_>>();
+    // A ramp's bounding box is not solid: bodies walk inside it, on its slope (#59). The
+    // physics contract tests cover the slope itself.
+    let ramps = game
+        .static_colliders
+        .iter()
+        .filter(|collider| collider.kind == crate::StaticColliderKind::Ramp)
+        .map(|collider| crate::array_to_vec(collider.position))
+        .collect::<Vec<_>>();
+    let boxes = game
+        .physics
+        .fixed_boxes()
+        .filter(|(center, _)| !ramps.contains(center))
+        .collect::<Vec<_>>();
     for (key, body) in current {
         let p = body.position;
         if !p.is_finite() {
@@ -162,11 +174,16 @@ fn invariants(
         if feet < FLOOR_FOOT_Y as f32 - PENETRATION {
             violations.push(format!("body {key} below the floor: feet {feet}"));
         }
+        // On a ramp the ground is the slope straight below.
+        let gap = game
+            .physics
+            .ground_height(p)
+            .map_or(f32::INFINITY, |ground| feet - ground)
+            .min(ground_gap(body, &boxes));
         match body.grounded {
-            Some(true) if ground_gap(body, &boxes) > SUPPORT_REACH_UNITS + PENETRATION => {
+            Some(true) if gap > SUPPORT_REACH_UNITS + PENETRATION => {
                 violations.push(format!(
-                    "body {key} grounded in the air: {} above the ground",
-                    ground_gap(body, &boxes)
+                    "body {key} grounded in the air: {gap} above the ground"
                 ));
             }
             None if p.y != PLAYER_Y as f32 => {
@@ -201,8 +218,8 @@ fn invariants(
 /// Game-visible outcomes that do not depend on exact positions: doors, encounters, health,
 /// progression, support, region membership, standing crates and every strike and
 /// interaction decision.
-/// With `mask_climb`, support and region membership are left out: the stairs' disclosed
-/// climbing pace divergence ([`STAIRS_POSITION`]).
+/// With `mask_climb`, support and region membership are left out: the stairs' climb, where
+/// either backend may step a tick earlier ([`STAIRS_SUPPORT_TICKS`]).
 fn outcomes(game: &ArpgGame, mask_climb: bool) -> String {
     let snapshot = game.snapshot().unwrap();
     let mut out = String::new();
@@ -288,12 +305,15 @@ struct Comparison {
     /// The same at ticks on which either body rounds a platform edge, where Rapier's
     /// normal nudge can skip a snap (bounded by [`EDGE_POSITION`]).
     max_position_on_edge: f32,
-    /// Largest position difference while a player climbs the stairs, where physics-engine's
-    /// autostep paces a rounded step edge a tick behind Rapier's (bounded by
-    /// [`STAIRS_POSITION`]).
-    max_position_on_stairs: f32,
+    /// The first tick a player of either game climbs the stairs; from then on positions are
+    /// reported, not compared ([`STAIRS_SUPPORT_TICKS`]).
+    climb_start: Option<u32>,
+    /// Largest position difference of any body from the climb's start on.
+    max_position_after_climb: f32,
     /// Ticks on the stairs whose outcomes differ only in support or region membership.
     stairs_support_ticks: u32,
+    /// Whether a player of the Rapier game, and of the engine game, stood on the platform.
+    reached_platform: [bool; 2],
     /// Ticks on which a player of either game belongs to a region above the floor.
     raised_region_ticks: u32,
     /// Monster strikes of the `monster.lunge` definition resolved in either game.
@@ -559,12 +579,15 @@ fn compare(case: Case, seed: u32) -> Comparison {
                     feet > 1.0 && feet < 59.9
                 })
             });
+        if on_stairs && comparison.climb_start.is_none() {
+            comparison.climb_start = Some(tick);
+        }
         for (key, body) in &rapier_now {
             if let Some(other) = engine_now.get(key) {
                 let difference = (body.position - other.position).length();
-                if on_stairs {
-                    comparison.max_position_on_stairs =
-                        comparison.max_position_on_stairs.max(difference);
+                if comparison.climb_start.is_some() {
+                    comparison.max_position_after_climb =
+                        comparison.max_position_after_climb.max(difference);
                 } else if on_an_edge(&rapier, body) || on_an_edge(&engine, other) {
                     comparison.max_position_on_edge =
                         comparison.max_position_on_edge.max(difference);
@@ -577,7 +600,14 @@ fn compare(case: Case, seed: u32) -> Comparison {
                 }
             }
         }
-        for game in [&rapier, &engine] {
+        for (index, game) in [&rapier, &engine].into_iter().enumerate() {
+            if game
+                .players
+                .values()
+                .any(|state| state.region == crate::RegionMembership::Region { id: 2 })
+            {
+                comparison.reached_platform[index] = true;
+            }
             doors_block(game, tick, &mut comparison);
             if game
                 .players
@@ -674,15 +704,18 @@ fn compare(case: Case, seed: u32) -> Comparison {
 /// rounded edge's drop (about a unit) higher for a tick; the engine follows the edge.
 const EDGE_POSITION: f32 = 2.0;
 
-/// Known divergence (reported to the physics-engine owner): physics-engine's autostep gates
-/// walking on support at the move's start, which a body half up a step's rounded edge lacks,
-/// where Rapier's controller counts its edge contact as grounded and keeps stepping. The
-/// engine climbs that edge a tick behind, so on the stairs positions differ by up to about 7
-/// units, and support and the region change to the platform for a tick or a few; both reach
-/// the platform. Bounded at what physics-engine `baa9244` measures (7.06 units, 7 ticks),
-/// reported every run.
-const STAIRS_POSITION: f32 = 7.5;
 /// Most stairs ticks whose outcomes may differ only in support or region membership.
+///
+/// The stairs climb sits on Rapier's autostep threshold: a pose a few hundredths of a unit
+/// higher steps up a riser instead of sliding up its rounded edge (physics-engine#385). A step
+/// keeps the full walking speed, a slide loses about half of it, and the game's velocity
+/// carries that loss on, so whichever backend steps a tick earlier pulls ahead and positions
+/// diverge chaotically (by 20 units and more), although the engine matches Rapier's single
+/// moves to about 1e-4 units. Rapier itself steps on one seed and not on the other from the
+/// same climb. So from the climb's start on, the stairs case compares outcomes, not
+/// positions: both games reach the platform, support and the region differ on at most this
+/// many ticks (physics-engine `d7aad42` measures 5 and 6), every other outcome (monsters
+/// included) agrees every tick, and the invariants hold. The position difference is reported.
 const STAIRS_SUPPORT_TICKS: u32 = 7;
 
 /// Bodies agree to this (world units) until two characters first touch: Rapier's controller
@@ -713,15 +746,16 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
             writeln!(
                 report,
                 "{context}: first character contact {:?}; highest feet {:.1}; max position difference \
-                 {:.3} before it (at {:?}), {:.3} after, {:.3} on edges, {:.3} on stairs ({} \
-                 support-only ticks); {} queries compared",
+                 {:.3} before it (at {:?}), {:.3} after, {:.3} on edges, {:.3} after the climb \
+                 started at {:?} ({} support-only ticks); {} queries compared",
                 comparison.first_contact,
                 comparison.max_height,
                 comparison.max_position,
                 comparison.max_position_at,
                 comparison.max_position_after_contact,
                 comparison.max_position_on_edge,
-                comparison.max_position_on_stairs,
+                comparison.max_position_after_climb,
+                comparison.climb_start,
                 comparison.stairs_support_ticks,
                 comparison.queries,
             )
@@ -736,12 +770,6 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
                 failures.push(format!(
                     "{context}: support differs on {} stairs ticks",
                     comparison.stairs_support_ticks
-                ));
-            }
-            if comparison.max_position_on_stairs > STAIRS_POSITION {
-                failures.push(format!(
-                    "{context}: positions on the stairs differ by {}",
-                    comparison.max_position_on_stairs
                 ));
             }
             if comparison.max_position_on_edge > EDGE_POSITION {
@@ -769,10 +797,15 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
                     failures.push(format!("{context} on {backend}: {violation}"));
                 }
             }
-            if case == Case::Stairs && !comparison.memberships.contains("Region { id: 2 }") {
-                failures.push(format!(
-                    "{context}: the player never walked up onto the platform"
-                ));
+            if case == Case::Stairs {
+                for (backend, reached) in Backend::ALL.iter().zip(comparison.reached_platform) {
+                    if !reached {
+                        failures.push(format!(
+                            "{context}: the {} player never walked up onto the platform",
+                            backend.name()
+                        ));
+                    }
+                }
             }
             if case == Case::Slow && comparison.slowed_ticks == 0 {
                 failures.push(format!("{context}: no arrow slowed a monster"));

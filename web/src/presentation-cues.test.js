@@ -109,7 +109,8 @@ describe("presentation cues", () => {
         strikeEvents: [strike({ kind: "blocked", guardDamage: 10 })],
       }),
     );
-    expect(kinds(block)).toEqual(["blocked"]);
+    // The swing opening its active window is its own cue (weapon trails, 67b).
+    expect(kinds(block)).toEqual(["blocked", "swing"]);
     expect(blocked.observe(frame(6, { players: [player({ action: swing("recovery") })] }))).toEqual(
       [],
     );
@@ -177,6 +178,21 @@ describe("presentation cues", () => {
     );
     expect(kinds(found)).toEqual(["pickedUp", "defeat", "encounter"]);
     expect(found[2].state).toBe("cleared");
+  });
+
+  test("a phased encounter moving on is a cue; a wipe back to the first phase is not (#66)", () => {
+    const cues = createPresentationCues();
+    const room = (phase, encounterState = "active") => ({
+      id: 1,
+      encounterState,
+      phase,
+      phaseCount: 2,
+    });
+    cues.observe(frame(1, { rooms: [room(0)] }));
+    const next = cues.observe(frame(2, { rooms: [room(1)] }));
+    expect(kinds(next)).toEqual(["phase"]);
+    expect(next[0]).toMatchObject({ phase: 1, phaseCount: 2 });
+    expect(kinds(cues.observe(frame(3, { rooms: [room(0, "dormant")] })))).toEqual(["encounter"]);
   });
 
   test("overflow drops cosmetic cues beyond the per-frame cap and keeps a bounded history", () => {

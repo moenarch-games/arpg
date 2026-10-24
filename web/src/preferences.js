@@ -55,7 +55,12 @@ const PIXEL_RATIO_LIMITS = [1, 1.5, 2];
 
 export const DEFAULT_PRESENTATION = Object.freeze({
   graphics: Object.freeze({ shadows: true, pixelRatioLimit: 2 }),
-  accessibility: Object.freeze({ motion: "system", reducedFlashes: false, textScale: 1 }),
+  accessibility: Object.freeze({
+    motion: "system",
+    reducedFlashes: false,
+    combatEffects: true,
+    textScale: 1,
+  }),
   camera: Object.freeze({ zoom: DEFAULT_ZOOM }),
   // Sound (#67, 67c): bus volumes in 0..1 and mute, applied by the game-audio director.
   // Motion and flash settings never silence sound.
@@ -97,6 +102,11 @@ export function normalizePresentation(value) {
         accessibility.reducedFlashes,
         typeof accessibility.reducedFlashes === "boolean",
         defaults.accessibility.reducedFlashes,
+      ),
+      combatEffects: pick(
+        accessibility.combatEffects,
+        typeof accessibility.combatEffects === "boolean",
+        defaults.accessibility.combatEffects,
       ),
       textScale: pick(
         accessibility.textScale,

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ActionKind, ComboInput};
 
-pub const CONTENT_FORMAT_VERSION: u16 = 14;
+pub const CONTENT_FORMAT_VERSION: u16 = 15;
 /// Touching monster and player bodies keep their centres up to √2 times their
 /// combined XZ half extents apart (85 units), and pursuit stops one navigation
 /// cell inside strike reach, so a monster strike must reach past both.
@@ -43,6 +43,8 @@ pub const MAX_DEFINITION_ID_LENGTH: usize = 64;
 pub const MAX_ENCOUNTER_SPAWNS: usize = 8;
 const _: () = assert!(MAX_ENCOUNTER_SPAWNS >= 1);
 const _: () = assert!(MAX_ENCOUNTER_SPAWNS <= crate::MAX_WORKBENCH_MONSTERS);
+/// Most phases an encounter may add after its first (#66).
+pub const MAX_ENCOUNTER_PHASES: usize = 4;
 /// Fastest lunge (world units per tick): a body moved this far per tick stays well inside the
 /// character controller's swept motion and a player's 60-unit width.
 const MAX_LUNGE_SPEED: u8 = 40;
@@ -246,6 +248,45 @@ pub struct EncounterData {
     pub completion: EncounterCompletion,
     /// The reward definition clearing this encounter unlocks.
     pub reward: String,
+    /// The spawn-group member that leads a phased encounter (#66): a monster listed once in
+    /// `spawnGroup` with count 1. `null` for an encounter without a boss.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boss: Option<String>,
+    /// Phases after the first, in order (#66): each starts when its trigger holds while the
+    /// encounter runs. The encounter completes only once every phase has started and every
+    /// monster in play is defeated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<PhaseData>,
+}
+
+/// One encounter phase after the first (#66): what starts it and what changes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PhaseData {
+    pub trigger: PhaseTrigger,
+    /// Members who join the fight when the phase starts, in authored order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spawn: Vec<SpawnData>,
+    /// The boss attacks from now on as this monster definition does: its strike, timing,
+    /// damage and delivery (projectile, lunge or burst). Its health, movement and rewards
+    /// stay its own. `null` keeps its attack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boss_attack: Option<String>,
+}
+
+/// What starts a phase. A closed vocabulary; once every monster in play is defeated each
+/// trigger holds, so an encounter can never stall before its last phase.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PhaseTrigger {
+    /// The boss's health is at or below `percent` of its maximum (1 to 99).
+    BossHealthBelow { percent: u8 },
+    /// Every monster in play except the boss is defeated.
+    AddsDefeated,
 }
 
 /// One spawn-group entry: a monster definition and how many of it spawn.
@@ -537,6 +578,17 @@ pub(crate) struct EncounterDef {
     pub activation: EncounterActivation,
     pub completion: EncounterCompletion,
     pub reward: usize,
+    /// The boss's monster definition index.
+    pub boss: Option<usize>,
+    pub phases: Vec<PhaseDef>,
+}
+
+/// A resolved phase: spawns and the attack source refer to `monsters` by index.
+#[derive(Clone, Debug)]
+pub(crate) struct PhaseDef {
+    pub trigger: PhaseTrigger,
+    pub spawn: Vec<(usize, u32)>,
+    pub boss_attack: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1121,11 +1173,87 @@ impl ContentBundle {
                     ),
                 }
             }
+            let boss = encounter.boss.as_ref().and_then(|boss| {
+                match encounter
+                    .spawn_group
+                    .iter()
+                    .find(|spawn| &spawn.monster == boss)
+                {
+                    Some(spawn) if spawn.count == 1 => monster_index.get(boss.as_str()).copied(),
+                    Some(_) => {
+                        fail(path.clone(), "boss must spawn exactly once");
+                        None
+                    }
+                    None => {
+                        fail(
+                            path.clone(),
+                            &format!("boss {boss} is not in the spawnGroup"),
+                        );
+                        None
+                    }
+                }
+            });
+            if encounter.phases.len() > MAX_ENCOUNTER_PHASES {
+                fail(
+                    path.clone(),
+                    &format!("at most {MAX_ENCOUNTER_PHASES} phases are allowed"),
+                );
+            }
+            if !encounter.phases.is_empty() && encounter.boss.is_none() {
+                fail(path.clone(), "a phased encounter needs a boss");
+            }
+            let mut phases = Vec::new();
+            for (number, phase) in encounter.phases.iter().enumerate() {
+                let phase_path = format!("{path} phases[{number}]");
+                if let PhaseTrigger::BossHealthBelow { percent } = phase.trigger
+                    && !(1..=99).contains(&percent)
+                {
+                    fail(
+                        phase_path.clone(),
+                        "bossHealthBelow percent must be 1 to 99",
+                    );
+                }
+                let mut spawn = Vec::new();
+                for (entry, member) in phase.spawn.iter().enumerate() {
+                    if member.count == 0 {
+                        fail(
+                            phase_path.clone(),
+                            &format!("spawn[{entry}] count must be positive"),
+                        );
+                    }
+                    members += u64::from(member.count);
+                    match monster_index.get(member.monster.as_str()) {
+                        Some(&definition) => spawn.push((definition, member.count)),
+                        None => fail(
+                            phase_path.clone(),
+                            &format!(
+                                "spawn[{entry}] references an unknown monster {}",
+                                member.monster
+                            ),
+                        ),
+                    }
+                }
+                let boss_attack = phase.boss_attack.as_ref().and_then(|attack| {
+                    let found = monster_index.get(attack.as_str()).copied();
+                    if found.is_none() {
+                        fail(
+                            phase_path.clone(),
+                            &format!("bossAttack references an unknown monster {attack}"),
+                        );
+                    }
+                    found
+                });
+                phases.push(PhaseDef {
+                    trigger: phase.trigger,
+                    spawn,
+                    boss_attack,
+                });
+            }
             if members > MAX_ENCOUNTER_SPAWNS as u64 {
                 fail(
                     path.clone(),
                     &format!(
-                        "spawnGroup holds {members} members; at most {MAX_ENCOUNTER_SPAWNS} are allowed"
+                        "spawnGroup and phases hold {members} members; at most {MAX_ENCOUNTER_SPAWNS} are allowed"
                     ),
                 );
             }
@@ -1148,6 +1276,8 @@ impl ContentBundle {
                 activation: encounter.activation,
                 completion: encounter.completion,
                 reward,
+                boss,
+                phases,
             });
         }
         for (index, reward) in self.rewards.iter().enumerate() {

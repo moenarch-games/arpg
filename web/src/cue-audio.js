@@ -48,6 +48,8 @@ const isPlayer = (party, playerId) => party?.kind === "player" && party.id === p
 export function soundKind(cue, playerId) {
   const mine = isPlayer(cue.source, playerId) || cue.playerId === playerId;
   switch (cue.kind) {
+    case "swing":
+      return "combat.swing";
     case "hit":
       if (isPlayer(cue.target, playerId)) return "combat.hurt";
       return cue.defeated ? "combat.hit.defeated" : "combat.hit";

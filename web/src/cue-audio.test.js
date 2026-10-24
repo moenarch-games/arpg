@@ -94,6 +94,7 @@ describe("cue to sound mapping", () => {
     const other = { kind: "player", id: 2 };
     const brute = { kind: "monster", id: 1 };
     const cases = [
+      [{ kind: "swing", playerId: 2, action: "primaryAttack" }, "combat.swing"],
       [{ kind: "hit", source: me, target: brute }, "combat.hit"],
       [{ kind: "hit", source: me, target: brute, defeated: true }, "combat.hit.defeated"],
       [{ kind: "hit", source: brute, target: me }, "combat.hurt"],
