@@ -61,6 +61,13 @@ import { DemoLobbySession } from "./vendor/multiplayer-setup-service/demo-sessio
 import { sampleVirtualStick } from "./virtual-stick.js";
 import { aimFromPointer, movementFromAim } from "./aim-input.js";
 import {
+  createFollowCamera,
+  createPinchZoom,
+  focusPoint,
+  loadCameraZoom,
+  persistCameraZoom,
+} from "./follow-camera.js";
+import {
   CHARACTER_PRESETS,
   loadSelectedCharacterId,
   persistSelectedCharacterId,
@@ -131,6 +138,8 @@ const inputRegistry = {
     ["game.switchWeapon", "Switch sword / bow", "KeyX", "never", "Combat"],
     ["game.cycleTarget", "Lock / cycle target", "KeyT", "never", "Combat"],
     ["game.clearTarget", "Clear target lock", "KeyG", "never", "Combat"],
+    // The follow camera has no manual rotation (Atlas 4.1.4); this restores its zoom.
+    ["game.resetCamera", "Reset camera", "KeyC", "never", "Camera"],
   ]
     .map(([id, title, code, repeatPolicy, category]) => ({
       id,
@@ -194,6 +203,11 @@ function requestedRunSeed() {
 // setup. Loaded once per page with the game core and shared by every session.
 // Preloading and drawing share the persistent game canvas and actual renderer.
 let characterRenderer = null;
+
+// The gameplay follow camera (#58) for the one game canvas; its zoom persists as a display
+// preference. Pinch zoom tracks the touches on that canvas.
+const followCamera = createFollowCamera({ zoom: loadCameraZoom() });
+const pinchZoom = createPinchZoom();
 const textureCapabilities = {
   configureTextureLoader(loader) {
     if (!characterRenderer) throw new Error("Character renderer is not ready");
@@ -253,6 +267,9 @@ function GameCanvas({
   accent,
   graphics,
   effects,
+  camera,
+  cameraSmoothing,
+  onWheel,
   onPointerMove,
   onPointerDown,
   onPointerUp,
@@ -265,11 +282,25 @@ function GameCanvas({
   const presenterRef = useRef(null);
   const { shadows, pixelRatioLimit } = graphics;
   // The view the presenter is (or will be) created with; later changes apply in place.
-  const viewRef = useRef({ playerId, accent, graphics: { shadows, pixelRatioLimit }, effects });
+  const viewRef = useRef({
+    playerId,
+    accent,
+    graphics: { shadows, pixelRatioLimit },
+    effects,
+    cameraSmoothing,
+  });
   useEffect(() => {
+    // A new session starts with the camera on its player, not gliding from the last one.
+    camera.recenter();
     const presenter = createFramePresenter({
       canvas: canvasRef.current,
       snapshots,
+      camera: {
+        update: (snapshot, id, time, smoothing) =>
+          camera.follow(focusPoint(snapshot, id), time, smoothing),
+        pose: () => camera.pose(),
+        subscribe: (listener) => camera.subscribe(listener),
+      },
       createRenderer: (canvas, options) => {
         const renderer = createThreeSceneRenderer(canvas, options);
         characterRenderer = renderer;
@@ -297,12 +328,18 @@ function GameCanvas({
       presenter.dispose();
       characterRenderer = null;
     };
-  }, [snapshots]);
+  }, [snapshots, camera]);
 
   useEffect(() => {
-    viewRef.current = { playerId, accent, graphics: { shadows, pixelRatioLimit }, effects };
+    viewRef.current = {
+      playerId,
+      accent,
+      graphics: { shadows, pixelRatioLimit },
+      effects,
+      cameraSmoothing,
+    };
     presenterRef.current?.configure(viewRef.current);
-  }, [playerId, accent, shadows, pixelRatioLimit, effects]);
+  }, [playerId, accent, shadows, pixelRatioLimit, effects, cameraSmoothing]);
 
   return (
     <canvas
@@ -316,6 +353,7 @@ function GameCanvas({
       onLostPointerCapture={onLostPointerCapture}
       onMouseUp={onMouseUp}
       onContextMenu={onContextMenu}
+      onWheel={onWheel}
     />
   );
 }
@@ -560,6 +598,13 @@ function App() {
           if (dispatch.phase === "press") runtime.setBowDraw("keyboard", true);
           return;
         }
+        if (dispatch.action === "game.resetCamera") {
+          if (dispatch.phase === "press") {
+            followCamera.reset();
+            persistCameraZoom(followCamera.zoom());
+          }
+          return;
+        }
         if (dispatch.action === "game.switchWeapon") {
           if (dispatch.phase === "press") switchWeapon();
           return;
@@ -787,7 +832,31 @@ function App() {
       event.clientY - rect.top,
       rect.width,
       rect.height,
+      followCamera.pose(),
+      followCamera.focus(),
     );
+  };
+
+  // Camera zoom follows the gameplay context: menus and focused UI consume it.
+  const cameraInputAllowed = () => inputRef.current?.getContext() === "gameplay";
+  const zoomWithWheel = (event) => {
+    if (!cameraInputAllowed()) return;
+    // Pixel, line and page deltas: a line is ~16px, a page one canvas height.
+    const pixels =
+      event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1);
+    followCamera.zoomByWheel(pixels);
+    persistCameraZoom(followCamera.zoom());
+  };
+  const pinchPointer = (event, phase) => {
+    if (event.pointerType !== "touch") return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const [x, y] = [event.clientX - rect.left, event.clientY - rect.top];
+    if (phase === "down") return pinchZoom.down(event.pointerId, x, y);
+    if (phase !== "move") return pinchZoom.up(event.pointerId);
+    const factor = pinchZoom.move(event.pointerId, x, y);
+    if (factor === null || !cameraInputAllowed()) return;
+    followCamera.setZoom(followCamera.zoom() * factor);
+    persistCameraZoom(followCamera.zoom());
   };
 
   const stopMouseMovement = (pointerId) => {
@@ -1134,10 +1203,25 @@ function App() {
           accent={selectedCharacter.accent}
           graphics={graphics}
           effects={presentationEffects}
-          onPointerMove={aimWithPointer}
-          onPointerDown={beginMouseMovement}
-          onPointerUp={endMouseMovement}
-          onPointerCancel={endMouseMovement}
+          camera={followCamera}
+          cameraSmoothing={!trainingPaused}
+          onWheel={zoomWithWheel}
+          onPointerMove={(event) => {
+            pinchPointer(event, "move");
+            aimWithPointer(event);
+          }}
+          onPointerDown={(event) => {
+            pinchPointer(event, "down");
+            beginMouseMovement(event);
+          }}
+          onPointerUp={(event) => {
+            pinchPointer(event, "up");
+            endMouseMovement(event);
+          }}
+          onPointerCancel={(event) => {
+            pinchPointer(event, "up");
+            endMouseMovement(event);
+          }}
           onLostPointerCapture={endMouseMovement}
           onMouseUp={mouseUp}
           onContextMenu={(event) => event.preventDefault()}
