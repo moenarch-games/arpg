@@ -930,6 +930,11 @@ select {
 .settings-panel > header > div {
   min-width: 0;
 }
+/* Scrolled-to controls keep a gap to the panel edge: scroll offsets are whole pixels
+   while enlarged text lays controls out on fractional ones. */
+.settings-panel :is(button, input, select, textarea) {
+  scroll-margin-block: 0.5rem;
+}
 .settings-panel > header button {
   flex: 0 0 auto;
   min-width: 4.5rem;
