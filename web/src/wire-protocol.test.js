@@ -260,6 +260,25 @@ test("admits chests and interaction results and rejects malformed ones", () => {
     expect(() => decodeSnapshot(encode(candidate))).toThrow();
 });
 
+test("admits the run's exit and state (#66) and rejects malformed ones", () => {
+  const exit = { id: 60000, roomId: 1, position: [0, 50, 0], available: false };
+  const exited = {
+    order: 0,
+    playerId: 1,
+    result: { kind: "exited", target: { kind: "exit", id: 60000 } },
+  };
+  const decoded = decodeSnapshot(
+    encode({ ...payload, exit, runState: "completed", interactionEvents: [exited] }),
+  );
+  expect(decoded.runState).toBe("completed");
+  for (const candidate of [
+    { ...payload, exit: { ...exit, available: "no" } },
+    { ...payload, exit, runState: "abandoned" },
+    { ...payload, interactionEvents: [{ ...exited, result: { kind: "exited", target: null } }] },
+  ])
+    expect(() => decodeSnapshot(encode(candidate))).toThrow();
+});
+
 test("rooms publish their encounter definition and malformed ones are rejected", () => {
   const room = { id: 2, minX: 0, maxX: 100, minZ: 0, maxZ: 100, kind: "combat" };
   const start = { ...room, id: 1, kind: "start", encounter: null };

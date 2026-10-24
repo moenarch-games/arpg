@@ -1494,6 +1494,7 @@ function App() {
               interactKey={interactKey}
               keyLabels={keyLabels}
               onReturnToCheckpoint={() => runtime.returnToCheckpoint()}
+              onReturnToEntrance={returnToCharacters}
             />
 
             <CueFeed store={snapshotStore} cues={presentationCues} playerId={playerId} />

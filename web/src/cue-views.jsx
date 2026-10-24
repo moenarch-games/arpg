@@ -50,6 +50,8 @@ export function cueText(cue, playerId, snapshot) {
       return mine ? t("cue.pickedUp", { gold: cue.gold }) : null;
     case "opened":
       return mine ? t("cue.opened", { gold: cue.gold }) : null;
+    case "exited":
+      return t("cue.exited");
     case "arrowRelease":
       return mine ? t("cue.arrowRelease") : null;
     case "arrowLanded":

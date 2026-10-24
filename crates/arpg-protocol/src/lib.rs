@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 /// 21: the `jump` command and the players' `motion` (height and support) in snapshots (#59).
 /// 22: the `leaveEncounter` and `returnToCheckpoint` commands and each player's snapshot
 /// `checkpointRoom` (#66).
-pub const PROTOCOL_VERSION: u16 = 22;
+/// 23: the run's `exit` and `runState`, and the exit interaction (#66).
+pub const PROTOCOL_VERSION: u16 = 23;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProtocolError {
@@ -103,7 +104,7 @@ mod tests {
         let command = ArpgCommand::SetMovement { x: -1, z: 1 };
         let bytes = protocol.encode_command(&command).unwrap();
         let encoded = String::from_utf8(bytes.clone()).unwrap();
-        assert!(encoded.contains("\"protocolVersion\":22"));
+        assert!(encoded.contains("\"protocolVersion\":23"));
         assert_eq!(protocol.decode_command(&bytes).unwrap(), command);
 
         let guard = ArpgCommand::SetGuard { raised: true };
