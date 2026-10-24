@@ -903,6 +903,10 @@ select {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+.defeat-panel button {
+  margin-top: 0.5rem;
+  pointer-events: auto;
+}
 
 .settings-panel {
   position: fixed;
@@ -1481,4 +1485,116 @@ select {
 /* Keep one drawing renderer available while the selected character preloads. */
 main[hidden] {
   display: none;
+}
+
+/* Presentation cues (#67, 67a): feedback text and damage numbers describe outcomes the
+   authority already resolved. Reduced motion stops the float; the numbers stay readable. */
+.cue-feed {
+  position: absolute;
+  z-index: 9;
+  top: 4.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: none;
+  text-align: center;
+}
+.cue-feed li {
+  margin: 0.15rem 0;
+  padding: 0.15rem 0.6rem;
+  background: #171513c4;
+  border: 1px solid #3e3933;
+  color: #efe6d8;
+  font-size: 0.85rem;
+}
+.cue-feed li[data-cue="whiff"],
+.cue-feed li[data-cue="obstructed"],
+.cue-feed li[data-cue="counterExpired"],
+.cue-feed li[data-cue="counterLost"] {
+  color: #b9b0a3;
+  font-style: italic;
+}
+.cue-feed li[data-cue="counterUsed"],
+.cue-feed li[data-cue="guardBroken"] {
+  font-weight: 700;
+}
+.damage-numbers {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  overflow: hidden;
+  pointer-events: none;
+}
+.damage-number {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  color: #fff0c2;
+  font-weight: 700;
+  font-size: 1.05rem;
+  text-shadow:
+    0 0 2px #000,
+    0 1px 2px #000;
+  animation: damage-number-rise 0.9s ease-out forwards;
+}
+.damage-number[data-target="self"] {
+  color: #ff9a8c;
+}
+@keyframes damage-number-rise {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -100%);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -260%);
+  }
+}
+.status-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.status-chips li,
+.status-chip {
+  padding: 0.05rem 0.4rem;
+  border: 1px dashed #7d9a5a;
+  color: #cfe3b0;
+  font-size: 0.78rem;
+}
+.target-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+}
+.target-health {
+  flex-basis: 100%;
+  height: 0.35rem;
+  background: #2b2320;
+  border: 1px solid #5a4a42;
+  overflow: hidden;
+}
+.target-health span {
+  display: block;
+  height: 100%;
+  background: #c27a4a;
+}
+.combo-status {
+  color: #f5df9b !important;
+}
+.party-status {
+  margin: 0.35rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+}
+.party-status li[data-alive="false"] {
+  text-decoration: line-through;
 }

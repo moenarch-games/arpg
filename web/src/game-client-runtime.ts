@@ -114,6 +114,8 @@ export interface DedicatedSessionLike {
 
 export interface SnapshotSink {
   publish(snapshot: unknown): void;
+  // Marks that a new source publishes next (presentation cues reset on it).
+  beginSource?(): void;
 }
 
 export interface GameClientRuntimeOptions {
@@ -362,6 +364,7 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
   // Replaces the current source. The returned token identifies the new generation.
   const replaceSource = (patch: Partial<ClientState>) => {
     teardown();
+    options.snapshots.beginSource?.();
     const generation = state.sourceGeneration + 1;
     update({
       lobbyCode: "",
@@ -880,6 +883,16 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
 
     clearTarget() {
       dispatch({ type: "clearTarget" });
+    },
+
+    // A defeated player's return to its checkpoint (#66); the authority ignores it while alive.
+    returnToCheckpoint() {
+      dispatch({ type: "returnToCheckpoint" });
+    },
+
+    // Gives up the running encounter as an ordinary defeat (#66); refused outside one.
+    leaveEncounter() {
+      dispatch({ type: "leaveEncounter" });
     },
 
     // Drops every held bow draw without shooting (weapon switches, menus).
