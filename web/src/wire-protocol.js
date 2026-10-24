@@ -1,6 +1,6 @@
-// Browser projection of the arpg-protocol v23 envelope. This adapter validates
+// Browser projection of the arpg-protocol v24 envelope. This adapter validates
 // only data consumed by presentation; gameplay rules remain in arpg-core.
-export const PROTOCOL_VERSION = 23;
+export const PROTOCOL_VERSION = 24;
 const MAX_SNAPSHOT_CHARACTERS = 65_535;
 const integer = (value) => Number.isSafeInteger(value);
 const nonNegative = (value) => integer(value) && value >= 0;
@@ -290,7 +290,10 @@ export function decodeSnapshot(encoded) {
       (room) =>
         room &&
         ["minX", "maxX", "minZ", "maxZ"].every((key) => integer(room[key])) &&
-        optional(room.encounter, definitionId),
+        optional(room.encounter, definitionId) &&
+        // A phased encounter's progress and the objective's monsters left (#66).
+        ["phase", "phaseCount", "remaining"].every((key) => optional(room[key], nonNegative)) &&
+        (room.phase ?? 0) <= (room.phaseCount ?? 0),
     ) &&
     list(
       "staticColliders",

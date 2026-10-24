@@ -90,6 +90,28 @@ function percent(health, max) {
   return max ? Math.max(0, Math.min(100, (health / max) * 100)) : 0;
 }
 
+// The running encounter's objective where the player stands (#66): monsters left to defeat
+// and, for a phased encounter, its phase. Null outside a running encounter.
+export function objectiveText(snapshot, player) {
+  const [x, , z] = player.position;
+  const room = snapshot?.rooms.find(
+    (candidate) =>
+      candidate.encounterState === "active" &&
+      x >= candidate.minX &&
+      x <= candidate.maxX &&
+      z >= candidate.minZ &&
+      z <= candidate.maxZ,
+  );
+  if (!room) return null;
+  const defeat = t("hud.objective.defeat", { remaining: room.remaining ?? 0 });
+  if (!room.phaseCount) return defeat;
+  const phase = t("hud.objective.phase", {
+    phase: (room.phase ?? 0) + 1,
+    total: room.phaseCount + 1,
+  });
+  return `${defeat} · ${phase}`;
+}
+
 export function PlayerHud({
   store,
   playerId,
@@ -190,6 +212,9 @@ export function PlayerHud({
         </ul>
       )}
       <p>{status}</p>
+      {player?.alive && objectiveText(snapshot, player) && (
+        <p className="objective-status">{objectiveText(snapshot, player)}</p>
+      )}
       {snapshot?.runState === "completed" && (
         <div className="defeat-panel" role="group" aria-label={t("hud.runComplete")}>
           <p className="run-complete-status" role="status">

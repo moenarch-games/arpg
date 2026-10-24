@@ -5,7 +5,7 @@ Gameplay tuning lives in one typed, versioned bundle:
 validated by [`content.rs`](../crates/arpg-core/src/content.rs). Definitions *select*
 supported behaviour; executable rules stay in Rust. Appearance and audio never live here.
 
-## What the bundle holds (format 14)
+## What the bundle holds (format 15)
 
 | Section | Contents |
 | --- | --- |
@@ -65,6 +65,26 @@ from the dungeon RNG exactly as a lone room monster always has (so a one-member 
 generates the same dungeon as before encounters existed); a draw that would overlap an
 earlier member or a fixed collider is redrawn a bounded number of times and then falls back
 to the first free spot of a fixed grid over the room's spawn area.
+
+### Phased encounters (bosses)
+
+An encounter can name a `boss` (a `spawnGroup` monster with count 1) and list `phases`
+after its first, at most `MAX_ENCOUNTER_PHASES` (4). Each phase has:
+
+| Field | Meaning |
+| --- | --- |
+| `trigger` | `{ "kind": "bossHealthBelow", "percent": 50 }` (boss at or below that share of its health, 1 to 99) or `{ "kind": "addsDefeated" }` (every monster in play but the boss is defeated). |
+| `spawn` | Optional members who join the fight when the phase starts, as in `spawnGroup`. They count towards `MAX_ENCOUNTER_SPAWNS` together with the group. |
+| `bossAttack` | Optional monster id: from this phase on the boss attacks as that monster does (strike, timing, damage, spacing and projectile, lunge or burst delivery), keeping its own health, movement and rewards. |
+
+One phase starts per tick while the encounter runs. The boss breaks off its attack with the
+content's longest stagger, so the change reads in play. The room publishes `phase`,
+`phaseCount` and the objective's `remaining` monsters, and saves keep the phase. The
+encounter clears only in its last phase with no monster in play left. Once everything in
+play is defeated every trigger holds, so a phase can never be skipped and the encounter never
+stalls. A party wipe returns it to its first phase as spawned. Later phases' members are
+generated with the dungeon right after the group, so their ids and positions are
+deterministic. They wait out of play, unpublished, until their phase starts.
 
 ### Authoring an encounter
 
