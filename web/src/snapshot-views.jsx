@@ -55,6 +55,7 @@ export function PlayerHud({
   interactKey = "E",
   keyLabels,
   onReturnToCheckpoint,
+  onReturnToEntrance,
 }) {
   const snapshot = useSnapshot(store);
   const player = focusedPlayer(snapshot, playerId);
@@ -84,7 +85,20 @@ export function PlayerHud({
         </div>
       )}
       <p>{status}</p>
-      {player && !player.alive && (
+      {snapshot?.runState === "completed" && (
+        <div className="defeat-panel" role="group" aria-label="Run complete">
+          <p className="run-complete-status" role="status">
+            Run complete
+          </p>
+          <p>Every room is cleared and the party left the crypt.</p>
+          {onReturnToEntrance && (
+            <button type="button" onClick={onReturnToEntrance}>
+              Return to the entrance
+            </button>
+          )}
+        </div>
+      )}
+      {player && !player.alive && snapshot?.runState !== "completed" && (
         <div className="defeat-panel" role="group" aria-label="Defeated">
           <p className="defeated-status">Defeated</p>
           <p>{checkpointText(snapshot, player.checkpointRoom)}</p>
@@ -294,12 +308,15 @@ export function TrainingTick({ store }) {
 const TIMELINE_LIMIT = 8;
 
 // Prompts come from the authority's own interaction choice, never a browser radius.
+const INTERACTION_VERBS = { loot: "Pick up gold", chest: "Open chest", exit: "Leave the crypt" };
+
 function interactionPromptText(interaction, key) {
   if (interaction?.kind === "available") {
-    const what = interaction.target.kind === "chest" ? "Open chest" : "Pick up gold";
+    const what = INTERACTION_VERBS[interaction.target.kind] ?? "Pick up gold";
     return key ? `${key} · ${what}` : `${what} (Interact is unbound)`;
   }
   if (interaction?.reason === "chestLocked") return "Chest locked until the room is cleared";
+  if (interaction?.reason === "exitLocked") return "Exit sealed until every room is cleared";
   if (interaction?.reason === "obstructed") return "Out of reach behind a wall";
   return null;
 }
@@ -308,6 +325,7 @@ function describeInteraction(event) {
   const { result } = event;
   if (result.kind === "refused")
     return `player ${event.playerId} · interact refused · ${result.reason}`;
+  if (result.kind === "exited") return `player ${event.playerId} · took the exit · run complete`;
   const verb = result.kind === "opened" ? "opened" : "picked up";
   return `player ${event.playerId} · ${verb} ${result.target.kind} ${result.target.id} · +${result.gold} gold`;
 }

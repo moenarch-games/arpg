@@ -898,6 +898,12 @@ select {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+.run-complete-status {
+  color: #d9b45f !important;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
 .defeat-panel button {
   margin-top: 0.5rem;
   pointer-events: auto;

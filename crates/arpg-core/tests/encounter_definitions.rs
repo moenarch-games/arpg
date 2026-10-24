@@ -1251,7 +1251,7 @@ fn fixture_runs_replay_identically_per_seed_and_vary_between_seeds() {
             .map(|result| match result {
                 InteractionResult::PickedUp { gold, .. }
                 | InteractionResult::Opened { gold, .. } => *gold,
-                InteractionResult::Refused { .. } => 0,
+                InteractionResult::Exited { .. } | InteractionResult::Refused { .. } => 0,
             })
             .sum::<u32>();
         assert_eq!(
