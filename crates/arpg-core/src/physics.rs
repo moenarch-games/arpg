@@ -2,8 +2,8 @@
 //!
 //! `arpg-core` decides movement intent, acceleration, jumps, gravity and every gameplay
 //! outcome; this module asks the physics backend where that intent physically leads. Level
-//! geometry (walls, pillars, locked doors) is static boxes on a flat floor, an upward
-//! half-space (#59). Players and monsters are kinematic upright capsules moved by a character
+//! geometry (walls, pillars, locked doors, platforms) is static boxes and wedge ramps on a
+//! flat floor, an upward half-space (#59). Players and monsters are kinematic upright capsules moved by a character
 //! controller, which resolves contact, sliding, corners and, for players, support: whether the
 //! body stands on the ground.
 //!
@@ -51,6 +51,16 @@ const SUPPORT_REACH: f32 = CONTACT_OFFSET + 0.05;
 /// slope, so steps up to about 33 units climb and 35 block. Both backends climb with their
 /// character controller's autostep, on walking moves only (#222).
 pub(crate) const STEP_HEIGHT_UNITS: f32 = 25.0;
+
+/// The shape of a static body inside its bounding box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FixedShape {
+    /// The whole box.
+    Box,
+    /// A walkable ramp (#59): a wedge rising from the box's bottom at its +Z end to the box's
+    /// top at its -Z end.
+    Ramp,
+}
 
 /// A game-chosen identity for a physical body (walls, doors, players and monsters each
 /// take their own id range).
@@ -267,6 +277,15 @@ mod ab {
             half_extents: Vec3i,
         ) -> Result<(), GameError> {
             dispatch!(self, physics => physics.add_fixed(key, center, half_extents))
+        }
+
+        pub(crate) fn add_ramp(
+            &mut self,
+            key: BodyKey,
+            center: Vec3i,
+            half_extents: Vec3i,
+        ) -> Result<(), GameError> {
+            dispatch!(self, physics => physics.add_ramp(key, center, half_extents))
         }
 
         pub(crate) fn remove_fixed(&mut self, key: BodyKey) -> bool {
@@ -789,6 +808,54 @@ mod tests {
             assert!(high.x < 75.0 && (high.y - Y as f32).abs() < 1.0, "{high:?}");
         };
         each_backend(run);
+    }
+
+    /// A walking body follows a ramp's slope up and back down, supported all the way (#59).
+    #[test]
+    fn a_walking_body_follows_a_ramp_up_and_down() {
+        each_backend(|| {
+            let mut physics = floored();
+            // A ramp 60 high, rising from its foot at z = -10 to its top at z = -190.
+            physics
+                .add_ramp(1, Vec3i::new(0, 30, -100), Vec3i::new(60, 30, 90))
+                .unwrap();
+            // The slope's foot height (world units) at `z`.
+            let slope = |z: f32| (60.0 * (-10.0 - z) / 180.0).clamp(0.0, 60.0);
+            let mut position = at(0, 60);
+            physics.add_character(2, position, BODY).unwrap();
+            let mut walk = |physics: &mut Physics, dz: f32, ticks: usize| {
+                (0..ticks)
+                    .map(|_| {
+                        let motion = physics
+                            .move_player(2, position, Vector::new(0.0, -2.0, dz), true)
+                            .unwrap();
+                        position = motion.to;
+                        motion
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let up = walk(&mut physics, -7.0, 30);
+            let feet = |motion: &Motion| motion.to.y - Y as f32;
+            assert!(
+                up.windows(2)
+                    .all(|pair| feet(&pair[1]) >= feet(&pair[0]) - 1.0e-3)
+            );
+            let top = up.last().unwrap();
+            assert!(top.supported, "{top:?}");
+            // The capsule's rounded base touches the slope uphill of its centre.
+            assert!(
+                (feet(top) - slope(top.to.z)).abs() < 12.0 && feet(top) > 35.0,
+                "{top:?}"
+            );
+            // Downhill, Rapier lifts the landed body by its 0.01 unit normal nudge.
+            let down = walk(&mut physics, 7.0, 40);
+            assert!(down.iter().all(|motion| motion.supported), "{down:?}");
+            assert!(
+                down.windows(2)
+                    .all(|pair| feet(&pair[1]) <= feet(&pair[0]) + 0.05)
+            );
+            assert!(feet(down.last().unwrap()).abs() < 0.05, "{down:?}");
+        });
     }
 
     #[test]

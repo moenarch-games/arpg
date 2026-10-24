@@ -39,6 +39,39 @@ function segmentIntersectsBox(start, end, boxMinimum, boxMaximum) {
   return maximumT >= 0.03 && minimumT <= 0.97;
 }
 
+// A ramp collider (#59) as the authority shapes it: a wedge inside its box, rising from the
+// box's bottom at its +Z end to its top at its -Z end. Faces carry their own vertices and
+// normals, so each shades flat.
+function rampGeometry([sizeX, sizeY, sizeZ]) {
+  const [x, y, z] = [sizeX / 2, sizeY / 2, sizeZ / 2];
+  const corner = {
+    a: [-x, -y, -z],
+    b: [x, -y, -z],
+    c: [-x, -y, z],
+    d: [x, -y, z],
+    e: [-x, y, -z],
+    f: [x, y, -z],
+  };
+  const slope = Math.hypot(sizeY, sizeZ) || 1;
+  const faces: Array<[string, [number, number, number]]> = [
+    ["abd", [0, -1, 0]],
+    ["adc", [0, -1, 0]],
+    ["aef", [0, 0, -1]],
+    ["afb", [0, 0, -1]],
+    ["cdf", [0, sizeZ / slope, sizeY / slope]],
+    ["cfe", [0, sizeZ / slope, sizeY / slope]],
+    ["ace", [-1, 0, 0]],
+    ["bfd", [1, 0, 0]],
+  ];
+  return {
+    kind: "mesh",
+    resourceKey: `arpg-ramp:${sizeX}:${sizeY}:${sizeZ}`,
+    positions: faces.flatMap(([names]) => [...names].map((name) => corner[name])),
+    normals: faces.flatMap(([, normal]) => [normal, normal, normal]),
+    indices: faces.flatMap((_, face) => [face * 3, face * 3 + 1, face * 3 + 2]),
+  };
+}
+
 // Margin (m) around a barrier's footprint, so a body brushing past its edge stays visible.
 const OCCLUSION_MARGIN = 0.35;
 // Height (m) above the ground of the points kept visible: the upper body and its telegraphs.
@@ -170,17 +203,21 @@ export function buildFrame(
       if (isBarrier) translation[1] = visualHeight / 2;
       return {
         id: `static-${collider.id}`,
-        geometry: {
-          kind: "box",
-          size: [fullSize[0], visualHeight, fullSize[2]],
-        },
+        geometry:
+          collider.kind === "ramp"
+            ? rampGeometry(fullSize)
+            : {
+                kind: "box",
+                size: [fullSize[0], visualHeight, fullSize[2]],
+              },
         color: lowered
           ? "#62594e"
           : collider.kind === "pillar"
             ? "#5d5142"
             : collider.kind === "platform" ||
                 collider.kind === "ceiling" ||
-                collider.kind === "step"
+                collider.kind === "step" ||
+                collider.kind === "ramp"
               ? "#6b5e4b"
               : collider.kind === "crate"
                 ? "#7a5a36"

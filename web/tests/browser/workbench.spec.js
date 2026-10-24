@@ -100,6 +100,25 @@ test("the traversal scenario's stairs climb onto the platform without a jump", a
   await page.keyboard.up("s");
 });
 
+test("the traversal scenario's ramp walks up onto the platform", async ({ page, appUrl }) => {
+  const ramp = await openScenario(page, appUrl, "traversal");
+  for (const [key, ticks] of [
+    ["s", 46],
+    ["d", 29],
+  ]) {
+    await page.keyboard.down(key);
+    await ramp.steps(ticks);
+    await page.keyboard.up(key);
+  }
+  // Up the slope in the floor's region, then onto the platform's top (#59).
+  await page.keyboard.down("w");
+  await ramp.stepUntil(ramp.diagnostics, "feet 31", 30);
+  await expect(ramp.diagnostics).toContainText("region 1");
+  await ramp.stepUntil(ramp.diagnostics, "region 2", 30);
+  await ramp.stepUntil(ramp.diagnostics, "feet 60", 10);
+  await page.keyboard.up("w");
+});
+
 test("the traversal scenario stops a jump at its low ceiling", async ({ page, appUrl }) => {
   // Under the low ceiling a jump stops with the head at its underside, 140 units up.
   const ceiling = await openScenario(page, appUrl, "traversal");

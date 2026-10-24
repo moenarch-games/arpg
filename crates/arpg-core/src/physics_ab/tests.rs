@@ -151,7 +151,19 @@ fn invariants(
     current: &BTreeMap<BodyKey, Body>,
 ) -> Vec<String> {
     let mut violations = Vec::new();
-    let boxes = game.physics.fixed_boxes().collect::<Vec<_>>();
+    // A ramp's bounding box is not solid: bodies walk inside it, on its slope (#59). The
+    // physics contract tests cover the slope itself.
+    let ramps = game
+        .static_colliders
+        .iter()
+        .filter(|collider| collider.kind == crate::StaticColliderKind::Ramp)
+        .map(|collider| crate::array_to_vec(collider.position))
+        .collect::<Vec<_>>();
+    let boxes = game
+        .physics
+        .fixed_boxes()
+        .filter(|(center, _)| !ramps.contains(center))
+        .collect::<Vec<_>>();
     for (key, body) in current {
         let p = body.position;
         if !p.is_finite() {
@@ -162,11 +174,16 @@ fn invariants(
         if feet < FLOOR_FOOT_Y as f32 - PENETRATION {
             violations.push(format!("body {key} below the floor: feet {feet}"));
         }
+        // On a ramp the ground is the slope straight below.
+        let gap = game
+            .physics
+            .ground_height(p)
+            .map_or(f32::INFINITY, |ground| feet - ground)
+            .min(ground_gap(body, &boxes));
         match body.grounded {
-            Some(true) if ground_gap(body, &boxes) > SUPPORT_REACH_UNITS + PENETRATION => {
+            Some(true) if gap > SUPPORT_REACH_UNITS + PENETRATION => {
                 violations.push(format!(
-                    "body {key} grounded in the air: {} above the ground",
-                    ground_gap(body, &boxes)
+                    "body {key} grounded in the air: {gap} above the ground"
                 ));
             }
             None if p.y != PLAYER_Y as f32 => {
