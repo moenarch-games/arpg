@@ -112,7 +112,8 @@ pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// 20: stairs (#222): a player's last ground contact; schema 19 saves are refused.
 /// 21: poison (#64): a player's poison status; schema 20 saves are refused.
 /// 22: slow (#64): a monster's slow; schema 21 saves are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 22;
+/// 23: a player action's phase length (#56); schema 22 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 23;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -965,6 +966,9 @@ pub struct PlayerActionSnapshot {
     pub kind: ActionKind,
     pub phase: ActionPhase,
     pub ticks_remaining: u8,
+    /// The current phase's full length in ticks, so presentation places `ticks_remaining`
+    /// within the phase (#56).
+    pub phase_ticks: u8,
     pub facing: [i8; 2],
     /// Whether this action's own strike hit a target (combo hit confirmation).
     pub connected: bool,
@@ -1815,11 +1819,16 @@ struct ActionState {
 }
 
 impl ActionState {
-    fn snapshot(self) -> PlayerActionSnapshot {
+    fn snapshot(self, content: &Content) -> PlayerActionSnapshot {
         PlayerActionSnapshot {
             kind: self.kind,
             phase: self.phase,
             ticks_remaining: self.ticks_remaining,
+            phase_ticks: match self.phase {
+                ActionPhase::Windup => self.kind.windup_ticks(content),
+                ActionPhase::Active => self.kind.active_ticks(content),
+                ActionPhase::Recovery => self.kind.recovery_ticks(content),
+            },
             facing: [self.facing_x, self.facing_z],
             connected: self.connected,
             buffered: self.buffered,
@@ -2739,7 +2748,7 @@ impl ArpgGame {
                     last_supported: state.last_supported.to_array(),
                     movement: [state.movement_x, state.movement_z],
                     facing: [state.facing_x, state.facing_z],
-                    action: state.action.map(ActionState::snapshot),
+                    action: state.action.map(|action| action.snapshot(&self.content)),
                     hurt_ticks_remaining: state.hurt_ticks_remaining,
                     guard: state.guard,
                     counter: state.counter,
@@ -3674,7 +3683,10 @@ impl ArpgGame {
             ActionPhase::Active => action.kind.active_ticks(content),
             ActionPhase::Recovery => action.kind.recovery_ticks(content),
         };
-        if action.ticks_remaining == 0 || action.ticks_remaining > maximum_ticks {
+        if action.ticks_remaining == 0
+            || action.ticks_remaining > maximum_ticks
+            || action.phase_ticks != maximum_ticks
+        {
             return Err(GameError::new("saved player action timing is invalid"));
         }
         let strikes = !matches!(action.kind, ActionKind::Interact);
@@ -6554,7 +6566,7 @@ impl AuthoritativeGame for ArpgGame {
                     gold: state.gold,
                     alive: state.health > 0,
                     facing: [state.facing_x, state.facing_z],
-                    action: state.action.map(ActionState::snapshot),
+                    action: state.action.map(|action| action.snapshot(&self.content)),
                     reaction: Self::player_reaction(state),
                     guard: state.guard.stance,
                     guard_points: state.guard.points,
@@ -6613,7 +6625,7 @@ impl AuthoritativeGame for ArpgGame {
         }));
 
         Ok(ArpgSnapshot {
-            schema_version: 26,
+            schema_version: 27,
             run_seed: self.run_seed,
             tick: self.tick,
             world_units_per_meter: WORLD_UNITS_PER_METER,
@@ -9608,6 +9620,7 @@ mod tests {
         let action = tampered.players[0].action.as_mut().unwrap();
         action.phase = ActionPhase::Windup;
         action.ticks_remaining = 1;
+        action.phase_ticks = 5;
         action.buffered = None;
         action.connected = true;
         assert!(
@@ -12029,7 +12042,7 @@ mod tests {
         game.add_player(1).unwrap();
         let snapshot = game.snapshot().unwrap();
         let generated = generate_dungeon(content(), snapshot.run_seed);
-        assert_eq!(snapshot.schema_version, 26);
+        assert_eq!(snapshot.schema_version, 27);
         assert_eq!(snapshot.run_seed, 0xDEAD_BEEF);
         assert_eq!(game.run_seed(), snapshot.run_seed);
         assert_eq!(snapshot.rooms, generated.rooms);
@@ -12435,7 +12448,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 22"
+            "unsupported ARPG save schema version 12; expected 23"
         );
     }
 
@@ -12450,7 +12463,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 13; expected 22"
+            "unsupported ARPG save schema version 13; expected 23"
         );
     }
 

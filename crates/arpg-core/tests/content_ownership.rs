@@ -181,6 +181,7 @@ fn swing_once(game: ArpgGame, bundle: Option<ContentBundle>) -> (Vec<StrikeOutco
         kind: ActionKind::PrimaryAttack,
         phase: ActionPhase::Windup,
         ticks_remaining: 1,
+        phase_ticks: 5,
         facing,
         connected: false,
         buffered: None,
