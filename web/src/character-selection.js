@@ -1,30 +1,31 @@
+// Display text (`role`, `appearance`, `location`) holds message-catalog keys.
 export const CHARACTER_SELECTION_KEY = "arpg-character-selection-v1";
 
 export const CHARACTER_PRESETS = Object.freeze([
   {
     id: "aldren",
     name: "Aldren",
-    role: "Adventurer",
-    appearance: "Bronze",
-    location: "Ashen Hollow",
+    role: "character.role.adventurer",
+    appearance: "character.appearance.bronze",
+    location: "character.location.ashenHollow",
     accent: "#d6b45f",
     tone: "bronze",
   },
   {
     id: "mara",
     name: "Mara",
-    role: "Adventurer",
-    appearance: "Verdant",
-    location: "Ashen Hollow",
+    role: "character.role.adventurer",
+    appearance: "character.appearance.verdant",
+    location: "character.location.ashenHollow",
     accent: "#7f9d72",
     tone: "verdant",
   },
   {
     id: "thorne",
     name: "Thorne",
-    role: "Adventurer",
-    appearance: "Steel",
-    location: "Ashen Hollow",
+    role: "character.role.adventurer",
+    appearance: "character.appearance.steel",
+    location: "character.location.ashenHollow",
     accent: "#7e9eb6",
     tone: "steel",
   },

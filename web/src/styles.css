@@ -820,6 +820,11 @@ select {
 }
 .combat-action strong {
   font-size: 0.88rem;
+  /* Longer translations wrap inside the round button instead of overflowing it. */
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  line-height: 1.1;
 }
 .combat-action span {
   color: #d4c9b7;

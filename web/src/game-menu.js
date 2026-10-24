@@ -4,6 +4,8 @@
 // Settings opened from the header shortcut returns straight to play. `focus` names the menu
 // button that takes focus when the menu (re)opens, so closing a layer returns to its opener.
 
+import { t } from "./messages.ts";
+
 export const PLAY = Object.freeze({ layer: null, settingsFrom: null, focus: null });
 
 export function openMenu(focus = "resume") {
@@ -39,9 +41,9 @@ export function leaveNeedsConfirmation({ training }) {
 
 // What leaving means for this session, shown in the confirmation.
 export function leaveConsequence(mode) {
-  if (mode === "host") return "Leaving ends the hosted session for everyone in it.";
-  if (mode === "guest" || mode === "dedicated") return "You will disconnect from this session.";
-  return "Progress since your last save is lost.";
+  if (mode === "host") return t("leave.host");
+  if (mode === "guest" || mode === "dedicated") return t("leave.disconnect");
+  return t("leave.local");
 }
 
 // Only a local authority pauses for the menu: a hosted world is shared with guests, and a
@@ -52,5 +54,5 @@ export function menuPausesWorld(mode) {
 
 // Whether the open menu suspends the world, as the menu tells the player.
 export function menuWorldNotice(pausesWorld) {
-  return pausesWorld ? "Game paused" : "World continues · this menu does not pause a shared game";
+  return t(pausesWorld ? "menu.paused" : "menu.shared");
 }
