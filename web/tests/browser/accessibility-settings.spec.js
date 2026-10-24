@@ -3,7 +3,8 @@
 // Stored shape (see src/presentation-preferences.test.js):
 //   localStorage["arpg-presentation"] = { version: 2,
 //     graphics: { shadows, pixelRatioLimit },
-//     accessibility: { motion: "system" | "reduced" | "full", reducedFlashes, textScale } }
+//     accessibility: { motion: "system" | "reduced" | "full", reducedFlashes, textScale },
+//     camera: { zoom } }   // the follow-camera zoom (wheel, pinch, C resets)
 // migrated read-only from the legacy `arpg-graphics-v1` document.
 //
 // UI contract, inside the existing Settings dialog (no second settings surface):
@@ -31,6 +32,7 @@ const DEFAULT_DOCUMENT = {
   version: 2,
   graphics: { shadows: true, pixelRatioLimit: 2 },
   accessibility: { motion: "system", reducedFlashes: false, textScale: 1 },
+  camera: { zoom: 1 },
 };
 
 // Counts WebGL/WebGPU context requests: every scene renderer creation asks for one, so an
@@ -144,6 +146,7 @@ test("accessibility settings persist across reload as one version 2 document", a
     version: 2,
     graphics: { shadows: true, pixelRatioLimit: 1.5 },
     accessibility: { motion: "full", reducedFlashes: true, textScale: 1.25 },
+    camera: { zoom: 1 },
   });
 
   await page.reload();
@@ -159,6 +162,36 @@ test("accessibility settings persist across reload as one version 2 document", a
   // Every choice shows its value as readable text, not only as a position.
   await expect(ui.textSize.locator("option:checked")).toHaveText("125%");
   await expect(ui.motion.locator("option:checked")).toHaveText("Full");
+});
+
+test("the camera zoom persists in the presentation document across reload", async ({
+  page,
+  appUrl,
+}) => {
+  await page.goto(`${appUrl}${TRAINING}`);
+  const canvas = page.locator("canvas");
+  await expect(canvas).toHaveCount(1);
+  // Wheel toward the user zooms out: 120px is e^(120/600) of the default offset.
+  await canvas.dispatchEvent("wheel", { deltaY: 120, deltaMode: 0 });
+  await expect.poll(async () => (await storedDocument(page))?.camera.zoom).toBeCloseTo(1.2214, 3);
+  const zoom = (await storedDocument(page)).camera.zoom;
+
+  // A display setting change keeps the zoom instead of restoring a stale one.
+  const ui = await openSettings(page);
+  await ui.textSize.selectOption("1.25");
+  await ui.reset.click();
+  expect((await storedDocument(page)).camera.zoom).toBe(zoom);
+  await ui.close.click();
+
+  await page.reload();
+  await expect(page.locator("canvas")).toHaveCount(1);
+  expect((await storedDocument(page)).camera.zoom).toBe(zoom);
+  // The camera reset key restores and saves the default zoom.
+  await expect(page.getByRole("button", { name: "Pause", exact: true })).toBeVisible();
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.keyboard.press("c");
+  await expect.poll(async () => (await storedDocument(page)).camera.zoom).toBe(1);
+  expect(await storedDocument(page)).toEqual(DEFAULT_DOCUMENT);
 });
 
 test("legacy graphics settings migrate and the legacy value is kept", async ({ page, appUrl }) => {
@@ -180,6 +213,7 @@ test("legacy graphics settings migrate and the legacy value is kept", async ({ p
     version: 2,
     graphics: { shadows: false, pixelRatioLimit: 1 },
     accessibility: { motion: "system", reducedFlashes: false, textScale: 1.5 },
+    camera: { zoom: 1 },
   });
   expect(
     await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), LEGACY_GRAPHICS_KEY),

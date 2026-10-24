@@ -884,6 +884,14 @@ select {
   font-variant-numeric: tabular-nums;
   text-transform: capitalize;
 }
+/* The phase is in the words; weight only reinforces it, never colour alone. */
+.threat-status {
+  color: #f0a08f !important;
+}
+.threat-status[data-phase="active"] {
+  font-weight: 700;
+  text-transform: uppercase;
+}
 .defeated-status {
   color: #ef8175 !important;
   font-weight: 700;

@@ -72,13 +72,7 @@ import { DedicatedGameSession } from "./dedicated-session.js";
 import { DemoLobbySession } from "./vendor/multiplayer-setup-service/demo-session.ts";
 import { sampleVirtualStick } from "./virtual-stick.js";
 import { aimFromPointer, movementFromAim } from "./aim-input.js";
-import {
-  createFollowCamera,
-  createPinchZoom,
-  focusPoint,
-  loadCameraZoom,
-  persistCameraZoom,
-} from "./follow-camera.js";
+import { createFollowCamera, createPinchZoom, focusPoint } from "./follow-camera.js";
 import {
   CHARACTER_PRESETS,
   loadSelectedCharacterId,
@@ -218,9 +212,11 @@ function requestedRunSeed() {
 // Preloading and drawing share the persistent game canvas and actual renderer.
 let characterRenderer = null;
 
-// The gameplay follow camera (#58) for the one game canvas; its zoom persists as a display
-// preference. Pinch zoom tracks the touches on that canvas.
-const followCamera = createFollowCamera({ zoom: loadCameraZoom() });
+// The gameplay follow camera (#58) for the one game canvas. It owns the live zoom, which
+// persists in the presentation document (#61). Pinch zoom tracks the touches on that canvas.
+const followCamera = createFollowCamera({
+  zoom: loadPresentation().camera.zoom,
+});
 const pinchZoom = createPinchZoom();
 const textureCapabilities = {
   configureTextureLoader(loader) {
@@ -453,6 +449,22 @@ function App() {
   // Local display preferences (#61): never part of a save or the authority.
   const [presentation, setPresentation] = useState(() => loadPresentation());
   const { graphics, accessibility } = presentation;
+  // Wheel, pinch and reset zoom changes save into the same document without re-rendering.
+  const presentationRef = useRef(presentation);
+  useLayoutEffect(() => {
+    presentationRef.current = presentation;
+  }, [presentation]);
+  useEffect(() => {
+    let savedZoom = followCamera.zoom();
+    return followCamera.subscribe(() => {
+      if (followCamera.zoom() === savedZoom) return;
+      savedZoom = followCamera.zoom();
+      persistPresentation({
+        ...presentationRef.current,
+        camera: { zoom: savedZoom },
+      });
+    });
+  }, []);
   const systemReducedMotion = useSyncExternalStore(
     subscribeReducedMotion,
     prefersReducedMotion,
@@ -617,10 +629,7 @@ function App() {
           return;
         }
         if (dispatch.action === "game.resetCamera") {
-          if (dispatch.phase === "press") {
-            followCamera.reset();
-            persistCameraZoom(followCamera.zoom());
-          }
+          if (dispatch.phase === "press") followCamera.reset();
           return;
         }
         if (dispatch.action === "game.switchWeapon") {
@@ -926,7 +935,6 @@ function App() {
     const pixels =
       event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1);
     followCamera.zoomByWheel(pixels);
-    persistCameraZoom(followCamera.zoom());
   };
   const pinchPointer = (event, phase) => {
     if (event.pointerType !== "touch") return;
@@ -937,7 +945,6 @@ function App() {
     const factor = pinchZoom.move(event.pointerId, x, y);
     if (factor === null || !cameraInputAllowed()) return;
     followCamera.setZoom(followCamera.zoom() * factor);
-    persistCameraZoom(followCamera.zoom());
   };
 
   const stopMouseMovement = (pointerId) => {
@@ -988,8 +995,13 @@ function App() {
     if (event.button === 2) stopMouseMovement(mousePointerIdRef.current);
   };
 
+  // The follow camera owns the live zoom, so a settings change never restores a stale one
+  // and "Reset display settings" leaves the zoom to the camera's own reset.
   const updatePresentation = (next) => {
-    const normalized = normalizePresentation(next);
+    const normalized = normalizePresentation({
+      ...next,
+      camera: { zoom: followCamera.zoom() },
+    });
     if (!persistPresentation(normalized))
       setStatus("Display settings updated for this session; browser storage is unavailable");
     setPresentation(normalized);

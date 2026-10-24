@@ -1,11 +1,11 @@
 // The gameplay follow camera (#58, Atlas 4.1.4 option D): a fixed isometric view that
 // follows the focused player with frame-rate-independent smoothing, a bounded mouse-wheel /
-// pinch zoom and an explicit reset. There is no manual rotation.
+// pinch zoom and an explicit reset. The zoom persists in the local presentation document
+// (`preferences.js`). There is no manual rotation.
 //
 // Presentation only: the camera never feeds gameplay. Pointer aim projects through the pose
 // the last frame was drawn with, so the cursor maps onto the ground the player sees.
 import * as THREE from "three";
-import { persistStoredValue, readStoredValue } from "./preferences.js";
 
 // Offset from the followed point (metres) at zoom 1, and the vertical field of view.
 export const CAMERA_OFFSET = [10, 11, 10];
@@ -13,7 +13,6 @@ export const CAMERA_FOV_DEGREES = 43;
 export const ZOOM_MIN = 0.6;
 export const ZOOM_MAX = 1.6;
 export const DEFAULT_ZOOM = 1;
-export const CAMERA_ZOOM_KEY = "arpg-camera-zoom";
 // Follow rate (1/s): the camera closes ~63% of the gap every 1/FOLLOW_RATE seconds.
 const FOLLOW_RATE = 8;
 // A jump this far (metres) is a teleport, respawn or new focus: snap instead of gliding.
@@ -26,14 +25,6 @@ const WHEEL_PIXELS_PER_EFOLD = 600;
 
 export const clampZoom = (zoom) =>
   Number.isFinite(zoom) ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom)) : DEFAULT_ZOOM;
-
-export function loadCameraZoom(storage) {
-  return clampZoom(Number.parseFloat(readStoredValue(CAMERA_ZOOM_KEY, `${DEFAULT_ZOOM}`, storage)));
-}
-
-export function persistCameraZoom(zoom, storage) {
-  return persistStoredValue(CAMERA_ZOOM_KEY, `${clampZoom(zoom)}`, storage);
-}
 
 // The camera pose looking at `target` (a ground point) from the zoomed isometric offset.
 export function cameraPose(target, zoom = DEFAULT_ZOOM) {
