@@ -57,6 +57,7 @@ const player = {
     kind: "lightFollowUp",
     phase: "recovery",
     ticksRemaining: 5,
+    phaseTicks: 8,
     facing: [1, 0],
     connected: true,
     buffered: "heavy",
