@@ -49,6 +49,19 @@ export interface CharacterLayerLike<Snapshot> {
   dispose(): void;
 }
 
+export interface CameraPose {
+  position: number[];
+  target: number[];
+}
+
+export interface FollowCameraLike<Snapshot> {
+  // Follows the focus of `snapshot` for a frame drawn at `time` (ms); true once settled.
+  update(snapshot: Snapshot, playerId: number | null, time: number | undefined): boolean;
+  pose(): CameraPose;
+  // Zoom/reset changes redraw the latest snapshot.
+  subscribe(listener: () => void): () => void;
+}
+
 export interface SnapshotSource<Snapshot> {
   getSnapshot(): Snapshot | null;
   subscribe(listener: () => void): () => void;
@@ -68,7 +81,11 @@ export interface FramePresenterOptions<Canvas extends CanvasLike, Snapshot, Fram
     height: number,
     accent: string,
     effects: PresentationEffects,
+    pose?: CameraPose,
   ): Frame;
+  // The follow camera (#58): advanced once per drawn frame. While it has not settled the
+  // presenter keeps drawing frames so it glides to rest without new snapshots.
+  camera?: FollowCameraLike<Snapshot>;
   observeResize(canvas: Canvas, onResize: () => void): () => void;
   requestFrame(callback: (time: number) => void): unknown;
   cancelFrame(handle: unknown): void;
@@ -110,11 +127,12 @@ export function createFramePresenter<
   // A new renderer has an empty scene: character roots are handed to it on its first draw.
   let rootsSubmitted = false;
 
-  const draw = () => {
+  const draw = (time?: number) => {
     const snapshot = cues.take(snapshots.getSnapshot());
     if (!snapshot) return;
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
+    const settled = options.camera?.update(snapshot, view.playerId, time) ?? true;
     const frame = options.buildFrame(
       snapshot,
       view.playerId,
@@ -122,6 +140,7 @@ export function createFramePresenter<
       rect.height,
       view.accent,
       view.effects ?? FULL_EFFECTS,
+      options.camera?.pose(),
     );
     if (options.characters && renderer.renderImportedRoots) {
       const { roots, changed } = options.characters.sync(snapshot);
@@ -129,14 +148,15 @@ export function createFramePresenter<
       rootsSubmitted = true;
     }
     renderer.render(frame);
+    if (!settled) scheduleDraw();
   };
 
   // Coalesces every request until the next animation frame into one draw.
   const scheduleDraw = () => {
     if (disposed || frameRequest !== null) return;
-    frameRequest = options.requestFrame(() => {
+    frameRequest = options.requestFrame((time) => {
       frameRequest = null;
-      if (!disposed) draw();
+      if (!disposed) draw(time);
     });
   };
 
@@ -159,6 +179,7 @@ export function createFramePresenter<
     cues.observe(snapshots.getSnapshot());
     scheduleDraw();
   });
+  const unsubscribeCamera = options.camera?.subscribe(scheduleDraw);
   const disconnect = options.observeResize(canvas, resize);
   resize();
 
@@ -185,6 +206,7 @@ export function createFramePresenter<
       if (disposed) return;
       disposed = true;
       unsubscribe();
+      unsubscribeCamera?.();
       if (frameRequest !== null) options.cancelFrame(frameRequest);
       frameRequest = null;
       disconnect();
