@@ -20,9 +20,14 @@ async function download(page, trigger) {
   return JSON.parse(await readFile(await (await pending).path(), "utf8"));
 }
 
-async function changeSettings(page, { motion, reducedFlashes, textScale }) {
+async function changeSettings(page, { motion, reducedFlashes, textScale, graphics }) {
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  if (graphics) {
+    // Quality changes recreate the renderer mid-play (#61, 61a); the authority must not.
+    await settings.getByLabel("Enable shadows").setChecked(graphics.shadows);
+    await settings.getByLabel("Pixel ratio limit").selectOption(String(graphics.pixelRatioLimit));
+  }
   const accessibility = settings.getByRole("region", { name: "Accessibility", exact: true });
   await accessibility.getByLabel("Motion effects", { exact: true }).selectOption(motion);
   await accessibility
@@ -87,7 +92,7 @@ async function run(browser, appUrl, { stored = null, midRun = null } = {}) {
   }
 }
 
-test("accessibility preferences do not change the authoritative trace", async ({
+test("accessibility and quality preferences do not change the authoritative trace", async ({
   browser,
   appUrl,
 }) => {
@@ -98,7 +103,12 @@ test("accessibility preferences do not change the authoritative trace", async ({
       graphics: { shadows: true, pixelRatioLimit: 2 },
       accessibility: { motion: "reduced", reducedFlashes: true, textScale: 1.5 },
     },
-    midRun: { motion: "full", reducedFlashes: false, textScale: 1.25 },
+    midRun: {
+      motion: "full",
+      reducedFlashes: false,
+      textScale: 1.25,
+      graphics: { shadows: false, pixelRatioLimit: 1 },
+    },
   });
 
   // The scenario really exercised combat during the compared window.
@@ -118,7 +128,8 @@ test("accessibility preferences do not change the authoritative trace", async ({
     expect(saveText).not.toContain(field);
   expect(adjusted.presentation).toEqual({
     version: 2,
-    graphics: { shadows: true, pixelRatioLimit: 2 },
+    graphics: { shadows: false, pixelRatioLimit: 1 },
     accessibility: { motion: "full", reducedFlashes: false, textScale: 1.25 },
+    camera: { zoom: 1 },
   });
 });

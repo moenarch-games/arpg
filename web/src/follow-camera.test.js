@@ -8,18 +8,8 @@ import {
   cameraPose,
   createFollowCamera,
   createPinchZoom,
-  loadCameraZoom,
-  persistCameraZoom,
 } from "./follow-camera.js";
 import { buildFrame } from "./scene-frame.ts";
-
-const memoryStorage = () => {
-  const values = new Map();
-  return {
-    getItem: (key) => values.get(key) ?? null,
-    setItem: (key, value) => values.set(key, value),
-  };
-};
 
 test("the camera snaps onto its first focus and glides frame-rate independently", () => {
   const glide = (frameMs) => {
@@ -46,7 +36,7 @@ test("the camera settles, and snaps across teleports", () => {
   expect(camera.pose().target).toEqual([30, 0, 0]);
 });
 
-test("zoom is bounded, scales the offset, resets and persists", () => {
+test("zoom is bounded, scales the offset and resets", () => {
   const camera = createFollowCamera();
   camera.follow([0, 0, 0], 0);
   camera.zoomByWheel(100_000);
@@ -56,15 +46,6 @@ test("zoom is bounded, scales the offset, resets and persists", () => {
   expect(camera.pose().position).toEqual(CAMERA_OFFSET.map((value) => value * ZOOM_MIN));
   camera.reset();
   expect(camera.zoom()).toBe(DEFAULT_ZOOM);
-
-  const storage = memoryStorage();
-  expect(loadCameraZoom(storage)).toBe(DEFAULT_ZOOM);
-  persistCameraZoom(1.25, storage);
-  expect(loadCameraZoom(storage)).toBe(1.25);
-  storage.setItem("arpg-camera-zoom", "nonsense");
-  expect(loadCameraZoom(storage)).toBe(DEFAULT_ZOOM);
-  storage.setItem("arpg-camera-zoom", "99");
-  expect(loadCameraZoom(storage)).toBe(ZOOM_MAX);
 });
 
 test("zoom and reset notify listeners", () => {
