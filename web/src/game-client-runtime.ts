@@ -21,6 +21,7 @@
 import { contentRevisionMismatch, decodeSnapshot, encodeCommand } from "./wire-protocol.js";
 import { DEFAULT_SCENARIO, trainingTicksForFrame } from "./training-arena.js";
 import { menuPausesWorld } from "./game-menu.js";
+import { t } from "./messages.ts";
 
 export const TICK_INTERVAL_MS = 1000 / 60;
 
@@ -403,7 +404,7 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
           stopLoop();
           update({ lifecycle: "failed" });
         }
-        status(`Game failed to load: ${message}`);
+        status(t("status.loadError", { error: message }));
       },
     );
     coreLoad = attempt;
@@ -460,12 +461,14 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
         if (HELD_COMMAND_TYPES.has(command.type as string)) {
           void session.sendCommand(++sequence, payload).catch((error) => {
             // A refresh only repeats held state, so its failure is not news to the player.
-            if (dedicated === session && !quiet) status(`Dedicated command failed: ${error}`);
+            if (dedicated === session && !quiet)
+              status(t("status.dedicatedCommandFailed", { error: String(error) }));
           });
         } else {
           // Settles on the authority's ack; a rejection or an ended session is reported.
           void session.sendReliableCommand(++sequence, payload).catch((error) => {
-            if (dedicated === session) status(`Dedicated command failed: ${error}`);
+            if (dedicated === session)
+              status(t("status.dedicatedCommandFailed", { error: String(error) }));
           });
         }
       } else {
@@ -651,7 +654,7 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
           lifecycle: "running",
           lobbyCode: lobby.displayCode,
         });
-        status(`Hosting lobby ${lobby.displayCode}`);
+        status(t("status.hosting", { code: lobby.displayCode }));
       } catch (error) {
         if (!isCurrent(generation) || peer !== session) return;
         // Hosting failed; the local authority keeps running solo.
@@ -660,7 +663,7 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
         peer = null;
         session.close();
         update({ mode: "local", lifecycle: "running", lobbyCode: "" });
-        status(`Could not host: ${error}`);
+        status(t("status.hostFailed", { error: String(error) }));
       }
     },
 
@@ -691,7 +694,7 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
           if (!isCurrent(generation) || peer !== session) return;
           teardown();
           update({ lifecycle: "disconnected", playerId: null });
-          status("Host connection lost");
+          status(t("status.hostLost"));
         },
         onSnapshot: (snapshot) => options.snapshots.publish(snapshot),
         onStatus: status,
@@ -707,19 +710,19 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
       try {
         await session.join(code);
         if (!isCurrent(generation) || peer !== session) return;
-        status(`Joined lobby ${code}; establishing host channel…`);
+        status(t("status.joining", { code }));
       } catch (error) {
         if (!isCurrent(generation) || peer !== session) return;
         teardown();
         update({ lifecycle: "failed" });
-        status(`Could not join: ${error}`);
+        status(t("status.joinFailed", { error: String(error) }));
       }
     },
 
     async startDedicated(endpoint: string) {
       if (disposed()) return;
       if (!options.supportsWebTransport()) {
-        status("Dedicated online requires browser WebTransport support");
+        status(t("status.noWebTransport"));
         return;
       }
       const generation = replaceSource({
@@ -736,7 +739,12 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
           onWelcome: (welcome) => {
             if (!current()) return;
             update({ playerId: welcome.playerId, lifecycle: "running" });
-            status(`Dedicated authority · player ${welcome.playerId} · ${welcome.tickHz} Hz`);
+            status(
+              t("status.dedicatedWelcome", {
+                player: String(welcome.playerId),
+                hz: welcome.tickHz,
+              }),
+            );
             syncHeldOnAssignment();
             startHeldRefresh();
           },
@@ -750,7 +758,7 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
               stopHeldRefresh();
               session.close();
               update({ lifecycle: "failed", playerId: null });
-              status(`Rejected dedicated snapshot: ${error}`);
+              status(t("status.dedicatedRejected", { error: String(error) }));
               return;
             }
             const incompatible = contentRevisionMismatch(
@@ -773,23 +781,23 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
             if (!current()) return;
             if (next === "connecting") {
               stopHeldRefresh();
-              status("Connecting to dedicated authority…");
+              status(t("status.dedicatedConnecting"));
             }
             if (next === "disconnected") {
               stopHeldRefresh();
               update({ playerId: null, lifecycle: "disconnected" });
-              status("Dedicated authority disconnected");
+              status(t("status.dedicatedDisconnected"));
             }
           },
           onError: (error) => {
-            if (current()) status(`Dedicated transport error: ${error}`);
+            if (current()) status(t("status.dedicatedTransport", { error: String(error) }));
           },
         });
       } catch (error) {
         if (!current()) return;
         dedicated = null;
         update({ lifecycle: "failed", playerId: null });
-        status(`Could not connect dedicated server: ${error}`);
+        status(t("status.dedicatedFailed", { error: String(error) }));
       }
     },
 
