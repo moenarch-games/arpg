@@ -1,7 +1,21 @@
 # ADR 0004 — Cross-platform game audio (native Rust and GitHub Pages)
 
-Status: **proposed**, waiting on the owner's choice (#67 slice 67c, 2026-10-24).
-Nothing is implemented until the owner picks an option on #67.
+Status: **accepted** (#67 slice 67c, owner answers 2026-10-24, recorded on #67).
+
+## Decision
+
+The owner chose the recommended option on all five questions:
+
+1. **Architecture:** option A. One shared Rust audio director, `kira` as the
+   native backend, and the browser's Web Audio (through `web-sys`) as the web backend.
+2. **Home:** a new shared repo, `game-audio`, consumed by pinned git revision.
+   The repo is created by the owner, and implementation waits until it exists.
+3. **Positional audio:** distance fade plus stereo pan, calculated in the director.
+   No HRTF.
+4. **Sounds:** the CC0 set comes first, through asset-tooling#297, scoped to #67's
+   sound list. 67c lands with real sounds.
+5. **Scope:** 67c covers the `game-audio` crate and package plus arpg web
+   integration. mmorpg native and Pages adoption is a separate mmorpg issue.
 
 ## Context
 
@@ -161,3 +175,95 @@ Settings keep their owner: volume and mute persist through `settings`'
   visual feedback still complete. There's no substitute sound.
 - Clip format: short PCM WAV for the first CC0 set (tiny clips, decoded
   everywhere). Compressed formats can come later if the size matters.
+
+## `game-audio` layout and API (draft for implementation)
+
+```
+game-audio/
+  Cargo.toml                 # workspace
+  crates/game-audio/         # director + backends, one crate
+    src/lib.rs               # public API re-exports
+    src/manifest.rs          # SoundManifest (serde, JSON): cues, variants, buses
+    src/director.rs          # Director: cue → voice decisions, pure and testable
+    src/voices.rs            # voice pool, priority stealing, per-cue cooldown
+    src/spatial.rs           # Listener, distance fade curve, equal-power pan
+    src/backend.rs           # Backend trait + Command enum
+    src/backend/kira.rs      # cfg(not(wasm32)), feature "kira"
+    src/backend/web.rs       # cfg(wasm32), feature "web" (web-sys)
+    src/backend/recording.rs # test backend: records Commands
+  crates/game-audio-wasm/    # wasm-bindgen facade → npm package for JS front ends
+  web/                       # tiny JS glue: first-gesture unlock, visibilitychange
+```
+
+The core types are below. Names are a draft. Under the no-compat policy we
+choose the cleanest API when the code is written.
+
+```rust
+pub struct SoundManifest { pub buses: Vec<BusSpec>, pub cues: Vec<CueSpec> }
+pub struct CueSpec {
+    pub kind: String,            // e.g. "combat.hit", matches 67a cue kinds
+    pub clips: Vec<ClipRef>,     // variants, chosen round-robin or seeded random
+    pub bus: BusId,              // "effects" | "ui" (master is the root)
+    pub priority: u8,            // higher wins when stealing
+    pub max_voices: u8,          // per-cue cap
+    pub cooldown_ms: u32,        // ignore re-triggers inside the window
+    pub gain_db: f32,
+    pub pitch_jitter: f32,
+    pub spatial: bool,           // false = UI / non-positional
+}
+
+pub struct Director { /* manifest, voice pool, listener, bus gains, state */ }
+impl Director {
+    pub fn new(manifest: SoundManifest, limits: VoiceLimits) -> Self;
+    pub fn set_listener(&mut self, pos: [f32; 3], right: [f32; 3]);
+    /// `key` = 67a stable cue key: seen keys never replay.
+    pub fn trigger(&mut self, key: &str, kind: &str, entity: Option<u64>, at: Option<[f32; 3]>, now_ms: f64);
+    pub fn stop_entity(&mut self, entity: u64);          // entity removal
+    pub fn reset(&mut self);                             // session replace / seek / reconnect
+    pub fn apply_settings(&mut self, s: &AudioSettings); // master/effects/ui volume + mute
+    pub fn set_suspended(&mut self, suspended: bool);    // hidden tab / minimised window
+    pub fn drain(&mut self) -> impl Iterator<Item = Command> + '_;
+}
+
+pub enum Command {
+    Load { clip: ClipId, url: String },
+    Start { voice: VoiceId, clip: ClipId, bus: BusId, gain: f32, pan: f32, rate: f32 },
+    Update { voice: VoiceId, gain: f32, pan: f32 },     // moving source / listener
+    Stop { voice: VoiceId, fade_ms: u32 },
+    SetBusGain { bus: BusId, gain: f32, fade_ms: u32 },
+    Suspend,
+    Resume,
+}
+
+pub trait Backend {
+    fn apply(&mut self, cmd: Command);
+    fn finished_voices(&mut self) -> Vec<VoiceId>;     // so the pool can free voices
+}
+```
+
+How the two backends implement this:
+
+- **kira:** each bus is a sub-track. `Start` becomes `StaticSoundData`, played with
+  volume, panning and playback rate. `Stop` uses a tween fade. `Suspend` pauses
+  the manager. Clips decode through symphonia's `wav` feature.
+- **web:** a single `AudioContext`. Each bus is a `GainNode`. Each voice is an
+  `AudioBufferSourceNode`, then a `GainNode`, then a `StereoPannerNode`. Clips
+  are fetched and passed through `decodeAudioData`. `Suspend` and `Resume` call
+  `context.suspend()` and `context.resume()`. The JS glue calls `unlock()` on the
+  first pointer or key gesture, and `set_suspended` on `visibilitychange`.
+
+The wasm facade exposes the same `Director` methods to JS, using a `CueEvent`
+shape matching 67a. arpg web feeds it `presentation-cues.js` output plus the
+listener pose from the follow camera. Volume and mute come from `settings`'
+`AudioSettingsAdapter`.
+
+Tests:
+
+- **Director unit tests** run against the recording backend. They cover dedupe,
+  cooldown, caps and stealing, the distance and pan maths, reset and entity
+  removal, mute and volume, and suspend.
+- **arpg browser spec:** asserts that a cue starts a voice, and that a blocked
+  or missing context stays silent while visual feedback is unchanged.
+
+The initial manifest (cue → sound, durations, variants) is the list in
+asset-tooling#297.
