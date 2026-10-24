@@ -218,6 +218,15 @@ export function createPresentationCues(options = {}) {
           roomId: room.id,
           state: room.encounterState,
         });
+      // A phased encounter moving on (#66); a wipe's return to the first phase is the reset.
+      if (was && (room.phase ?? 0) > (was.phase ?? 0))
+        add({
+          key: `phase:${room.id}:${room.phase}:${tick}`,
+          kind: "phase",
+          roomId: room.id,
+          phase: room.phase,
+          phaseCount: room.phaseCount ?? 0,
+        });
     }
 
     return found.sort((left, right) => left.order - right.order);

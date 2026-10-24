@@ -64,6 +64,8 @@ export function cueText(cue, playerId, snapshot) {
       return mine ? t("cue.counterLost") : null;
     case "encounter":
       return ENCOUNTER_KEYS[cue.state] ? t(ENCOUNTER_KEYS[cue.state]) : null;
+    case "phase":
+      return t("cue.phase", { phase: cue.phase + 1, total: cue.phaseCount + 1 });
     default:
       return null;
   }

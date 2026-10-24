@@ -179,6 +179,21 @@ describe("presentation cues", () => {
     expect(found[2].state).toBe("cleared");
   });
 
+  test("a phased encounter moving on is a cue; a wipe back to the first phase is not (#66)", () => {
+    const cues = createPresentationCues();
+    const room = (phase, encounterState = "active") => ({
+      id: 1,
+      encounterState,
+      phase,
+      phaseCount: 2,
+    });
+    cues.observe(frame(1, { rooms: [room(0)] }));
+    const next = cues.observe(frame(2, { rooms: [room(1)] }));
+    expect(kinds(next)).toEqual(["phase"]);
+    expect(next[0]).toMatchObject({ phase: 1, phaseCount: 2 });
+    expect(kinds(cues.observe(frame(3, { rooms: [room(0, "dormant")] })))).toEqual(["encounter"]);
+  });
+
   test("overflow drops cosmetic cues beyond the per-frame cap and keeps a bounded history", () => {
     const cues = createPresentationCues({ frameLimit: 2, capacity: 3 });
     cues.observe(frame(1));

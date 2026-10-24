@@ -290,6 +290,17 @@ test("rooms publish their encounter definition and malformed ones are rejected",
     expect(() => decodeSnapshot(encode({ ...payload, rooms: [{ ...room, encounter }] }))).toThrow();
 });
 
+test("rooms publish a phased encounter's progress (#66) and malformed ones are rejected", () => {
+  const room = { id: 2, minX: 0, maxX: 100, minZ: 0, maxZ: 100, kind: "combat" };
+  const phased = { ...room, phase: 1, phaseCount: 2, remaining: 3 };
+  expect(decodeSnapshot(encode({ ...payload, rooms: [phased] })).rooms[0].phase).toBe(1);
+  for (const candidate of [
+    { ...phased, phase: 3 },
+    { ...phased, remaining: -1 },
+  ])
+    expect(() => decodeSnapshot(encode({ ...payload, rooms: [candidate] }))).toThrow();
+});
+
 test("requires the authority's content revision", () => {
   for (const contentRevision of [undefined, "", "XYZ", "0123456789abcdef0"])
     expect(() => decodeSnapshot(encode({ ...payload, contentRevision }))).toThrow();

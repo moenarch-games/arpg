@@ -14,8 +14,8 @@ use content::{
     JumpTuning, MonsterDefinition, StrikeDefinition, content,
 };
 pub use content::{
-    CONTENT_FORMAT_VERSION, ContentBundle, ContentError, DefinitionId, MAX_ENCOUNTER_SPAWNS,
-    base_bundle, content_revision,
+    CONTENT_FORMAT_VERSION, ContentBundle, ContentError, DefinitionId, MAX_ENCOUNTER_PHASES,
+    MAX_ENCOUNTER_SPAWNS, PhaseData, PhaseTrigger, SpawnData, base_bundle, content_revision,
 };
 use navigation::{Cell, FieldRoute, FieldWork, NAV_CELL_SIZE, Rect, RoomGrid, TargetField};
 pub use topology::{
@@ -115,7 +115,8 @@ pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// 23: a player action's phase length (#56); schema 22 saves are refused.
 /// 24: a player's checkpoint room (#66); schema 23 saves are refused.
 /// 25: the run's state, completed through the exit (#66); schema 24 saves are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 25;
+/// 26: each room's encounter phase (#66); schema 25 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 26;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -129,7 +130,8 @@ pub const SAVE_STATE_SCHEMA_VERSION: u16 = 25;
 // 12: jumping, gravity and grounded-only guard and counter (#59).
 // 13: checkpoints, return after defeat, party-wipe encounter reset and Leave (#66).
 // 14: the start room's exit completes the run once every encounter is cleared (#66).
-pub const SAVE_STATE_RULES_VERSION: u16 = 14;
+// 15: phased encounters: triggers, joining members and boss attack changes (#66).
+pub const SAVE_STATE_RULES_VERSION: u16 = 15;
 // Velocities are world units per simulation tick. At 60 Hz and 100 world units per
 // meter, 7 units/tick is 4.2 m/s.
 const PLAYER_SPEED: i32 = 7;
@@ -1295,6 +1297,14 @@ pub struct RoomSnapshot {
     /// The encounter definition a combat room runs (`None` for the start room), published
     /// like `MonsterSnapshot::definition` so presentation can key on it.
     pub encounter: Option<String>,
+    /// The encounter's current phase (#66): 0 for its first, up to `phase_count`. A wipe
+    /// returns it to 0.
+    pub phase: u8,
+    /// Phases the encounter adds after its first; 0 for an unphased one.
+    pub phase_count: u8,
+    /// The objective (#66): monsters in play still to defeat. Published only; derived from
+    /// the monsters.
+    pub remaining: u16,
 }
 
 impl RoomSnapshot {
@@ -1713,6 +1723,8 @@ pub struct PlayerSaveState {
 pub struct RoomSaveState {
     pub id: RoomId,
     pub encounter_state: RoomEncounterState,
+    /// The encounter's current phase (#66).
+    pub phase: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -2070,6 +2082,10 @@ struct MonsterState {
     /// Transient within a tick, never saved: where the body stood before this tick's
     /// physics pass, the start of a lunge's swept strike (#90).
     swept_from: Vector,
+    /// The encounter phase that brings it into play (#66): 0 for the spawn group. Until its
+    /// room's encounter reaches that phase it waits out of play, without health. Derived
+    /// from generation, never saved.
+    phase: u8,
 }
 
 impl MonsterState {
@@ -2098,7 +2114,24 @@ impl MonsterState {
                 .then(|| GuardState::ready(guard_max_points)),
             swept_from: vector(position),
             slow: None,
+            phase: 0,
         }
+    }
+
+    /// The same monster attacking as `attack` does (#66): strike, timing, damage, spacing
+    /// and delivery. Health, movement, guard and rewards stay its own.
+    fn attacking_as(mut self, attack: &MonsterDefinition) -> Self {
+        let definition = &mut self.definition;
+        definition.strike = attack.strike;
+        definition.windup_ticks = attack.windup_ticks;
+        definition.active_ticks = attack.active_ticks;
+        definition.recovery_ticks = attack.recovery_ticks;
+        definition.damage = attack.damage;
+        definition.retreat_range = attack.retreat_range;
+        definition.projectile = attack.projectile;
+        definition.lunge_speed = attack.lunge_speed;
+        definition.burst = attack.burst;
+        self
     }
 
     fn definition(&self) -> MonsterDefinition {
@@ -2862,6 +2895,7 @@ impl ArpgGame {
                 .map(|room| RoomSaveState {
                     id: room.id,
                     encounter_state: room.encounter_state,
+                    phase: room.phase,
                 })
                 .collect(),
             monsters: self
@@ -3005,21 +3039,45 @@ impl ArpgGame {
         }
         let mut room_states = BTreeMap::new();
         for room in save.rooms {
-            if room_states.insert(room.id, room.encounter_state).is_some() {
+            if room_states.insert(room.id, room).is_some() {
                 return Err(GameError::new("save contains duplicate room ids"));
             }
         }
         for room in &mut game.rooms {
-            let state = room_states
+            let saved = room_states
                 .remove(&room.id)
                 .ok_or_else(|| GameError::new("save is missing a generated room"))?;
+            let state = saved.encounter_state;
             if room.kind == RoomKind::Start && state != RoomEncounterState::Cleared {
                 return Err(GameError::new("start room must remain cleared"));
             }
+            // Phases run only while the encounter does: it starts in its first and clears
+            // in its last (#66).
+            let phase_valid = match state {
+                RoomEncounterState::Dormant => saved.phase == 0,
+                RoomEncounterState::Active => saved.phase <= room.phase_count,
+                RoomEncounterState::Cleared => saved.phase == room.phase_count,
+            };
+            if !phase_valid {
+                return Err(GameError::new("saved encounter phase is invalid"));
+            }
             room.encounter_state = state;
+            room.phase = saved.phase;
         }
         if !room_states.is_empty() {
             return Err(GameError::new("save contains unknown room ids"));
+        }
+        // The boss attacks as the phases reached so far made it (#66).
+        let rooms = game
+            .rooms
+            .iter()
+            .filter(|room| room.phase > 0)
+            .map(|room| (room.id, room.phase))
+            .collect::<Vec<_>>();
+        for (room_id, phase) in rooms {
+            for reached in 1..=phase {
+                game.apply_boss_attack(room_id, reached);
+            }
         }
 
         let mut player_ids = BTreeSet::new();
@@ -3169,12 +3227,22 @@ impl ArpgGame {
         let mut monster_states = BTreeMap::new();
         for monster in save.monsters {
             // A monster's definition follows from the generated dungeon, not the save.
-            let definition = game
+            let generated = game
                 .monsters
                 .iter()
                 .find(|generated| generated.id == monster.id)
-                .ok_or_else(|| GameError::new("save contains unknown monster ids"))?
-                .definition();
+                .ok_or_else(|| GameError::new("save contains unknown monster ids"))?;
+            let definition = generated.definition();
+            // A later phase's member waits out of play, untouched, until its phase (#66).
+            if !game.monster_in_play(generated)
+                && (monster.health > 0
+                    || monster.action.is_some()
+                    || monster.room_id != generated.room_id)
+            {
+                return Err(GameError::new(
+                    "saved monster of a phase not started is in play",
+                ));
+            }
             if monster.health > definition.health {
                 return Err(GameError::new(
                     "saved monster health exceeds authoritative maximum",
@@ -6025,6 +6093,7 @@ impl ArpgGame {
             .filter(|state| state.health > 0)
             .filter_map(|state| self.room_at_position(state.position))
             .collect::<BTreeSet<_>>();
+        self.advance_phases();
         let rooms_with_living_monsters = self
             .monsters
             .iter()
@@ -6048,10 +6117,11 @@ impl ArpgGame {
             let activated = match activation {
                 EncounterActivation::PlayerEntersRoom => occupied_rooms.contains(&room.id),
             };
-            // Every monster of the room counts, including any a workbench arranged there.
+            // Every monster of the room counts, including any a workbench arranged there, and
+            // a phased encounter must have reached its last phase (#66).
             let completed = match completion {
                 EncounterCompletion::SpawnGroupDefeated => {
-                    !rooms_with_living_monsters.contains(&room.id)
+                    !rooms_with_living_monsters.contains(&room.id) && room.phase == room.phase_count
                 }
             };
             match room.encounter_state {
@@ -6146,6 +6216,94 @@ impl ArpgGame {
         });
         if let Some(room) = self.rooms.iter_mut().find(|room| room.id == room_id) {
             room.encounter_state = RoomEncounterState::Dormant;
+            room.phase = 0;
+        }
+    }
+
+    /// Whether a monster takes part in the game now: a later phase's member waits out of
+    /// play until its room's encounter reaches that phase (#66).
+    fn monster_in_play(&self, monster: &MonsterState) -> bool {
+        monster.phase == 0
+            || self
+                .rooms
+                .iter()
+                .any(|room| room.id == monster.room_id && room.phase >= monster.phase)
+    }
+
+    /// The boss of `room_id`'s encounter (#66): its spawn-group member of the boss definition.
+    fn boss_index(&self, room_id: RoomId) -> Option<usize> {
+        let boss = self.content.monster(self.room_encounter(room_id)?.boss?).id;
+        self.monsters.iter().position(|monster| {
+            monster.room_id == room_id && monster.phase == 0 && monster.definition.id == boss
+        })
+    }
+
+    /// Phase `phase`'s change to the boss's attack, if it has one (#66).
+    fn apply_boss_attack(&mut self, room_id: RoomId, phase: u8) {
+        let attack = self
+            .room_encounter(room_id)
+            .and_then(|encounter| encounter.phases.get(usize::from(phase) - 1))
+            .and_then(|phase| phase.boss_attack)
+            .map(|attack| *self.content.monster(attack));
+        if let (Some(attack), Some(index)) = (attack, self.boss_index(room_id)) {
+            self.monsters[index] = self.monsters[index].attacking_as(&attack);
+        }
+    }
+
+    /// Starts the next phase of every running encounter whose trigger holds (#66), one phase
+    /// per encounter and tick: its members join the fight as spawned, and the boss breaks off
+    /// whatever it was doing with a readable stagger before it attacks in the new way.
+    fn advance_phases(&mut self) {
+        let starting = self
+            .rooms
+            .iter()
+            .filter(|room| {
+                room.encounter_state == RoomEncounterState::Active && room.phase < room.phase_count
+            })
+            .filter_map(|room| {
+                let phase = &self.room_encounter(room.id)?.phases[usize::from(room.phase)];
+                let boss = self.boss_index(room.id).map(|index| &self.monsters[index]);
+                let holds = match phase.trigger {
+                    content::PhaseTrigger::BossHealthBelow { percent } => boss.is_none_or(|boss| {
+                        u32::from(boss.health) * 100
+                            <= u32::from(percent) * u32::from(boss.definition.health)
+                    }),
+                    content::PhaseTrigger::AddsDefeated => !self.monsters.iter().any(|monster| {
+                        monster.room_id == room.id
+                            && monster.health > 0
+                            && boss.is_none_or(|boss| boss.id != monster.id)
+                    }),
+                };
+                holds.then_some((room.id, room.phase + 1))
+            })
+            .collect::<Vec<_>>();
+        // The longest stagger the content's attacks cause: a phase change reads like one.
+        let stagger = self.content.max_stagger_ticks();
+        for (room_id, phase) in starting {
+            if let Some(room) = self.rooms.iter_mut().find(|room| room.id == room_id) {
+                room.phase = phase;
+            }
+            let roster = &self.encounter_roster;
+            for monster in self
+                .monsters
+                .iter_mut()
+                .filter(|monster| monster.room_id == room_id && monster.phase == phase)
+            {
+                if let Some(fresh) = roster.iter().find(|fresh| fresh.id == monster.id) {
+                    *monster = MonsterState {
+                        health: fresh.definition.health,
+                        ..*fresh
+                    };
+                }
+            }
+            self.apply_boss_attack(room_id, phase);
+            if let Some(index) = self.boss_index(room_id)
+                && self.monsters[index].health > 0
+            {
+                let boss = &mut self.monsters[index];
+                boss.action = None;
+                boss.stagger_ticks_remaining = stagger;
+            }
         }
     }
 
@@ -6921,16 +7079,31 @@ impl AuthoritativeGame for ArpgGame {
         }));
 
         Ok(ArpgSnapshot {
-            schema_version: 27,
+            schema_version: 28,
             run_seed: self.run_seed,
             tick: self.tick,
             world_units_per_meter: WORLD_UNITS_PER_METER,
-            rooms: self.rooms.clone(),
+            rooms: self
+                .rooms
+                .iter()
+                .map(|room| RoomSnapshot {
+                    remaining: self
+                        .monsters
+                        .iter()
+                        .filter(|monster| monster.room_id == room.id && monster.health > 0)
+                        .count()
+                        .try_into()
+                        .unwrap_or(u16::MAX),
+                    ..room.clone()
+                })
+                .collect(),
             doors: self.doors.clone(),
             players,
+            // A later phase's members appear once their phase starts (#66).
             monsters: self
                 .monsters
                 .iter()
+                .filter(|monster| self.monster_in_play(monster))
                 .map(|monster| MonsterSnapshot {
                     id: monster.id,
                     definition: self.content.id(monster.definition().id).to_string(),
@@ -7146,7 +7319,9 @@ fn generate_dungeon(content: &Content, seed: RunSeed) -> GeneratedDungeon {
         .filter(|room| room.kind == RoomKind::Combat)
         .enumerate()
     {
-        room.encounter = Some(content.id(content.room_encounter(index).id).to_string());
+        let encounter = content.room_encounter(index);
+        room.encounter = Some(content.id(encounter.id).to_string());
+        room.phase_count = u8::try_from(encounter.phases.len()).expect("phases are bounded");
     }
     let start_room = rooms
         .iter()
@@ -7197,6 +7372,9 @@ fn generated_rooms(columns: [(i32, i32); 3], rows: [(i32, i32); 2]) -> Vec<RoomS
                 },
                 neighbors: neighbors[index].clone(),
                 encounter: None,
+                phase: 0,
+                phase_count: 0,
+                remaining: 0,
             });
         }
     }
@@ -7246,17 +7424,26 @@ fn generated_monsters(
     {
         let encounter = content.room_encounter(index);
         let mut placed = Vec::new();
-        for &(definition, count) in &encounter.spawn_group {
-            for _ in 0..count {
-                let position = spawn_position(room, &placed, colliders, rng);
-                placed.push(position);
-                monsters.push(MonsterState::new(
-                    u32::try_from(monsters.len() + 1).expect("monster id must fit u32"),
-                    *content.monster(definition),
-                    room.id,
-                    position,
-                    content.guard.max_points,
-                ));
+        // Later phases' members (#66) follow the spawn group, waiting out of play.
+        let phases = encounter.phases.iter().map(|phase| &phase.spawn);
+        for (phase, spawn) in (0_u8..).zip(std::iter::once(&encounter.spawn_group).chain(phases)) {
+            for &(definition, count) in spawn {
+                for _ in 0..count {
+                    let position = spawn_position(room, &placed, colliders, rng);
+                    placed.push(position);
+                    let mut monster = MonsterState::new(
+                        u32::try_from(monsters.len() + 1).expect("monster id must fit u32"),
+                        *content.monster(definition),
+                        room.id,
+                        position,
+                        content.guard.max_points,
+                    );
+                    monster.phase = phase;
+                    if phase > 0 {
+                        monster.health = 0;
+                    }
+                    monsters.push(monster);
+                }
             }
         }
     }
@@ -12345,10 +12532,26 @@ mod tests {
         game.add_player(1).unwrap();
         let snapshot = game.snapshot().unwrap();
         let generated = generate_dungeon(content(), snapshot.run_seed);
-        assert_eq!(snapshot.schema_version, 27);
+        assert_eq!(snapshot.schema_version, 28);
         assert_eq!(snapshot.run_seed, 0xDEAD_BEEF);
         assert_eq!(game.run_seed(), snapshot.run_seed);
-        assert_eq!(snapshot.rooms, generated.rooms);
+        // Rooms are the generated ones, each publishing its living monsters (#66).
+        for (published, generated) in snapshot.rooms.iter().zip(&generated.rooms) {
+            let living = game
+                .monsters
+                .iter()
+                .filter(|monster| monster.room_id == generated.id && monster.health > 0)
+                .count() as u16;
+            assert_eq!(published.remaining, living);
+            assert_eq!(
+                &RoomSnapshot {
+                    remaining: 0,
+                    ..published.clone()
+                },
+                generated
+            );
+        }
+        assert_eq!(snapshot.rooms.len(), generated.rooms.len());
         assert_eq!(snapshot.doors, generated.doors);
         // The generated walls, then every standing crate (#90): two per combat room.
         let (crates, walls): (Vec<_>, Vec<_>) = snapshot
@@ -12751,7 +12954,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 25"
+            "unsupported ARPG save schema version 12; expected 26"
         );
     }
 
@@ -12766,7 +12969,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 13; expected 25"
+            "unsupported ARPG save schema version 13; expected 26"
         );
     }
 
@@ -16067,6 +16270,227 @@ mod tests {
         assert_eq!(
             ArpgGame::from_save_state(invalid).unwrap_err().message(),
             "save completes a run with an encounter not cleared"
+        );
+    }
+
+    /// A small test boss (#66), not authored content: a brute that, at half health, calls
+    /// two skirmishers and starts slamming like the bruiser, then, once they fall, shoots
+    /// like the archer. It runs in room 2, the first combat room.
+    fn phased_bundle() -> ContentBundle {
+        let mut bundle = base_bundle().clone();
+        let spawn = |monster: &str, count| SpawnData {
+            monster: monster.into(),
+            count,
+        };
+        bundle.encounters.push(content::EncounterData {
+            id: "encounter.testBoss".into(),
+            spawn_group: vec![spawn("monster.brute", 1)],
+            activation: EncounterActivation::PlayerEntersRoom,
+            completion: EncounterCompletion::SpawnGroupDefeated,
+            reward: "reward.roomChest".into(),
+            boss: Some("monster.brute".into()),
+            phases: vec![
+                PhaseData {
+                    trigger: PhaseTrigger::BossHealthBelow { percent: 50 },
+                    spawn: vec![spawn("monster.skirmisher", 2)],
+                    boss_attack: Some("monster.bruiser".into()),
+                },
+                PhaseData {
+                    trigger: PhaseTrigger::AddsDefeated,
+                    spawn: Vec::new(),
+                    boss_attack: Some("monster.archer".into()),
+                },
+            ],
+        });
+        bundle
+            .room_encounters
+            .insert(0, "encounter.testBoss".into());
+        bundle
+    }
+
+    /// Player 1 in the middle of the phased encounter, which is running.
+    fn phased_arena() -> ArpgGame {
+        let mut game = ArpgGame::new_with_content(phased_bundle(), 42).unwrap();
+        let (x, z) = game
+            .rooms
+            .iter()
+            .find(|room| room.id == STRIKE_ROOM)
+            .unwrap()
+            .center();
+        game.player_spawns[0] = Vec3i::new(x, PLAYER_Y, z);
+        game.add_player(1).unwrap();
+        game.reconcile_encounters().unwrap();
+        assert_eq!(room_state(&game, STRIKE_ROOM), RoomEncounterState::Active);
+        game
+    }
+
+    fn boss(game: &ArpgGame) -> MonsterState {
+        game.monsters[game.boss_index(STRIKE_ROOM).unwrap()]
+    }
+
+    fn set_boss_health(game: &mut ArpgGame, health: u16) {
+        let index = game.boss_index(STRIKE_ROOM).unwrap();
+        game.monsters[index].health = health;
+    }
+
+    fn published_room(game: &ArpgGame) -> RoomSnapshot {
+        game.snapshot()
+            .unwrap()
+            .rooms
+            .into_iter()
+            .find(|room| room.id == STRIKE_ROOM)
+            .unwrap()
+    }
+
+    fn published_room_monsters(game: &ArpgGame) -> Vec<u32> {
+        game.snapshot()
+            .unwrap()
+            .monsters
+            .iter()
+            .filter(|monster| monster.room_id == STRIKE_ROOM)
+            .map(|monster| monster.id)
+            .collect()
+    }
+
+    #[test]
+    fn a_boss_encounter_runs_its_phases_in_order_and_clears_after_the_last() {
+        let mut game = phased_arena();
+        let start = published_room(&game);
+        assert_eq!((start.phase, start.phase_count, start.remaining), (0, 2, 1));
+        // The phase's members wait out of play, unpublished.
+        assert_eq!(published_room_monsters(&game), vec![boss(&game).id]);
+        let max = boss(&game).definition.health;
+
+        set_boss_health(&mut game, max / 2 + 1);
+        game.reconcile_encounters().unwrap();
+        assert_eq!(published_room(&game).phase, 0, "above the threshold");
+
+        set_boss_health(&mut game, max / 2);
+        game.reconcile_encounters().unwrap();
+        let second = published_room(&game);
+        assert_eq!((second.phase, second.remaining), (1, 3));
+        assert_eq!(published_room_monsters(&game).len(), 3);
+        let called = game
+            .monsters
+            .iter()
+            .filter(|monster| monster.room_id == STRIKE_ROOM && monster.phase == 1)
+            .collect::<Vec<_>>();
+        assert!(called.iter().all(|add| add.health == add.definition.health));
+        // The boss breaks off with a readable stagger and now slams like the bruiser,
+        // keeping its own health.
+        let changed = boss(&game);
+        assert!(changed.action.is_none());
+        assert_eq!(
+            changed.stagger_ticks_remaining,
+            content().max_stagger_ticks()
+        );
+        assert!(changed.definition.burst);
+        assert_eq!((changed.health, changed.definition.health), (max / 2, max));
+
+        // Defeating the boss first does not skip its adds' phase or clear the room.
+        set_boss_health(&mut game, 0);
+        game.reconcile_encounters().unwrap();
+        assert_eq!(room_state(&game, STRIKE_ROOM), RoomEncounterState::Active);
+        assert_eq!(published_room(&game).phase, 1);
+
+        for monster in game
+            .monsters
+            .iter_mut()
+            .filter(|monster| monster.room_id == STRIKE_ROOM)
+        {
+            monster.health = 0;
+        }
+        game.reconcile_encounters().unwrap();
+        let cleared = published_room(&game);
+        assert_eq!((cleared.phase, cleared.remaining), (2, 0));
+        assert_eq!(room_state(&game, STRIKE_ROOM), RoomEncounterState::Cleared);
+    }
+
+    #[test]
+    fn a_save_mid_phase_continues_exactly_and_a_wipe_restores_the_first_phase() {
+        let mut game = phased_arena();
+        let max = boss(&game).definition.health;
+        set_boss_health(&mut game, max / 4);
+        for _ in 0..5 {
+            game.advance_tick().unwrap();
+        }
+        assert_eq!(published_room(&game).phase, 1);
+
+        let save = game.save_state().unwrap();
+        assert_eq!(
+            save.rooms
+                .iter()
+                .find(|room| room.id == STRIKE_ROOM)
+                .unwrap()
+                .phase,
+            1
+        );
+        let mut restored =
+            ArpgGame::from_save_state_with_content(save.clone(), phased_bundle()).unwrap();
+        assert!(
+            boss(&restored).definition.burst,
+            "the phase's attack comes back"
+        );
+        for _ in 0..30 {
+            game.advance_tick().unwrap();
+            restored.advance_tick().unwrap();
+            assert_eq!(game.snapshot().unwrap(), restored.snapshot().unwrap());
+        }
+
+        // A phase the encounter cannot be in is refused.
+        let mut dormant = save;
+        for room in &mut dormant.rooms {
+            if room.encounter_state == RoomEncounterState::Dormant {
+                room.phase = 1;
+            }
+        }
+        assert_eq!(
+            ArpgGame::from_save_state_with_content(dormant, phased_bundle())
+                .unwrap_err()
+                .message(),
+            "saved encounter phase is invalid"
+        );
+
+        // The party falls: the encounter starts over in its first phase.
+        game.players.get_mut(&1).unwrap().health = 0;
+        game.advance_tick().unwrap();
+        let reset = published_room(&game);
+        assert_eq!((reset.phase, reset.remaining), (0, 1));
+        assert_eq!(room_state(&game, STRIKE_ROOM), RoomEncounterState::Dormant);
+        let restored_boss = boss(&game);
+        assert!(!restored_boss.definition.burst);
+        assert_eq!(restored_boss.health, max);
+        assert_eq!(published_room_monsters(&game), vec![restored_boss.id]);
+    }
+
+    #[test]
+    fn phased_encounters_are_validated() {
+        fn last(bundle: &mut ContentBundle) -> &mut content::EncounterData {
+            bundle.encounters.last_mut().unwrap()
+        }
+        let errors = |change: fn(&mut ContentBundle)| {
+            let mut bundle = phased_bundle();
+            change(&mut bundle);
+            ArpgGame::new_with_content(bundle, 42)
+                .unwrap_err()
+                .message()
+                .to_string()
+        };
+        assert!(errors(|bundle| last(bundle).boss = None).contains("needs a boss"));
+        assert!(
+            errors(|bundle| last(bundle).boss = Some("monster.archer".into()))
+                .contains("is not in the spawnGroup")
+        );
+        assert!(
+            errors(|bundle| {
+                last(bundle).phases[0].trigger = PhaseTrigger::BossHealthBelow { percent: 0 }
+            })
+            .contains("percent must be 1 to 99")
+        );
+        assert!(errors(|bundle| last(bundle).phases[0].spawn[0].count = 8).contains("at most 8"));
+        assert!(
+            errors(|bundle| last(bundle).phases[1].boss_attack = Some("monster.none".into()))
+                .contains("bossAttack references an unknown monster")
         );
     }
 }
