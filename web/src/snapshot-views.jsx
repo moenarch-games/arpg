@@ -44,13 +44,76 @@ export function incomingThreatText(threat) {
   return t(THREAT_LABELS[threat.delivery][threat.phase === "active" ? "active" : "windup"]);
 }
 
-export function PlayerHud({ store, playerId, status, interactKey = "E", keyLabels }) {
+// Where a defeat returns the player (#66): the authority's checkpoint room. Credited XP,
+// gold and equipment stay; an encounter the whole party lost starts over.
+export function checkpointText(snapshot, roomId) {
+  const room = snapshot?.rooms.find((candidate) => candidate.id === roomId);
+  return t(!room || room.kind === "start" ? "hud.checkpoint.entrance" : "hud.checkpoint.room");
+}
+
+const MONSTER_NAMES = {
+  "monster.archer": "monster.name.archer",
+  "monster.bruiser": "monster.name.bruiser",
+  "monster.brute": "monster.name.brute",
+  "monster.defender": "monster.name.defender",
+  "monster.skirmisher": "monster.name.skirmisher",
+};
+
+export function monsterName(definition) {
+  return t(MONSTER_NAMES[definition] ?? "monster.name.other");
+}
+
+// The current action's place in the sword combo as the authority reports it: a step (1 to
+// 3), whether it is a finisher, and the one buffered input. Null outside the combo and for
+// a lone first strike with nothing buffered.
+const COMBO_STEPS = {
+  primaryAttack: 1,
+  counter: 1,
+  lightFollowUp: 2,
+  lightFinisher: 3,
+  heavyFinisher: 3,
+};
+export function comboState(action) {
+  const step = action ? COMBO_STEPS[action.kind] : undefined;
+  if (!step || (step === 1 && !action.buffered)) return null;
+  return { step, finisher: step === 3, buffered: action.buffered ?? null };
+}
+
+export function comboText(combo) {
+  const step = combo.finisher ? t("hud.combo.finisher") : t("hud.combo.step", { step: combo.step });
+  if (!combo.buffered) return step;
+  const queued = combo.buffered === "heavy" ? "hud.combo.heavyQueued" : "hud.combo.lightQueued";
+  return `${step} · ${t(queued)}`;
+}
+
+function percent(health, max) {
+  return max ? Math.max(0, Math.min(100, (health / max) * 100)) : 0;
+}
+
+export function PlayerHud({
+  store,
+  playerId,
+  status,
+  interactKey = "E",
+  keyLabels,
+  onReturnToCheckpoint,
+}) {
   const snapshot = useSnapshot(store);
   const player = focusedPlayer(snapshot, playerId);
   const threat = player?.alive ? incomingThreat(snapshot, player.id) : null;
-  const healthPercent = player?.maxHealth
-    ? Math.max(0, Math.min(100, (player.health / player.maxHealth) * 100))
-    : 0;
+  const healthPercent = percent(player?.health, player?.maxHealth);
+  const target =
+    player?.lockedMonsterId != null
+      ? snapshot.monsters.find((monster) => monster.id === player.lockedMonsterId)
+      : null;
+  const combo = player?.alive ? comboState(player.action) : null;
+  const party = player ? snapshot.players.filter((member) => member.id !== player.id) : [];
+  const statuses = [];
+  if (player?.alive && player.poison)
+    statuses.push({
+      key: "poison",
+      text: t("hud.status.poisoned", { ticks: player.poison.ticksRemaining }),
+    });
   return (
     <section className="hud" aria-label={t("hud.region")}>
       <div className="health">
@@ -73,8 +136,70 @@ export function PlayerHud({ store, playerId, status, interactKey = "E", keyLabel
           {player.lockedMonsterId != null && <span>{t("hud.targetLocked")}</span>}
         </div>
       )}
+      {statuses.length > 0 && (
+        <ul className="status-chips" aria-label={t("hud.statuses")}>
+          {statuses.map((entry) => (
+            <li key={entry.key} data-status={entry.key}>
+              {entry.text}
+            </li>
+          ))}
+        </ul>
+      )}
+      {player?.alive && target && (
+        <div className="target-status" role="group" aria-label={t("hud.target")}>
+          <span>
+            {t("hud.targetHealth", {
+              name: monsterName(target.definition),
+              health: target.health,
+              max: target.maxHealth,
+            })}
+          </span>
+          {target.slow && (
+            <span className="status-chip" data-status="slow">
+              {t("hud.status.slowed", { ticks: target.slow.ticksRemaining })}
+            </span>
+          )}
+          <div className="target-health">
+            <span style={{ width: `${percent(target.health, target.maxHealth)}%` }} />
+          </div>
+        </div>
+      )}
+      {combo && (
+        <p
+          className="combo-status"
+          data-step={combo.step}
+          data-buffered={combo.buffered ?? undefined}
+        >
+          {comboText(combo)}
+        </p>
+      )}
+      {party.length > 0 && (
+        <ul className="party-status" aria-label={t("hud.party")}>
+          {party.map((member) => (
+            <li key={member.id} data-alive={member.alive ? "true" : "false"}>
+              {member.alive
+                ? t("hud.party.member", {
+                    player: String(member.id),
+                    health: member.health,
+                    max: member.maxHealth,
+                  })
+                : t("hud.party.down", { player: String(member.id) })}
+            </li>
+          ))}
+        </ul>
+      )}
       <p>{status}</p>
-      {player && !player.alive && <p className="defeated-status">{t("hud.defeated")}</p>}
+      {player && !player.alive && (
+        <div className="defeat-panel" role="group" aria-label={t("hud.defeated")}>
+          <p className="defeated-status">{t("hud.defeated")}</p>
+          <p>{checkpointText(snapshot, player.checkpointRoom)}</p>
+          {onReturnToCheckpoint && (
+            <button type="button" onClick={onReturnToCheckpoint}>
+              {t("hud.returnToCheckpoint")}
+            </button>
+          )}
+        </div>
+      )}
       {player?.alive && interactionPromptText(player.interaction, interactKey) && (
         <p className="interaction-prompt">
           {interactionPromptText(player.interaction, interactKey)}

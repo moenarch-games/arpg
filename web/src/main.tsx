@@ -22,6 +22,8 @@ import { createCharacterLayer } from "./character-layer.ts";
 import { applyProfile, validateRegistry } from "@moritzbrantner/input-bindings";
 import { keyLabelForAction } from "./binding-labels.js";
 import { createSnapshotStore } from "./snapshot-store.js";
+import { attachPresentationCues, createPresentationCues } from "./presentation-cues.js";
+import { CueFeed, DamageNumbers } from "./cue-views.jsx";
 import {
   PlayerHud,
   CombatActions,
@@ -406,6 +408,12 @@ function App() {
   const initialTrainingRef = useRef(initialRequest.training);
   const initialRunSeedRef = useRef(initialRequest.seed);
   const [snapshotStore] = useState(createSnapshotStore);
+  // Presentation cues see every published snapshot, not only drawn ones (#67).
+  const [presentationCues] = useState(createPresentationCues);
+  useEffect(
+    () => attachPresentationCues(snapshotStore, presentationCues),
+    [snapshotStore, presentationCues],
+  );
   // Shown once the core is ready; while it loads the shell shows the load state instead.
   const [status, setStatus] = useState(() => t("status.selectCharacter"));
   const [runtime] = useState(() =>
@@ -1344,6 +1352,14 @@ function App() {
           onContextMenu={(event) => event.preventDefault()}
         />
         {inWorld && (
+          <DamageNumbers
+            store={snapshotStore}
+            cues={presentationCues}
+            playerId={playerId}
+            camera={followCamera}
+          />
+        )}
+        {inWorld && (
           <>
             <header className="game-header">
               <div>
@@ -1477,7 +1493,10 @@ function App() {
               status={shownStatus}
               interactKey={interactKey}
               keyLabels={keyLabels}
+              onReturnToCheckpoint={() => runtime.returnToCheckpoint()}
             />
+
+            <CueFeed store={snapshotStore} cues={presentationCues} playerId={playerId} />
 
             {ready && !overlayOpen && (
               <section className="mobile-controls" aria-label={t("touch.region")}>
