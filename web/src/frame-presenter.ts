@@ -108,7 +108,13 @@ export interface FramePresenterOptions<Canvas extends CanvasLike, Snapshot, Fram
 }
 
 export interface CombatVfxLike<Snapshot> {
-  frame(input: { snapshot: Snapshot; playerId: number | null; time: number; enabled: boolean }): {
+  frame(input: {
+    snapshot: Snapshot;
+    playerId: number | null;
+    time: number;
+    enabled: boolean;
+    subtle: boolean;
+  }): {
     effects: unknown;
     active: boolean;
     impulse: number[] | null;
@@ -160,6 +166,8 @@ export function createFramePresenter<
       playerId: view.playerId,
       time: (time ?? options.now?.() ?? performance.now()) / 1000,
       enabled: effects.combatEffects,
+      // Reduced flashes draw the lighter (`subtle`) combat effects.
+      subtle: effects.reducedFlashes,
     });
     let pose = options.camera?.pose();
     // The impulse moves only the drawn camera: aim and the follow camera never see it.

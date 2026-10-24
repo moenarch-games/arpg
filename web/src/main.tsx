@@ -24,7 +24,7 @@ import { keyLabelForAction } from "./binding-labels.js";
 import { createSnapshotStore } from "./snapshot-store.js";
 import { attachPresentationCues, createPresentationCues } from "./presentation-cues.js";
 import { CueFeed, DamageNumbers } from "./cue-views.jsx";
-import { createCombatVfx } from "./combat-vfx.js";
+import { createAtlasSource, createCombatVfx, loadCombatAtlases } from "./combat-vfx.js";
 import {
   PlayerHud,
   CombatActions,
@@ -241,6 +241,14 @@ const followCamera = createFollowCamera({
   zoom: loadPresentation().camera.zoom,
 });
 const pinchZoom = createPinchZoom();
+// The combat-effects flipbooks (#67 67b, asset-tooling#362), unpacked into the static
+// `effects/combat-effects/` directory by setup. Loaded once, on the first game view; if they
+// fail to load the game plays without combat effects.
+let combatAtlasSource = null;
+const combatAtlases = () =>
+  (combatAtlasSource ??= createAtlasSource(() =>
+    loadCombatAtlases({ baseUrl: `${import.meta.env.BASE_URL}effects/combat-effects/` }),
+  )).current();
 const textureCapabilities = {
   configureTextureLoader(loader) {
     if (!characterRenderer) throw new Error("Character renderer is not ready");
@@ -324,7 +332,7 @@ function GameCanvas({
   useEffect(() => {
     // A new session starts with the camera on its player, not gliding from the last one.
     camera.recenter();
-    const combatVfx = createCombatVfx();
+    const combatVfx = createCombatVfx({ atlases: combatAtlases });
     const presenter = createFramePresenter({
       canvas: canvasRef.current,
       snapshots,

@@ -12,6 +12,7 @@ The browser slice currently proves:
 - a procedurally partitioned, seeded dungeon whose walls and doorways are resolved by Rapier physics inside the Rust simulation;
 - an isometric follow camera and 3D scene rendered through `3d-lab`, with players shown as the released asset-tooling Ranger humanoid (selected per-entry downloads prepared by `bun run setup`; [loading evidence](docs/character-loading.md));
 - nearby primary attacks against deterministic monster state;
+- cosmetic combat effects (impact and block sparks, dust, weapon trails) from asset-tooling's baked `combat-effects` flipbooks, pinned by tar SHA-256 and prepared by `bun run setup`; they follow the combat-effects and reduced-motion settings, use lighter presets under reduced flashes, and the game plays without them if they fail to load;
 - deterministic character progression exposed through authoritative snapshots;
 - a deterministic combat training arena available through the character screen or `?scenario=training&seed=<u32>`, with pause, single-step, explicit simulation speed, seed restart, and live combat diagnostics;
 - a settings menu with graphics controls and the reusable `input-bindings` keybinding editor;
