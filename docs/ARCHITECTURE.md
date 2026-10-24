@@ -189,6 +189,16 @@ edge a tick behind. While a player is on the stairs, positions are bounded at 7.
 measured with `baa9244`) and support and region changes may differ on at most 7 ticks; every other tick and
 workload keeps the strict comparison.
 
+Ramps (#59): a ramp is a static wedge inside its box (`StaticColliderKind::Ramp`), rising from
+the box's bottom at its +Z end to its top at its -Z end: a convex hull on Rapier, a
+quarter-turned `Shape::Wedge` on physics-engine. Walking players follow its slope through the
+controllers' 45 degree climb limit, grounded the whole way, with no autostep or jump. The
+`traversal` scenario's 180-unit ramp (18 degrees, 80 wide) leads up to the west part of the
+platform's south face; like the stairs it belongs to the region it leads into, along the same
+declared walk connection, so a body on the slope keeps its membership (no artificial height
+bands) until the platform's top supports it. Monsters treat the ramp's footprint as an
+obstacle. The ledge east of it stays a drop.
+
 Fall recovery (Atlas 5.1.3, #211): each player keeps the position at which it last ended a
 tick supported (saved, schema 17). A body that ends a tick out of the world (its centre
 outside the rooms' combined extents, its feet a body height below the lowest floor, or a

@@ -900,6 +900,13 @@ const TRAVERSAL_BRIDGE_REGION: RegionId = 3;
 const TRAVERSAL_STEP_RISE: i32 = 20;
 const TRAVERSAL_STEP_DEPTH: i32 = 40;
 const TRAVERSAL_STAIRS_HALF_WIDTH: i32 = 60;
+/// The traversal scenario's ramp (#59): 180 units long up to the platform's south face, an
+/// 18 degree slope within the controllers' 45 degree climb limit, on the face's west part
+/// (200 units east of the spawn, 80 wide), so the platform's south ledge east of it stays a
+/// drop.
+const TRAVERSAL_RAMP_LENGTH: i32 = 180;
+const TRAVERSAL_RAMP_HALF_WIDTH: i32 = 40;
+const TRAVERSAL_RAMP_OFFSET: i32 = 200;
 
 /// One resolved strike as published in a snapshot for diagnostics and feedback.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1786,6 +1793,9 @@ pub enum StaticColliderKind {
     Crate,
     /// A stair step (#222): walkable ground a walking player climbs without jumping.
     Step,
+    /// A walkable ramp (#59): a wedge inside its box, rising from the box's bottom at its +Z
+    /// end to the box's top at its -Z end.
+    Ramp,
 }
 
 /// Speed changes per tick by which controlled horizontal velocity converges on the movement
@@ -2650,6 +2660,24 @@ impl ArpgGame {
                     .add_fixed(stair.id, array_to_vec(stair.position), step_half)?;
                 game.static_colliders.push(stair);
             }
+            // A ramp up to the platform's south face: a continuous slope, walkable without
+            // jumping. Like the stairs it belongs to the region it leads into, so a body on
+            // it keeps its membership until the platform's top supports it.
+            let ramp_half =
+                Vec3i::new(TRAVERSAL_RAMP_HALF_WIDTH, half.y, TRAVERSAL_RAMP_LENGTH / 2);
+            let ramp = StaticColliderSnapshot {
+                id: STATIC_BODY_BASE + index + 5,
+                position: [
+                    center_x + TRAVERSAL_RAMP_OFFSET,
+                    FLOOR_FOOT_Y + ramp_half.y,
+                    center_z + half.z + ramp_half.z,
+                ],
+                half_extents: vec_to_array(ramp_half),
+                kind: StaticColliderKind::Ramp,
+            };
+            game.physics
+                .add_ramp(ramp.id, array_to_vec(ramp.position), ramp_half)?;
+            game.static_colliders.push(ramp);
             game.topology = Topology::new(
                 vec![
                     WalkableRegion {
@@ -2693,7 +2721,7 @@ impl ArpgGame {
                         from: TRAVERSAL_BRIDGE_REGION,
                         to: DUNGEON_FLOOR_REGION,
                     },
-                    // The stairs (#222): a walk both ways.
+                    // The stairs (#222) and the ramp (#59): a walk both ways.
                     TraversalConnection {
                         id: 5,
                         kind: ConnectionKind::Walk,

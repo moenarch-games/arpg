@@ -20,15 +20,17 @@ use rapier3d::prelude::*;
 
 use super::queries::UprightShapes;
 use super::{
-    BodyKey, CONTACT_OFFSET, CONTACT_OFFSET_UNITS, METRES_PER_UNIT, Motion, PENETRATION_TOLERANCE,
-    STEP_HEIGHT_UNITS, SUPPORT_REACH, capsule_dimensions, metres, missing, units, vector,
+    BodyKey, CONTACT_OFFSET, CONTACT_OFFSET_UNITS, FixedShape, METRES_PER_UNIT, Motion,
+    PENETRATION_TOLERANCE, STEP_HEIGHT_UNITS, SUPPORT_REACH, capsule_dimensions, metres, missing,
+    units, vector,
 };
 use crate::{GameError, TICK_HZ, Vec3i};
 
-/// One static box of the game and its collider.
+/// One static box or ramp of the game and its collider.
 struct Fixed {
     center: Vec3i,
     half_extents: Vec3i,
+    shape: FixedShape,
     collider: ColliderHandle,
 }
 
@@ -86,14 +88,32 @@ fn empty_world() -> PhysicsWorld {
     world
 }
 
-/// Inserts a static box collider.
-fn insert_fixed(world: &mut PhysicsWorld, center: Vec3i, half_extents: Vec3i) -> ColliderHandle {
+/// Inserts a static box or ramp collider. A ramp is the convex hull of its wedge: the bottom
+/// of its bounding box and the top edge at its -Z end.
+fn insert_fixed(
+    world: &mut PhysicsWorld,
+    center: Vec3i,
+    half_extents: Vec3i,
+    shape: FixedShape,
+) -> ColliderHandle {
     let half = metres(vector(half_extents));
-    world.colliders.insert(
-        ColliderBuilder::cuboid(half.x, half.y, half.z)
-            .translation(metres(vector(center)))
-            .build(),
-    )
+    let builder = match shape {
+        FixedShape::Box => ColliderBuilder::cuboid(half.x, half.y, half.z),
+        FixedShape::Ramp => {
+            let points = [
+                Vector::new(-half.x, -half.y, -half.z),
+                Vector::new(half.x, -half.y, -half.z),
+                Vector::new(-half.x, -half.y, half.z),
+                Vector::new(half.x, -half.y, half.z),
+                Vector::new(-half.x, half.y, -half.z),
+                Vector::new(half.x, half.y, -half.z),
+            ];
+            ColliderBuilder::convex_hull(&points).expect("a ramp's wedge has a convex hull")
+        }
+    };
+    world
+        .colliders
+        .insert(builder.translation(metres(vector(center))).build())
 }
 
 /// Inserts the floor's upward half-space with its surface at `height` (world units).
@@ -181,15 +201,37 @@ impl Physics {
         center: Vec3i,
         half_extents: Vec3i,
     ) -> Result<(), GameError> {
+        self.add_static(key, center, half_extents, FixedShape::Box)
+    }
+
+    /// Adds a static ramp inside the box centred on `center` with `half_extents`, rising
+    /// from its +Z end on the box's bottom to its -Z end on the box's top.
+    pub(crate) fn add_ramp(
+        &mut self,
+        key: BodyKey,
+        center: Vec3i,
+        half_extents: Vec3i,
+    ) -> Result<(), GameError> {
+        self.add_static(key, center, half_extents, FixedShape::Ramp)
+    }
+
+    fn add_static(
+        &mut self,
+        key: BodyKey,
+        center: Vec3i,
+        half_extents: Vec3i,
+        shape: FixedShape,
+    ) -> Result<(), GameError> {
         if self.fixed.contains_key(&key) {
             return Err(GameError::new(format!("physics body {key} already exists")));
         }
-        let collider = insert_fixed(&mut self.world, center, half_extents);
+        let collider = insert_fixed(&mut self.world, center, half_extents, shape);
         self.fixed.insert(
             key,
             Fixed {
                 center,
                 half_extents,
+                shape,
                 collider,
             },
         );
@@ -212,7 +254,7 @@ impl Physics {
         self.fixed.contains_key(&key)
     }
 
-    /// Centre and half extents of every static box, in key order.
+    /// Centre and half extents of every static box (a ramp's bounding box), in key order.
     pub(crate) fn fixed_boxes(&self) -> impl Iterator<Item = (Vec3i, Vec3i)> + '_ {
         self.fixed
             .values()
@@ -301,7 +343,8 @@ impl Physics {
     pub(crate) fn rebuild(&mut self) {
         let mut world = empty_world();
         for fixed in self.fixed.values_mut() {
-            fixed.collider = insert_fixed(&mut world, fixed.center, fixed.half_extents);
+            fixed.collider =
+                insert_fixed(&mut world, fixed.center, fixed.half_extents, fixed.shape);
         }
         for character in self.characters.values_mut() {
             character.body =

@@ -44,14 +44,14 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use physics_engine::approximate::{
-    Autostep, Body, CharacterMove, CharacterMoveResult, CharacterSettings, Config, QueryFilter,
-    QueryHit, QueryPose, RayCast, Shape, ShapeCast, Vector as EngineVector, World,
+    Autostep, Body, CharacterMove, CharacterMoveResult, CharacterSettings, Config, Quaternion,
+    QueryFilter, QueryHit, QueryPose, RayCast, Shape, ShapeCast, Vector as EngineVector, World,
 };
 use physics_engine::{BodyId, CollisionLayers3d};
 use rapier3d::math::Vector;
 
 use super::{
-    BodyKey, CONTACT_OFFSET, CONTACT_OFFSET_UNITS, Motion, PENETRATION_TOLERANCE,
+    BodyKey, CONTACT_OFFSET, CONTACT_OFFSET_UNITS, FixedShape, Motion, PENETRATION_TOLERANCE,
     STEP_HEIGHT_UNITS, SUPPORT_REACH, capsule_dimensions, metres, missing, units, vector,
 };
 use crate::{GameError, Vec3i};
@@ -198,18 +198,54 @@ impl Physics {
         center: Vec3i,
         half_extents: Vec3i,
     ) -> Result<(), GameError> {
+        self.add_static(key, center, half_extents, FixedShape::Box)
+    }
+
+    pub(crate) fn add_ramp(
+        &mut self,
+        key: BodyKey,
+        center: Vec3i,
+        half_extents: Vec3i,
+    ) -> Result<(), GameError> {
+        self.add_static(key, center, half_extents, FixedShape::Ramp)
+    }
+
+    fn add_static(
+        &mut self,
+        key: BodyKey,
+        center: Vec3i,
+        half_extents: Vec3i,
+        shape: FixedShape,
+    ) -> Result<(), GameError> {
         if self.fixed.contains_key(&key) {
             return Err(GameError::new(format!("physics body {key} already exists")));
         }
-        let body = self
-            .world
-            .add_body(Body::keyed(
+        let body = match shape {
+            FixedShape::Box => Body::keyed(
                 key,
                 Shape::Box(engine(vector(half_extents))),
                 engine(vector(center)),
                 0.0,
-            ))
-            .map_err(failed)?;
+            ),
+            FixedShape::Ramp => {
+                // The engine's wedge rises toward its local -X; a quarter turn about Y
+                // (local +X to world +Z) makes it rise toward world -Z.
+                let mut body = Body::keyed(
+                    key,
+                    Shape::wedge(engine(vector(Vec3i::new(
+                        half_extents.z,
+                        half_extents.y,
+                        half_extents.x,
+                    )))),
+                    engine(vector(center)),
+                    0.0,
+                );
+                let half_turn = std::f32::consts::FRAC_PI_4;
+                body.orientation = Quaternion(0.0, -half_turn.sin(), 0.0, half_turn.cos());
+                body
+            }
+        };
+        let body = self.world.add_body(body).map_err(failed)?;
         self.fixed.insert(
             key,
             Fixed {

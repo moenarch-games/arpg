@@ -107,10 +107,11 @@ test("admits region membership and platforms and rejects malformed ones", () => 
   const platform = { id: 9, kind: "platform", position: [0, 30, 0], halfExtents: [100, 30, 100] };
   const ceiling = { id: 10, kind: "ceiling", position: [0, 160, 0], halfExtents: [100, 20, 100] };
   const step = { id: 11, kind: "step", position: [0, 10, 0], halfExtents: [60, 10, 20] };
+  const ramp = { id: 12, kind: "ramp", position: [0, 30, 190], halfExtents: [40, 30, 90] };
   const decoded = decodeSnapshot(
-    encode({ ...payload, scenario: "traversal", staticColliders: [platform, ceiling, step] }),
+    encode({ ...payload, scenario: "traversal", staticColliders: [platform, ceiling, step, ramp] }),
   );
-  expect(decoded.staticColliders).toEqual([platform, ceiling, step]);
+  expect(decoded.staticColliders).toEqual([platform, ceiling, step, ramp]);
 });
 
 test("admits a slowed monster and rejects a malformed slow", () => {

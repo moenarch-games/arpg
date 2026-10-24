@@ -184,3 +184,15 @@ test("the ground ring stays on the ground under an airborne player (#59)", () =>
     expect(node(frame, id).transform.translation[1]).toBeCloseTo(0.015, 6);
   }
 });
+
+test("a ramp collider draws as the authority's wedge, high at its -Z end", () => {
+  const ramp = { id: 12, kind: "ramp", position: [0, 30, 190], halfExtents: [40, 30, 90] };
+  const frame = buildFrame({ ...snapshot(), staticColliders: [ramp] }, 1, 800, 600);
+  const { geometry, transform } = node(frame, "static-12");
+  expect(geometry.kind).toBe("mesh");
+  expect(transform.translation).toEqual([0, 0.3, 1.9]);
+  const top = geometry.positions.filter(([, y]) => y > 0);
+  expect(top.length).toBeGreaterThan(0);
+  expect(top.every(([, , z]) => z === -0.9)).toBe(true);
+  expect(geometry.indices).toHaveLength(geometry.positions.length);
+});
