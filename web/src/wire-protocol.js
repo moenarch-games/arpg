@@ -1,6 +1,6 @@
-// Browser projection of the arpg-protocol v21 envelope. This adapter validates
+// Browser projection of the arpg-protocol v22 envelope. This adapter validates
 // only data consumed by presentation; gameplay rules remain in arpg-core.
-export const PROTOCOL_VERSION = 21;
+export const PROTOCOL_VERSION = 22;
 const MAX_SNAPSHOT_CHARACTERS = 65_535;
 const integer = (value) => Number.isSafeInteger(value);
 const nonNegative = (value) => integer(value) && value >= 0;
@@ -132,6 +132,8 @@ export function decodeSnapshot(encoded) {
           "attackDamage",
           "gold",
         ].every((key) => nonNegative(player[key])) &&
+        // The room a defeat returns the player to (#66).
+        optional(player.checkpointRoom, nonNegative) &&
         optional(
           player.action,
           (value) =>

@@ -313,7 +313,7 @@ fn a_save_mid_jump_continues_exactly() {
     let save = session.game.save_state().unwrap();
     assert!(!save.players[0].grounded);
     assert!(save.players[0].velocity[1] < 0.0);
-    assert_eq!(save.schema_version, 23);
+    assert_eq!(save.schema_version, 24);
     let json = serde_json::to_string(&save).unwrap();
     let mut restored = Session {
         game: ArpgGame::from_save_state(ArpgSaveState::from_json(&json).unwrap()).unwrap(),
@@ -347,7 +347,7 @@ fn schema_14_saves_are_refused_by_their_version() {
         ArpgSaveState::from_json(&json.to_string())
             .unwrap_err()
             .message(),
-        "unsupported ARPG save schema version 14; expected 23"
+        "unsupported ARPG save schema version 14; expected 24"
     );
 }
 
