@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import { expect, test } from "./fixtures.js";
+import { expect, leaveWorld, test } from "./fixtures.js";
 
 test("combat buttons activate through the keyboard", async ({ page, appUrl }) => {
   await page.goto(`${appUrl}?scenario=training&seed=42`);
@@ -129,7 +129,7 @@ test("leaving and re-entering the world restarts one paused-aware simulation", a
 
   for (let round = 0; round < 3; round += 1) {
     await expect.poll(tickOf).toBeGreaterThan(5);
-    await page.getByRole("button", { name: "Characters", exact: true }).click();
+    await leaveWorld(page);
     await expect(page.getByRole("main", { name: "Character selection" })).toBeVisible();
     await page.getByRole("button", { name: "Training Arena", exact: true }).click();
   }
@@ -187,7 +187,7 @@ test("normal play renders, takes keyboard input and survives settings and re-ent
     await page.keyboard.up("f");
     await expect(page.locator("canvas")).toHaveCount(1);
 
-    await page.getByRole("button", { name: "Characters", exact: true }).click();
+    await leaveWorld(page, { confirm: true });
     await expect(page.getByRole("main", { name: "Character selection" })).toBeVisible();
   }
 });

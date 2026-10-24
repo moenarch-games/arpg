@@ -431,23 +431,41 @@ export function buildFrame(
           const radius = monster.action.range / scale;
           const telegraphColor =
             phase === "active" ? palette.telegraphActive : palette.telegraphWindup;
-          for (let index = 0; index < 12; index += 1) {
-            const angle = (index / 12) * Math.PI * 2;
-            nodes.push({
-              id: `monster-${monster.id}-telegraph-${index}`,
-              geometry: {
-                kind: "sphere",
-                radius: phase === "active" ? 0.1 : 0.075,
-              },
-              color: telegraphColor,
-              transform: {
-                translation: [
-                  monster.position[0] / scale + Math.cos(angle) * radius,
-                  0.075,
-                  monster.position[2] / scale + Math.sin(angle) * radius,
-                ],
-              },
-            });
+          // The phase is also told by shape, never by colour alone (#61): a wind-up is a
+          // dotted ring of 12 beads, the active strike a closed band of 24 overlapping
+          // tangent segments. Both look the same under the reduced-flash palette.
+          const segments = phase === "active" ? 24 : 12;
+          const segmentLength = ((Math.PI * 2 * radius) / segments) * 1.1;
+          for (let index = 0; index < segments; index += 1) {
+            const angle = (index / segments) * Math.PI * 2;
+            const point = [
+              monster.position[0] / scale + Math.cos(angle) * radius,
+              0.075,
+              monster.position[2] / scale + Math.sin(angle) * radius,
+            ];
+            // A yaw of -angle - π/2 turns the segment's length along the ring's tangent.
+            const yaw = -angle - Math.PI / 2;
+            nodes.push(
+              phase === "active"
+                ? {
+                    id: `monster-${monster.id}-telegraph-${index}`,
+                    geometry: {
+                      kind: "box",
+                      size: [segmentLength, 0.05, 0.14],
+                    },
+                    color: telegraphColor,
+                    transform: {
+                      translation: point,
+                      rotationQuaternion: [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)],
+                    },
+                  }
+                : {
+                    id: `monster-${monster.id}-telegraph-${index}`,
+                    geometry: { kind: "sphere", radius: 0.075 },
+                    color: telegraphColor,
+                    transform: { translation: point },
+                  },
+            );
           }
           if (targetPlayer?.alive) {
             nodes.push({

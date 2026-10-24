@@ -44,3 +44,19 @@ export const test = base.extend({
 });
 
 export { expect };
+
+// Leaves the world through the game menu (#60). A run asks for confirmation; training
+// leaves at once.
+export async function leaveWorld(page, { confirm = false } = {}) {
+  await page.getByRole("button", { name: "Menu", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Menu", exact: true })
+    .getByRole("button", { name: "Leave", exact: true })
+    .click();
+  if (confirm) {
+    await page
+      .getByRole("dialog", { name: "Leave game?", exact: true })
+      .getByRole("button", { name: "Leave game", exact: true })
+      .click();
+  }
+}

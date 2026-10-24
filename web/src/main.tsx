@@ -31,6 +31,18 @@ import {
   GameSummary,
 } from "./snapshot-views.jsx";
 import { SettingsDialog } from "./settings-dialog.jsx";
+import {
+  PLAY,
+  closeLayer,
+  escapeFrom,
+  leaveConsequence,
+  leaveNeedsConfirmation,
+  menuPausesWorld,
+  menuWorldNotice,
+  openLeaveConfirmation,
+  openMenu,
+  openSettings,
+} from "./game-menu.js";
 import { PROFILE_KEY, loadInputProfile } from "./input-profile.js";
 import {
   SETUP_URL_KEY,
@@ -60,13 +72,7 @@ import { DedicatedGameSession } from "./dedicated-session.js";
 import { DemoLobbySession } from "./vendor/multiplayer-setup-service/demo-session.ts";
 import { sampleVirtualStick } from "./virtual-stick.js";
 import { aimFromPointer, movementFromAim } from "./aim-input.js";
-import {
-  createFollowCamera,
-  createPinchZoom,
-  focusPoint,
-  loadCameraZoom,
-  persistCameraZoom,
-} from "./follow-camera.js";
+import { createFollowCamera, createPinchZoom, focusPoint } from "./follow-camera.js";
 import {
   CHARACTER_PRESETS,
   loadSelectedCharacterId,
@@ -97,11 +103,33 @@ import { buildFrame } from "./scene-frame.ts";
 import { applyDocumentPresentation, resolvePresentationEffects } from "./presentation-effects.js";
 import { createInputAttachment } from "./input-attachment.ts";
 import { WorkbenchControls } from "./workbench-controls.jsx";
+import {
+  type MessageKey,
+  formatMegabytes,
+  formatPercent,
+  longLabelCatalog,
+  setMessages,
+  t,
+} from "./messages.ts";
 import "./styles.css";
+
+// English is the only shipped locale. Development builds (and so the browser tests) can
+// render the long-label test locale with `?locale=x-long` to check layouts with longer text.
+if (
+  import.meta.env.DEV &&
+  new URLSearchParams(globalThis.location?.search).get("locale") === "x-long"
+)
+  setMessages("en", longLabelCatalog());
 
 const gameplayContext = { op: "context", id: "gameplay" };
 
-const MOTION_LABELS = { system: "Follow system", reduced: "Reduced", full: "Full" };
+const MOTION_LABELS: Record<string, MessageKey> = {
+  system: "settings.motion.system",
+  reduced: "settings.motion.reduced",
+  full: "settings.motion.full",
+};
+// Marks the history entry pushed on entering the world (#60). It holds no session data.
+const WORLD_HISTORY_KEY = "arpgWorld";
 
 // The live `prefers-reduced-motion` media query; "Follow system" motion tracks its changes.
 let reducedMotionQuery = null;
@@ -124,27 +152,27 @@ const physical = (id, action, code, when = gameplayContext) => ({
 
 const inputRegistry = {
   actions: [
-    ["game.moveForward", "Move forward", "KeyW", "allow", "Movement"],
-    ["game.moveBackward", "Move backward", "KeyS", "allow", "Movement"],
-    ["game.moveLeft", "Move left", "KeyA", "allow", "Movement"],
-    ["game.moveRight", "Move right", "KeyD", "allow", "Movement"],
+    ["game.moveForward", "input.moveForward", "KeyW", "allow", "input.category.movement"],
+    ["game.moveBackward", "input.moveBackward", "KeyS", "allow", "input.category.movement"],
+    ["game.moveLeft", "input.moveLeft", "KeyA", "allow", "input.category.movement"],
+    ["game.moveRight", "input.moveRight", "KeyD", "allow", "input.category.movement"],
     // The standard scheme (#59): Space jumps and R attacks. Older stored profiles migrate
     // once (`input-profile.js`); customized ones keep their bindings.
-    ["game.jump", "Jump", "Space", "never", "Movement"],
-    ["game.primaryAttack", "Primary attack", "KeyR", "never", "Combat"],
-    ["game.secondaryAttack", "Heavy attack", "KeyQ", "never", "Combat"],
-    ["game.interact", "Interact / pick up", "KeyE", "never", "Interaction"],
-    ["game.guard", "Raise shield (hold)", "KeyF", "never", "Combat"],
-    ["game.switchWeapon", "Switch sword / bow", "KeyX", "never", "Combat"],
-    ["game.cycleTarget", "Lock / cycle target", "KeyT", "never", "Combat"],
-    ["game.clearTarget", "Clear target lock", "KeyG", "never", "Combat"],
+    ["game.jump", "input.jump", "Space", "never", "input.category.movement"],
+    ["game.primaryAttack", "input.primaryAttack", "KeyR", "never", "input.category.combat"],
+    ["game.secondaryAttack", "input.secondaryAttack", "KeyQ", "never", "input.category.combat"],
+    ["game.interact", "input.interact", "KeyE", "never", "input.category.interaction"],
+    ["game.guard", "input.guard", "KeyF", "never", "input.category.combat"],
+    ["game.switchWeapon", "input.switchWeapon", "KeyX", "never", "input.category.combat"],
+    ["game.cycleTarget", "input.cycleTarget", "KeyT", "never", "input.category.combat"],
+    ["game.clearTarget", "input.clearTarget", "KeyG", "never", "input.category.combat"],
     // The follow camera has no manual rotation (Atlas 4.1.4); this restores its zoom.
-    ["game.resetCamera", "Reset camera", "KeyC", "never", "Camera"],
+    ["game.resetCamera", "input.resetCamera", "KeyC", "never", "input.category.camera"],
   ]
     .map(([id, title, code, repeatPolicy, category]) => ({
       id,
-      title,
-      categoryPath: ["ARPG", category],
+      title: t(title as MessageKey),
+      categoryPath: [t("app.name"), t(category as MessageKey)],
       repeatPolicy,
       allowedDevices: ["keyboard"],
       defaults: [physical(`${id}.default`, id, code)],
@@ -152,13 +180,13 @@ const inputRegistry = {
     }))
     .concat([
       {
-        id: "game.settings",
-        title: "Open or close settings",
-        categoryPath: ["ARPG", "System"],
+        id: "game.menu",
+        title: t("input.menu"),
+        categoryPath: [t("app.name"), t("input.category.system")],
         repeatPolicy: "never",
         allowedDevices: ["keyboard"],
         defaults: [
-          physical("game.settings.default", "game.settings", "Escape", {
+          physical("game.menu.default", "game.menu", "Escape", {
             op: "always",
           }),
         ],
@@ -204,9 +232,11 @@ function requestedRunSeed() {
 // Preloading and drawing share the persistent game canvas and actual renderer.
 let characterRenderer = null;
 
-// The gameplay follow camera (#58) for the one game canvas; its zoom persists as a display
-// preference. Pinch zoom tracks the touches on that canvas.
-const followCamera = createFollowCamera({ zoom: loadCameraZoom() });
+// The gameplay follow camera (#58) for the one game canvas. It owns the live zoom, which
+// persists in the presentation document (#61). Pinch zoom tracks the touches on that canvas.
+const followCamera = createFollowCamera({
+  zoom: loadPresentation().camera.zoom,
+});
 const pinchZoom = createPinchZoom();
 const textureCapabilities = {
   configureTextureLoader(loader) {
@@ -247,8 +277,6 @@ const characterAssets = createCharacterAssets({
     };
   },
 });
-
-const megabytes = (bytes) => (bytes / 1_000_000).toFixed(1);
 
 // The game world canvas. One frame presenter owns its renderer, projection and resize
 // observer for as long as the canvas is mounted; view changes reconfigure it in place.
@@ -345,7 +373,7 @@ function GameCanvas({
     <canvas
       ref={canvasRef}
       className="game-canvas"
-      aria-label="ARPG game world"
+      aria-label={t("app.world")}
       onPointerMove={onPointerMove}
       onPointerDown={onPointerDown}
       onPointerUp={onPointerUp}
@@ -379,7 +407,7 @@ function App() {
   const initialRunSeedRef = useRef(initialRequest.seed);
   const [snapshotStore] = useState(createSnapshotStore);
   // Shown once the core is ready; while it loads the shell shows the load state instead.
-  const [status, setStatus] = useState("Select a character");
+  const [status, setStatus] = useState(() => t("status.selectCharacter"));
   const [runtime] = useState(() =>
     createGameClientRuntime({
       snapshots: snapshotStore,
@@ -412,14 +440,21 @@ function App() {
     ready || coreFailed
       ? status
       : characterProgress?.totalBytes
-        ? `Loading game… ${megabytes(characterProgress.loadedBytes)} / ${megabytes(characterProgress.totalBytes)} MB`
-        : "Loading game…";
+        ? t("app.loadingBytes", {
+            loaded: formatMegabytes(characterProgress.loadedBytes),
+            total: formatMegabytes(characterProgress.totalBytes),
+          })
+        : t("app.loading");
   const scenario = client.training ? "training" : "adventure";
   const trainingPaused = client.training?.paused ?? false;
   const trainingSpeed = client.training?.speed ?? 1;
   const currentPlayer = () =>
     snapshotStore.getSnapshot()?.players.find((player) => player.id === playerId) ?? null;
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // The in-world overlay layer (#60): play, the game menu, settings or the leave confirmation.
+  const [overlay, setOverlay] = useState(PLAY);
+  const settingsOpen = overlay.layer === "settings";
+  const overlayOpen = overlay.layer !== null;
+  const stepOverlay = useCallback((step) => setOverlay((current) => step(current)), []);
   const [inWorld, setInWorld] = useState(false);
   const [savedGameAvailable, setSavedGameAvailable] = useState(() => hasPersistedSaveDocument());
   const [trainingSeedDraft, setTrainingSeedDraft] = useState(String(initialRequest.training.seed));
@@ -435,6 +470,22 @@ function App() {
   // Local display preferences (#61): never part of a save or the authority.
   const [presentation, setPresentation] = useState(() => loadPresentation());
   const { graphics, accessibility } = presentation;
+  // Wheel, pinch and reset zoom changes save into the same document without re-rendering.
+  const presentationRef = useRef(presentation);
+  useLayoutEffect(() => {
+    presentationRef.current = presentation;
+  }, [presentation]);
+  useEffect(() => {
+    let savedZoom = followCamera.zoom();
+    return followCamera.subscribe(() => {
+      if (followCamera.zoom() === savedZoom) return;
+      savedZoom = followCamera.zoom();
+      persistPresentation({
+        ...presentationRef.current,
+        camera: { zoom: savedZoom },
+      });
+    });
+  }, []);
   const systemReducedMotion = useSyncExternalStore(
     subscribeReducedMotion,
     prefersReducedMotion,
@@ -582,11 +633,11 @@ function App() {
           ignoreTextEntry: true,
           stopPropagation: true,
         }),
-      // The settings toggle also closes the menu, so it stays live in menu context.
-      alwaysActions: ["game.settings"],
+      // The menu key also steps out of open menus, so it stays live in menu context.
+      alwaysActions: ["game.menu"],
       onDispatch: (dispatch) => {
-        if (dispatch.action === "game.settings") {
-          if (dispatch.phase === "press") setSettingsOpen((open) => !open);
+        if (dispatch.action === "game.menu") {
+          if (dispatch.phase === "press") stepOverlay(escapeFrom);
           return;
         }
         // Always forward a release so a draw held across a weapon switch cannot stick.
@@ -599,10 +650,7 @@ function App() {
           return;
         }
         if (dispatch.action === "game.resetCamera") {
-          if (dispatch.phase === "press") {
-            followCamera.reset();
-            persistCameraZoom(followCamera.zoom());
-          }
+          if (dispatch.phase === "press") followCamera.reset();
           return;
         }
         if (dispatch.action === "game.switchWeapon") {
@@ -646,10 +694,10 @@ function App() {
       input.detach();
     };
     // Every dependency is stable for the runtime's lifetime, so this runs once per mount.
-  }, [runtime, focusedPlayer, switchWeapon, triggerCombatAction, releaseInput]);
+  }, [runtime, focusedPlayer, switchWeapon, triggerCombatAction, releaseInput, stepOverlay]);
 
   const leaveTrainingUrl = () => {
-    history.replaceState(null, "", withTrainingRequest(location.href, false, 0));
+    history.replaceState(history.state, "", withTrainingRequest(location.href, false, 0));
   };
 
   const startTraining = (seed, fixture = trainingFixture) => {
@@ -658,31 +706,35 @@ function App() {
     initialRunSeedRef.current = null;
     setTrainingSeedDraft(String(seed));
     setTrainingFixture(fixture);
-    history.replaceState(null, "", withTrainingRequest(location.href, true, seed, fixture));
+    history.replaceState(
+      history.state,
+      "",
+      withTrainingRequest(location.href, true, seed, fixture),
+    );
   };
 
   const enterTrainingArena = (candidateSeed = trainingSeedDraft) => {
     if (!ready) return;
     const seed = parseRunSeed(candidateSeed);
     if (seed === null) {
-      setStatus("Training seed must be an unsigned 32-bit integer");
+      setStatus(t("status.badSeed"));
       return;
     }
     const selectedId = persistSelectedCharacterId(undefined, selectedCharacterId);
     const selected = resolveCharacter(selectedId);
     startTraining(seed);
     setInWorld(true);
-    setStatus(`Training arena · ${selected.name}`);
+    setStatus(t("status.trainingWith", { name: selected.name }));
   };
 
   const restartTrainingArena = (candidateSeed = trainingSeedDraft) => {
     const seed = parseRunSeed(candidateSeed);
     if (seed === null || scenario !== "training") {
-      setStatus("Training seed must be an unsigned 32-bit integer");
+      setStatus(t("status.badSeed"));
       return;
     }
     startTraining(seed);
-    setStatus(`Training arena restarted · seed ${seed}`);
+    setStatus(t("status.trainingRestarted", { seed: String(seed) }));
   };
 
   const stepTrainingArena = () => {
@@ -699,23 +751,78 @@ function App() {
     initialRunSeedRef.current = null;
     leaveTrainingUrl();
     setInWorld(true);
-    setStatus(`Local game · ${selected.name}`);
+    setStatus(t("status.localGame", { name: selected.name }));
   };
 
   const returnToCharacters = () => {
     runtime.stop();
     invalidateTouchGestures();
-    setSettingsOpen(false);
+    setOverlay(PLAY);
     setInWorld(false);
     leaveTrainingUrl();
-    setStatus("Select a character");
+    setStatus(t("status.selectCharacter"));
   };
+
+  // Leave from the menu or browser Back (#60): a run asks first, training leaves at once.
+  const requestLeave = () => {
+    if (leaveNeedsConfirmation({ training: runtime.getState().training !== null })) {
+      setOverlay(openLeaveConfirmation());
+    } else {
+      returnToCharacters();
+    }
+  };
+  const requestLeaveRef = useRef(requestLeave);
+  const inWorldRef = useRef(inWorld);
+  useEffect(() => {
+    requestLeaveRef.current = requestLeave;
+    inWorldRef.current = inWorld;
+  });
+
+  // The menu pauses a local authority while any in-world layer is open; shared worlds run on.
+  useEffect(() => {
+    runtime.setMenuPaused(inWorld && overlayOpen);
+  }, [runtime, inWorld, overlayOpen]);
+
+  // Browser history (#60): entering the world pushes one entry, so Back asks to leave instead
+  // of leaving the page. A reload never resumes a session: it starts on the character screen
+  // and drops the stale world marker. Leaving the world pops the entry it pushed.
+  const historyStartedRef = useRef(false);
+  const expectingPopRef = useRef(false);
+  const confirmingLeave = overlay.layer === "confirmLeave";
+  useEffect(() => {
+    const marked = history.state?.[WORLD_HISTORY_KEY] === true;
+    if (!historyStartedRef.current) {
+      historyStartedRef.current = true;
+      if (marked && !inWorld) {
+        history.replaceState(null, "", location.href);
+        return;
+      }
+    }
+    if (inWorld && !confirmingLeave && !marked) {
+      history.pushState({ [WORLD_HISTORY_KEY]: true }, "", location.href);
+    } else if (!inWorld && marked) {
+      expectingPopRef.current = true;
+      history.back();
+    }
+  }, [inWorld, confirmingLeave]);
+  useEffect(() => {
+    const onPopState = () => {
+      if (expectingPopRef.current) {
+        expectingPopRef.current = false;
+        leaveTrainingUrl();
+        return;
+      }
+      if (inWorldRef.current) requestLeaveRef.current();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   const startLocal = () => {
     invalidateTouchGestures();
     runtime.startLocal();
     leaveTrainingUrl();
-    setStatus(`Local game · ${selectedCharacter.name}`);
+    setStatus(t("status.localGame", { name: selectedCharacter.name }));
   };
 
   const startDedicated = async () => {
@@ -750,11 +857,15 @@ function App() {
       initialRunSeedRef.current = null;
       setTrainingSeedDraft(String(seed));
       setInWorld(true);
-      history.replaceState(null, "", withTrainingRequest(location.href, true, seed, fixture));
+      history.replaceState(
+        history.state,
+        "",
+        withTrainingRequest(location.href, true, seed, fixture),
+      );
       setStatus(
         unknownFixture
-          ? `Unknown scenario "${unknownFixture}"; using the generated dungeon`
-          : "Training arena",
+          ? t("status.unknownScenario", { scenario: unknownFixture })
+          : t("status.training"),
       );
     }
     return () => {
@@ -770,10 +881,10 @@ function App() {
     if (inWorld) {
       const seed = parseRunSeed(trainingSeedDraft) ?? DEFAULT_TRAINING_SEED;
       startTraining(seed);
-      setStatus("Training arena");
+      setStatus(t("status.training"));
       return;
     }
-    setStatus("Select a character");
+    setStatus(t("status.selectCharacter"));
     void runtime.load();
   };
 
@@ -803,18 +914,18 @@ function App() {
 
   useEffect(() => {
     // Non-gameplay contexts suppress gameplay bindings and release held input.
-    inputRef.current?.setContext(focusOwner ?? (settingsOpen ? "menu" : "gameplay"));
-  }, [focusOwner, settingsOpen]);
+    inputRef.current?.setContext(focusOwner ?? (overlayOpen ? "menu" : "gameplay"));
+  }, [focusOwner, overlayOpen]);
 
   const updateProfile = (next) => {
     if (!persistStoredValue(PROFILE_KEY, JSON.stringify(next)))
-      setStatus("Controls updated for this session; browser storage is unavailable");
+      setStatus(t("status.controlsSession"));
     setProfile(next);
   };
 
   const updateMouseAim = (enabled) => {
     if (!persistStoredValue(MOUSE_AIM_KEY, enabled ? "on" : "off"))
-      setStatus("Controls updated for this session; browser storage is unavailable");
+      setStatus(t("status.controlsSession"));
     setMouseAim(enabled);
   };
 
@@ -845,7 +956,6 @@ function App() {
     const pixels =
       event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1);
     followCamera.zoomByWheel(pixels);
-    persistCameraZoom(followCamera.zoom());
   };
   const pinchPointer = (event, phase) => {
     if (event.pointerType !== "touch") return;
@@ -856,7 +966,6 @@ function App() {
     const factor = pinchZoom.move(event.pointerId, x, y);
     if (factor === null || !cameraInputAllowed()) return;
     followCamera.setZoom(followCamera.zoom() * factor);
-    persistCameraZoom(followCamera.zoom());
   };
 
   const stopMouseMovement = (pointerId) => {
@@ -868,7 +977,7 @@ function App() {
   const aimWithPointer = (event) => {
     if (
       event.pointerType !== "mouse" ||
-      settingsOpen ||
+      overlayOpen ||
       inputRef.current?.getContext() !== "gameplay"
     )
       return;
@@ -888,7 +997,7 @@ function App() {
     if (
       event.pointerType !== "mouse" ||
       event.button !== 2 ||
-      settingsOpen ||
+      overlayOpen ||
       !ready ||
       !inWorld ||
       inputRef.current?.getContext() !== "gameplay"
@@ -907,10 +1016,14 @@ function App() {
     if (event.button === 2) stopMouseMovement(mousePointerIdRef.current);
   };
 
+  // The follow camera owns the live zoom, so a settings change never restores a stale one
+  // and "Reset display settings" leaves the zoom to the camera's own reset.
   const updatePresentation = (next) => {
-    const normalized = normalizePresentation(next);
-    if (!persistPresentation(normalized))
-      setStatus("Display settings updated for this session; browser storage is unavailable");
+    const normalized = normalizePresentation({
+      ...next,
+      camera: { zoom: followCamera.zoom() },
+    });
+    if (!persistPresentation(normalized)) setStatus(t("status.displaySession"));
     setPresentation(normalized);
   };
   const updateGraphics = (patch) =>
@@ -920,14 +1033,12 @@ function App() {
 
   const updateSetupUrl = (value) => {
     setSetupUrl(value);
-    if (!persistStoredValue(SETUP_URL_KEY, value))
-      setStatus("Endpoint updated for this session; browser storage is unavailable");
+    if (!persistStoredValue(SETUP_URL_KEY, value)) setStatus(t("status.endpointSession"));
   };
 
   const updateDedicatedUrl = (value) => {
     setDedicatedUrl(value);
-    if (!persistStoredValue(DEDICATED_URL_KEY, value))
-      setStatus("Endpoint updated for this session; browser storage is unavailable");
+    if (!persistStoredValue(DEDICATED_URL_KEY, value)) setStatus(t("status.endpointSession"));
   };
 
   const selectCharacter = (characterId) => {
@@ -971,12 +1082,16 @@ function App() {
       persistSelectedCharacterId(undefined, document.presentation.characterId),
     );
     setInWorld(true);
-    setSettingsOpen(false);
-    let notice = `${sourceLabel} · tick ${document.coreState.tick} · seed ${document.coreState.runSeed}`;
+    setOverlay(PLAY);
+    let notice = t("status.restored", {
+      source: sourceLabel,
+      tick: String(document.coreState.tick),
+      seed: String(document.coreState.runSeed),
+    });
     if (persistImported) {
       // The imported game is already authoritative; keeping a quick-save copy is optional.
       if (persistSaveDocument(undefined, document)) setSavedGameAvailable(true);
-      else notice += " · not kept as the local save because browser storage is unavailable";
+      else notice += t("status.notKept");
     }
     setStatus(notice);
   };
@@ -985,13 +1100,13 @@ function App() {
     try {
       const document = captureSaveDocument();
       if (!persistSaveDocument(undefined, document)) {
-        setStatus("Could not save game: browser storage is unavailable; export the save instead");
+        setStatus(t("status.saveNoStorage"));
         return;
       }
       setSavedGameAvailable(true);
-      setStatus(`Game saved locally · tick ${document.coreState.tick}`);
+      setStatus(t("status.saved", { tick: String(document.coreState.tick) }));
     } catch (error) {
-      setStatus(`Could not save game: ${error}`);
+      setStatus(t("status.saveFailed", { error: String(error) }));
     }
   };
 
@@ -1000,12 +1115,12 @@ function App() {
       const document = loadPersistedSaveDocument();
       if (!document) {
         setSavedGameAvailable(false);
-        setStatus("No local save is available");
+        setStatus(t("status.noSave"));
         return;
       }
-      applySaveDocument(document, "Loaded local save");
+      applySaveDocument(document, t("status.loadedSave"));
     } catch (error) {
-      setStatus(`Could not load saved game: ${error}`);
+      setStatus(t("status.loadFailed", { error: String(error) }));
     }
   };
 
@@ -1013,9 +1128,9 @@ function App() {
     try {
       const saveDocument = captureSaveDocument();
       downloadJson(serializeSaveDocument(saveDocument), saveFileName(saveDocument));
-      setStatus(`Save exported · tick ${saveDocument.coreState.tick}`);
+      setStatus(t("status.exported", { tick: String(saveDocument.coreState.tick) }));
     } catch (error) {
-      setStatus(`Could not export save: ${error}`);
+      setStatus(t("status.exportFailed", { error: String(error) }));
     }
   };
 
@@ -1027,9 +1142,9 @@ function App() {
       if (json === null) throw new Error("only local training sessions record a reproduction");
       const { scenario: recorded, seed, ticks } = JSON.parse(json);
       downloadJson(json, `arpg-reproduction-${recorded}-seed-${seed}-tick-${ticks}.json`);
-      setStatus(`Reproduction exported · ${recorded} · ${ticks} ticks`);
+      setStatus(t("status.reproduction", { scenario: recorded, count: ticks }));
     } catch (error) {
-      setStatus(`Could not export reproduction: ${error}`);
+      setStatus(t("status.reproductionFailed", { error: String(error) }));
     }
   };
 
@@ -1046,9 +1161,9 @@ function App() {
         throw new Error(`Save file exceeds ${MAX_SAVE_FILE_BYTES} bytes`);
       }
       const document = parseSaveDocument(await file.text());
-      applySaveDocument(document, `Imported ${file.name}`, true);
+      applySaveDocument(document, t("status.importedSave", { file: file.name }), true);
     } catch (error) {
-      setStatus(`Could not import save: ${error}`);
+      setStatus(t("status.importFailed", { error: String(error) }));
     }
   };
 
@@ -1057,32 +1172,33 @@ function App() {
     url.searchParams.set("join", lobbyCode);
     try {
       await navigator.clipboard.writeText(url.toString());
-      setStatus("Invite URL copied");
+      setStatus(t("status.inviteCopied"));
     } catch (error) {
-      setStatus(`Could not copy invite: ${error}`);
+      setStatus(t("status.inviteFailed", { error: String(error) }));
     }
   };
 
-  const modeLabel =
+  const modeLabel = t(
     scenario === "training"
-      ? "Training arena"
+      ? "mode.training"
       : mode === "local"
-        ? "Local"
+        ? "mode.local"
         : mode === "host"
-          ? "Peer host"
+          ? "mode.host"
           : mode === "guest"
-            ? "Peer guest"
-            : "Dedicated online";
+            ? "mode.guest"
+            : "mode.dedicated",
+  );
 
   return (
     <>
       {!inWorld && (
-        <main className="character-select-shell" aria-label="Character selection">
+        <main className="character-select-shell" aria-label={t("select.region")}>
           <div className="character-select-atmosphere" aria-hidden="true" />
           <header className="character-select-header">
             <div>
-              <span className="character-select-eyebrow">ARPG</span>
-              <h1 className="visually-hidden">Character selection</h1>
+              <span className="character-select-eyebrow">{t("app.name")}</span>
+              <h1 className="visually-hidden">{t("select.region")}</h1>
             </div>
           </header>
 
@@ -1104,17 +1220,20 @@ function App() {
                 <span className="character-weapon" />
               </div>
               <div className="character-stage-copy">
-                <span>{selectedCharacter.role}</span>
+                <span>{t(selectedCharacter.role)}</span>
                 <h2>{selectedCharacter.name}</h2>
                 <p>
-                  {selectedCharacter.appearance} appearance · {selectedCharacter.location}
+                  {t("select.appearance", {
+                    appearance: t(selectedCharacter.appearance),
+                    location: t(selectedCharacter.location),
+                  })}
                 </p>
               </div>
             </section>
 
-            <aside className="character-roster" aria-label="Characters">
+            <aside className="character-roster" aria-label={t("select.characters")}>
               <div className="character-roster-heading">
-                <span>Characters</span>
+                <span>{t("select.characters")}</span>
                 <strong>{CHARACTER_PRESETS.length}</strong>
               </div>
               <div className="character-roster-list">
@@ -1135,26 +1254,24 @@ function App() {
                       />
                       <span className="character-card-copy">
                         <strong>{character.name}</strong>
-                        <small>{character.role}</small>
+                        <small>{t(character.role)}</small>
                       </span>
-                      <span className="character-card-meta">{character.appearance}</span>
+                      <span className="character-card-meta">{t(character.appearance)}</span>
                     </button>
                   );
                 })}
               </div>
-              <p className="character-selection-note">
-                Appearance profiles currently share the same authoritative gameplay rules.
-              </p>
+              <p className="character-selection-note">{t("select.note")}</p>
             </aside>
           </div>
 
           <footer className="character-select-footer">
             <span className="character-select-status" role="status">
-              {ready && status === "Select a character" ? "Ready" : shownStatus}
+              {ready && status === t("status.selectCharacter") ? t("select.ready") : shownStatus}
             </span>
             {coreFailed && (
               <button type="button" className="core-retry-button" onClick={retryCoreLoad}>
-                Retry
+                {t("app.retry")}
               </button>
             )}
             <div className="character-select-save-actions">
@@ -1163,10 +1280,10 @@ function App() {
                 onClick={loadSavedGame}
                 disabled={!ready || !savedGameAvailable}
               >
-                Load Saved Game
+                {t("select.loadSaved")}
               </button>
               <button type="button" onClick={requestSaveImport} disabled={!ready}>
-                Import Save
+                {t("select.importSave")}
               </button>
               <button
                 type="button"
@@ -1174,7 +1291,7 @@ function App() {
                 onClick={() => enterTrainingArena(trainingSeedDraft)}
                 disabled={!ready}
               >
-                Training Arena
+                {t("select.training")}
               </button>
               <button
                 type="button"
@@ -1182,7 +1299,7 @@ function App() {
                 onClick={enterWorld}
                 disabled={!ready}
               >
-                Enter World
+                {t("select.enterWorld")}
               </button>
             </div>
             <input
@@ -1190,7 +1307,7 @@ function App() {
               className="save-file-input"
               type="file"
               accept=".json,application/json"
-              aria-label="Save file"
+              aria-label={t("settings.saveFile")}
               onChange={importSave}
             />
           </footer>
@@ -1230,24 +1347,24 @@ function App() {
           <>
             <header className="game-header">
               <div>
-                <strong>ARPG</strong>
+                <strong>{t("app.name")}</strong>
                 <span>{modeLabel}</span>
               </div>
               <div className="game-header-actions">
                 {coreFailed && (
                   <button type="button" className="core-retry-button" onClick={retryCoreLoad}>
-                    Retry
+                    {t("app.retry")}
                   </button>
                 )}
-                <button type="button" onClick={returnToCharacters}>
-                  Characters
+                <button type="button" aria-haspopup="dialog" onClick={() => setOverlay(openMenu())}>
+                  {t("header.menu")}
                 </button>
                 <button
                   ref={settingsTriggerRef}
                   type="button"
-                  onClick={() => setSettingsOpen(true)}
+                  onClick={() => setOverlay(openSettings("play"))}
                 >
-                  Settings
+                  {t("header.settings")}
                 </button>
               </div>
             </header>
@@ -1288,7 +1405,12 @@ function App() {
                     onChange={(event) => {
                       const seed = parseRunSeed(trainingSeedDraft) ?? DEFAULT_TRAINING_SEED;
                       startTraining(seed, event.target.value);
-                      setStatus(`Training scenario · ${event.target.value} · seed ${seed}`);
+                      setStatus(
+                        t("status.trainingScenario", {
+                          scenario: event.target.value,
+                          seed: String(seed),
+                        }),
+                      );
                     }}
                   >
                     {SCENARIOS.map((option) => (
@@ -1357,13 +1479,13 @@ function App() {
               keyLabels={keyLabels}
             />
 
-            {ready && !settingsOpen && (
-              <section className="mobile-controls" aria-label="Touch controls">
+            {ready && !overlayOpen && (
+              <section className="mobile-controls" aria-label={t("touch.region")}>
                 <div
                   ref={touchStickRef}
                   className="virtual-stick"
                   role="group"
-                  aria-label="Movement joystick"
+                  aria-label={t("touch.joystick")}
                   aria-disabled={!playerId}
                   onPointerDown={beginTouchStick}
                   onPointerMove={updateTouchStick}
@@ -1377,7 +1499,7 @@ function App() {
               </section>
             )}
 
-            {ready && !settingsOpen && (
+            {ready && !overlayOpen && (
               <CombatActions
                 store={snapshotStore}
                 playerId={playerId}
@@ -1392,38 +1514,102 @@ function App() {
               />
             )}
 
-            {settingsOpen && (
+            {overlay.layer === "menu" && (
               <SettingsDialog
-                onClose={() => setSettingsOpen(false)}
-                returnFocusTo={settingsTriggerRef}
+                key="menu"
+                className="settings-panel game-menu"
+                labelledBy="game-menu-heading"
+                onClose={() => stepOverlay(closeLayer)}
               >
                 <header>
                   <div>
-                    <h1 id="settings-heading">Settings</h1>
+                    <h1 id="game-menu-heading">{t("menu.heading")}</h1>
+                    <p className="game-menu-notice" role="status">
+                      {menuWorldNotice(menuPausesWorld(mode))}
+                    </p>
                   </div>
-                  <button type="button" autoFocus onClick={() => setSettingsOpen(false)}>
-                    Close
+                </header>
+                <div className="game-menu-actions">
+                  <button
+                    type="button"
+                    data-autofocus={overlay.focus === "resume" ? "" : undefined}
+                    onClick={() => setOverlay(PLAY)}
+                  >
+                    {t("menu.resume")}
+                  </button>
+                  <button
+                    type="button"
+                    data-autofocus={overlay.focus === "settings" ? "" : undefined}
+                    onClick={() => setOverlay(openSettings("menu"))}
+                  >
+                    {t("menu.settings")}
+                  </button>
+                  <button
+                    type="button"
+                    data-autofocus={overlay.focus === "leave" ? "" : undefined}
+                    onClick={requestLeave}
+                  >
+                    {t("menu.leave")}
+                  </button>
+                </div>
+              </SettingsDialog>
+            )}
+
+            {overlay.layer === "confirmLeave" && (
+              <SettingsDialog
+                key="confirm-leave"
+                className="settings-panel game-menu"
+                labelledBy="leave-heading"
+                onClose={() => stepOverlay(closeLayer)}
+              >
+                <header>
+                  <div>
+                    <h1 id="leave-heading">{t("leave.heading")}</h1>
+                    <p className="game-menu-notice">{leaveConsequence(mode)}</p>
+                  </div>
+                </header>
+                <div className="game-menu-actions">
+                  <button type="button" data-autofocus="" onClick={() => stepOverlay(closeLayer)}>
+                    {t("leave.cancel")}
+                  </button>
+                  <button type="button" className="danger-button" onClick={returnToCharacters}>
+                    {t("leave.confirm")}
+                  </button>
+                </div>
+              </SettingsDialog>
+            )}
+
+            {settingsOpen && (
+              <SettingsDialog
+                key="settings"
+                onClose={() => stepOverlay(closeLayer)}
+                returnFocusTo={overlay.settingsFrom === "menu" ? undefined : settingsTriggerRef}
+              >
+                <header>
+                  <div>
+                    <h1 id="settings-heading">{t("settings.heading")}</h1>
+                  </div>
+                  <button type="button" autoFocus onClick={() => stepOverlay(closeLayer)}>
+                    {t("settings.close")}
                   </button>
                 </header>
 
                 <section>
-                  <h2>Game</h2>
+                  <h2>{t("settings.game")}</h2>
                   <GameSummary store={snapshotStore} mode={mode} playerId={playerId} />
                   <button type="button" onClick={startLocal}>
-                    Start local game
+                    {t("settings.startLocal")}
                   </button>
                 </section>
 
                 <section>
-                  <h2>Save & load</h2>
+                  <h2>{t("settings.save")}</h2>
                   <div className="save-state-summary">
                     <strong>
-                      {savedGameAvailable ? "Local save available" : "No local save yet"}
+                      {t(savedGameAvailable ? "settings.saveAvailable" : "settings.saveNone")}
                     </strong>
                     <span>
-                      {mode === "local"
-                        ? "Current local authority can be saved or exported."
-                        : "Loading a save returns to local play; network sessions are not overwritten."}
+                      {mode === "local" ? t("settings.saveLocal") : t("settings.saveRemote")}
                     </span>
                   </div>
                   <div className="settings-actions save-state-actions">
@@ -1432,24 +1618,24 @@ function App() {
                       onClick={saveGameLocally}
                       disabled={mode !== "local" || !playerId}
                     >
-                      Save game
+                      {t("settings.saveGame")}
                     </button>
                     <button
                       type="button"
                       onClick={loadSavedGame}
                       disabled={!ready || !savedGameAvailable}
                     >
-                      Load saved game
+                      {t("settings.loadGame")}
                     </button>
                     <button
                       type="button"
                       onClick={exportSave}
                       disabled={mode !== "local" || !playerId}
                     >
-                      Export save
+                      {t("settings.exportSave")}
                     </button>
                     <button type="button" onClick={requestSaveImport} disabled={!ready}>
-                      Import save
+                      {t("settings.importSave")}
                     </button>
                   </div>
                   <input
@@ -1457,19 +1643,16 @@ function App() {
                     className="save-file-input"
                     type="file"
                     accept=".json,application/json"
-                    aria-label="Save file"
+                    aria-label={t("settings.saveFile")}
                     onChange={importSave}
                   />
-                  <p className="settings-note">
-                    Saves are versioned and validated by the Rust authority before they replace the
-                    current game. Exported JSON can be imported on another browser or device.
-                  </p>
+                  <p className="settings-note">{t("settings.saveNote")}</p>
                 </section>
 
                 <section>
-                  <h2>Dedicated online</h2>
+                  <h2>{t("settings.dedicated")}</h2>
                   <label>
-                    WebTransport endpoint
+                    {t("settings.endpoint")}
                     <input
                       value={dedicatedUrl}
                       onChange={(event) => updateDedicatedUrl(event.target.value)}
@@ -1481,14 +1664,14 @@ function App() {
                     onClick={startDedicated}
                     disabled={!ready || !dedicatedUrl.trim()}
                   >
-                    Connect dedicated server
+                    {t("settings.connectDedicated")}
                   </button>
                 </section>
 
                 <section>
-                  <h2>Peer co-op</h2>
+                  <h2>{t("settings.peer")}</h2>
                   <label>
-                    Setup service URL
+                    {t("settings.setupUrl")}
                     <input
                       value={setupUrl}
                       onChange={(event) => updateSetupUrl(event.target.value)}
@@ -1496,35 +1679,35 @@ function App() {
                   </label>
                   <div className="settings-actions">
                     <button type="button" onClick={hostPeerGame} disabled={!ready}>
-                      Host co-op
+                      {t("settings.host")}
                     </button>
                     {lobbyCode && (
                       <button type="button" onClick={copyInvite}>
-                        Copy invite {lobbyCode}
+                        {t("settings.copyInvite", { code: lobbyCode })}
                       </button>
                     )}
                   </div>
                   <label>
-                    Lobby code
+                    {t("settings.lobbyCode")}
                     <input value={joinCode} onChange={(event) => setJoinCode(event.target.value)} />
                   </label>
                   <button type="button" onClick={joinPeerGame} disabled={!joinCode.trim()}>
-                    Join host
+                    {t("settings.join")}
                   </button>
                 </section>
 
                 <section>
-                  <h2>Graphics</h2>
+                  <h2>{t("settings.graphics")}</h2>
                   <label className="checkbox-row">
                     <input
                       type="checkbox"
                       checked={graphics.shadows}
                       onChange={(event) => updateGraphics({ shadows: event.target.checked })}
                     />
-                    Enable shadows
+                    {t("settings.shadows")}
                   </label>
                   <label>
-                    Pixel ratio limit
+                    {t("settings.pixelRatio")}
                     <select
                       value={graphics.pixelRatioLimit}
                       onChange={(event) =>
@@ -1539,9 +1722,9 @@ function App() {
                 </section>
 
                 <section aria-labelledby="accessibility-heading">
-                  <h2 id="accessibility-heading">Accessibility</h2>
+                  <h2 id="accessibility-heading">{t("settings.accessibility")}</h2>
                   <div className="settings-field">
-                    <label htmlFor="motion-effects">Motion effects</label>
+                    <label htmlFor="motion-effects">{t("settings.motion")}</label>
                     <select
                       id="motion-effects"
                       value={accessibility.motion}
@@ -1549,7 +1732,7 @@ function App() {
                     >
                       {MOTION_PREFERENCES.map((motion) => (
                         <option key={motion} value={motion}>
-                          {MOTION_LABELS[motion]}
+                          {t(MOTION_LABELS[motion])}
                         </option>
                       ))}
                     </select>
@@ -1562,10 +1745,10 @@ function App() {
                         updateAccessibility({ reducedFlashes: event.target.checked })
                       }
                     />
-                    Reduce bright flashes
+                    {t("settings.flashes")}
                   </label>
                   <div className="settings-field">
-                    <label htmlFor="text-size">Text size</label>
+                    <label htmlFor="text-size">{t("settings.textSize")}</label>
                     <select
                       id="text-size"
                       value={accessibility.textScale}
@@ -1575,30 +1758,28 @@ function App() {
                     >
                       {TEXT_SCALES.map((scale) => (
                         <option key={scale} value={scale}>
-                          {`${scale * 100}%`}
+                          {formatPercent(scale)}
                         </option>
                       ))}
                     </select>
                   </div>
-                  <p className="settings-note">
-                    Display settings stay in this browser. They never change saves or game rules.
-                  </p>
+                  <p className="settings-note">{t("settings.displayNote")}</p>
                   <div className="settings-actions">
                     <button type="button" onClick={() => updatePresentation(DEFAULT_PRESENTATION)}>
-                      Reset display settings
+                      {t("settings.resetDisplay")}
                     </button>
                   </div>
                 </section>
 
                 <section className="keybindings-section">
-                  <h2>Controls</h2>
+                  <h2>{t("settings.controls")}</h2>
                   <label className="checkbox-row">
                     <input
                       type="checkbox"
                       checked={mouseAim}
                       onChange={(event) => updateMouseAim(event.target.checked)}
                     />
-                    Aim melee and bow with the mouse
+                    {t("settings.mouseAim")}
                   </label>
                   <KeybindingEditor
                     registry={inputRegistry}

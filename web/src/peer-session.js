@@ -1,3 +1,4 @@
+import { t } from "./messages.ts";
 import { contentRevisionMismatch, decodeSnapshot } from "./wire-protocol.js";
 
 // ARPG admission and projection boundary. The foundation continues to own
@@ -34,7 +35,7 @@ export function attachPeerGameSession({
       try {
         handler(event.detail);
       } catch (error) {
-        onStatus(`Rejected peer message: ${error}`);
+        onStatus(t("status.peerRejected", { error: String(error) }));
       }
     };
     session.addEventListener(name, listener);
@@ -43,7 +44,7 @@ export function attachPeerGameSession({
 
   listen("peer-ready", ({ peerId }) => {
     if (role !== "host") {
-      onStatus("Connected to host; waiting for player assignment…");
+      onStatus(t("status.peerWaiting"));
       return;
     }
     let assigned = players.get(peerId);
@@ -51,7 +52,7 @@ export function attachPeerGameSession({
       const used = new Set(players.values());
       assigned = [2, 3, 4].find((candidate) => !used.has(candidate));
       if (!assigned) {
-        onStatus("Lobby is full");
+        onStatus(t("status.lobbyFull"));
         return;
       }
       getGame().addPlayer(assigned);
@@ -62,7 +63,7 @@ export function attachPeerGameSession({
       playerId: assigned,
       encodedSnapshot: getGame().snapshotJson(),
     });
-    onStatus(`Peer connected as player ${assigned}`);
+    onStatus(t("status.peerJoined", { player: String(assigned) }));
   });
 
   listen("reliable", ({ peerId, data }) => {
@@ -96,7 +97,7 @@ export function attachPeerGameSession({
       hostLinkInterrupted = false;
       onPlayer(data.playerId);
       onSnapshot(snapshot);
-      onStatus(`Connected as player ${data.playerId}`);
+      onStatus(t("status.connectedAs", { player: String(data.playerId) }));
     }
   });
 
@@ -114,7 +115,7 @@ export function attachPeerGameSession({
     if (!assigned) return;
     players.delete(participantId);
     getGame()?.removePlayer(assigned);
-    onStatus(`Player ${assigned} disconnected`);
+    onStatus(t("status.peerLeft", { player: String(assigned) }));
   });
 
   listen("peer-statechange", ({ peerId, state }) => {
@@ -148,7 +149,7 @@ export function attachPeerGameSession({
   });
 
   listen("statechange", (detail) => {
-    if (detail?.state) onStatus(`Network: ${detail.state}`);
+    if (detail?.state) onStatus(t("status.network", { state: String(detail.state) }));
   });
 
   return () => {
