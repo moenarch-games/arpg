@@ -20,6 +20,7 @@
 
 import { contentRevisionMismatch, decodeSnapshot, encodeCommand } from "./wire-protocol.js";
 import { DEFAULT_SCENARIO, trainingTicksForFrame } from "./training-arena.js";
+import { menuPausesWorld } from "./game-menu.js";
 
 export const TICK_INTERVAL_MS = 1000 / 60;
 
@@ -224,6 +225,9 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
     training: null,
   };
   let game: WasmGameLike | null = null;
+  // The game menu is open (#60). Only a local authority pauses for it: a hosted, guest or
+  // dedicated world is shared and keeps running.
+  let menuPaused = false;
   let peer: PeerSessionLike | null = null;
   let detachPeer: (() => void) | null = null;
   let dedicated: DedicatedSessionLike | null = null;
@@ -306,6 +310,7 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
 
   const onTimer = () => {
     if (!game || state.mode === "guest" || state.mode === "dedicated") return;
+    if (menuPaused && menuPausesWorld(state.mode)) return;
     let ticks = 1;
     if (state.training) {
       if (state.training.paused) return;
@@ -899,6 +904,15 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
       aim = null;
       if (sentAim) sendAim(null);
     },
+
+    // Opens or closes the game menu's pause. Whether the world actually stops is the
+    // runtime's policy: only local play suspends its authority.
+    setMenuPaused(paused: boolean) {
+      menuPaused = paused;
+    },
+
+    // Whether the open game menu currently suspends the world.
+    worldPausedByMenu: () => menuPaused && menuPausesWorld(state.mode),
 
     setTrainingPaused(paused: boolean) {
       if (!state.training) return;

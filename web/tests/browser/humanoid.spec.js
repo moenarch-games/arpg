@@ -1,5 +1,5 @@
 // #55: the released Ranger bundle loads with the game core and stands in for every player.
-import { expect, test } from "./fixtures.js";
+import { expect, leaveWorld, test } from "./fixtures.js";
 
 const MANIFEST = "**/characters/humanoid-ranger-male/manifest.json";
 
@@ -36,7 +36,7 @@ test("the game waits for the character bundle, then enters the world with the hu
 
   // Leaving and entering again reuses the loaded bundle.
   const before = requested.length;
-  await page.getByRole("button", { name: "Characters", exact: true }).click();
+  await leaveWorld(page, { confirm: true });
   await page.getByRole("button", { name: "Enter World", exact: true }).click();
   await expect(canvas.first()).toBeVisible();
   expect(requested.length).toBe(before);
