@@ -61,6 +61,9 @@ const phaseStartTick = (tick, action) => tick - (action.phaseTicks - action.tick
 export function createPresentationCues(options = {}) {
   const { frameLimit, capacity, keyCapacity, lifetimeTicks } = { ...CUE_DEFAULTS, ...options };
   const listeners = new Set();
+  // Consumers of the cue stream itself (audio): `cues(emitted, snapshot)` after each fresh
+  // snapshot, `reset()` whenever the projection starts over.
+  const sinks = new Set();
   let cues = [];
   let keys = new Set();
   let previous = null;
@@ -86,6 +89,7 @@ export function createPresentationCues(options = {}) {
     keys = new Set();
     previous = null;
     struck = new Map();
+    for (const sink of sinks) sink.reset?.();
     return had;
   };
 
@@ -247,6 +251,7 @@ export function createPresentationCues(options = {}) {
       const fresh = derived.filter((cue) => remember(cue.key));
       const emitted = fresh.slice(0, frameLimit);
       dropped += fresh.length - emitted.length;
+      for (const sink of sinks) sink.cues?.(emitted, snapshot);
 
       const players = new Set(snapshot.players.map((player) => player.id));
       const monsters = new Set(snapshot.monsters.map((monster) => monster.id));
@@ -279,6 +284,11 @@ export function createPresentationCues(options = {}) {
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    // Streams emitted cues to `sink` (see `sinks`); returns the unsubscribe.
+    listen(sink) {
+      sinks.add(sink);
+      return () => sinks.delete(sink);
     },
     stats: () => ({ dropped, keys: keys.size, cues: cues.length }),
   };

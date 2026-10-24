@@ -4,7 +4,8 @@
 //   localStorage["arpg-presentation"] = { version: 2,
 //     graphics: { shadows, pixelRatioLimit },
 //     accessibility: { motion: "system" | "reduced" | "full", reducedFlashes, textScale },
-//     camera: { zoom } }   // the follow-camera zoom (wheel, pinch, C resets)
+//     camera: { zoom },    // the follow-camera zoom (wheel, pinch, C resets)
+//     audio: { master, effects, ui, muted } }   // sound (#67), untouched by display reset
 // migrated read-only from the legacy `arpg-graphics-v1` document.
 //
 // UI contract, inside the existing Settings dialog (no second settings surface):
@@ -28,11 +29,13 @@ const KEY = "arpg-presentation";
 const LEGACY_GRAPHICS_KEY = "arpg-graphics-v1";
 const MOUSE_AIM_KEY = "arpg-mouse-aim-v1";
 const TRAINING = "?scenario=training&seed=42";
+const AUDIO = { master: 1, effects: 1, ui: 1, muted: false };
 const DEFAULT_DOCUMENT = {
   version: 2,
   graphics: { shadows: true, pixelRatioLimit: 2 },
   accessibility: { motion: "system", reducedFlashes: false, textScale: 1 },
   camera: { zoom: 1 },
+  audio: AUDIO,
 };
 
 // Counts WebGL/WebGPU context requests: every scene renderer creation asks for one, so an
@@ -147,6 +150,7 @@ test("accessibility settings persist across reload as one version 2 document", a
     graphics: { shadows: true, pixelRatioLimit: 1.5 },
     accessibility: { motion: "full", reducedFlashes: true, textScale: 1.25 },
     camera: { zoom: 1 },
+    audio: AUDIO,
   });
 
   await page.reload();
@@ -214,6 +218,7 @@ test("legacy graphics settings migrate and the legacy value is kept", async ({ p
     graphics: { shadows: false, pixelRatioLimit: 1 },
     accessibility: { motion: "system", reducedFlashes: false, textScale: 1.5 },
     camera: { zoom: 1 },
+    audio: AUDIO,
   });
   expect(
     await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), LEGACY_GRAPHICS_KEY),
@@ -379,7 +384,8 @@ test("enlarged text on a narrow phone keeps every required action visible and op
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.y).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(width);
-      expect(box.y + box.height).toBeLessThanOrEqual(height);
+      // Scrolling a control into view at 150% text can leave it a subpixel past the edge.
+      expect(box.y + box.height).toBeLessThanOrEqual(height + 0.5);
       return box;
     };
     const required = [

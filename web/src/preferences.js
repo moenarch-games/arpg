@@ -57,16 +57,22 @@ export const DEFAULT_PRESENTATION = Object.freeze({
   graphics: Object.freeze({ shadows: true, pixelRatioLimit: 2 }),
   accessibility: Object.freeze({ motion: "system", reducedFlashes: false, textScale: 1 }),
   camera: Object.freeze({ zoom: DEFAULT_ZOOM }),
+  // Sound (#67, 67c): bus volumes in 0..1 and mute, applied by the game-audio director.
+  // Motion and flash settings never silence sound.
+  audio: Object.freeze({ master: 1, effects: 1, ui: 1, muted: false }),
 });
 
 const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const pick = (value, valid, fallback) => (valid ? value : fallback);
+const volume = (value, fallback) =>
+  typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback;
 
 // Any value to valid preferences; each field falls back to its default on its own.
 export function normalizePresentation(value) {
   const graphics = isRecord(value?.graphics) ? value.graphics : {};
   const accessibility = isRecord(value?.accessibility) ? value.accessibility : {};
   const camera = isRecord(value?.camera) ? value.camera : {};
+  const audio = isRecord(value?.audio) ? value.audio : {};
   const defaults = DEFAULT_PRESENTATION;
   return {
     graphics: {
@@ -101,6 +107,13 @@ export function normalizePresentation(value) {
     // Out-of-range zoom clamps to the follow camera's bounds; a non-number is the default.
     camera: {
       zoom: typeof camera.zoom === "number" ? clampZoom(camera.zoom) : DEFAULT_ZOOM,
+    },
+    // Out-of-range volumes clamp to 0..1; a non-number is the default.
+    audio: {
+      master: volume(audio.master, defaults.audio.master),
+      effects: volume(audio.effects, defaults.audio.effects),
+      ui: volume(audio.ui, defaults.audio.ui),
+      muted: pick(audio.muted, typeof audio.muted === "boolean", defaults.audio.muted),
     },
   };
 }

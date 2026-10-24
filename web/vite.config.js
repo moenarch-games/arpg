@@ -9,12 +9,16 @@ const vendor = (...parts) => resolve(here, "src", "vendor", "input-bindings", ..
 // Bun links git dependencies from its global cache: let the dev server serve the renderer
 // package's own files (the imported-character WASM bridge) from there.
 const renderer = realpathSync(resolve(here, "node_modules", "@moritzbrantner", "three-d-renderer"));
+// The same for the game-audio package's wasm director (#67, 67c).
+const gameAudio = realpathSync(resolve(here, "node_modules", "@moritzbrantner", "game-audio"));
 
 export default defineConfig({
   base: "/arpg/",
   server: {
-    fs: { allow: [here, renderer] },
+    fs: { allow: [here, renderer, gameAudio] },
   },
+  // Pre-bundling would move the wasm-bindgen glue away from the `.wasm` it loads by URL.
+  optimizeDeps: { exclude: ["@moritzbrantner/game-audio"] },
   oxc: {
     jsx: { runtime: "automatic" },
   },

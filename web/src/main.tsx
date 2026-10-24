@@ -24,6 +24,7 @@ import { keyLabelForAction } from "./binding-labels.js";
 import { createSnapshotStore } from "./snapshot-store.js";
 import { attachPresentationCues, createPresentationCues } from "./presentation-cues.js";
 import { CueFeed, DamageNumbers } from "./cue-views.jsx";
+import { attachCueAudio, loadCueAudio } from "./cue-audio.js";
 import {
   PlayerHud,
   CombatActions,
@@ -240,6 +241,11 @@ const followCamera = createFollowCamera({
   zoom: loadPresentation().camera.zoom,
 });
 const pinchZoom = createPinchZoom();
+// The page's one game-audio handle (#67, 67c), loaded on first use and kept for the page's
+// lifetime; the App attaches the cue stream to it.
+let soundLoad = null;
+const pageSound = () =>
+  (soundLoad ??= loadCueAudio({ baseUrl: `${import.meta.env.BASE_URL}sounds/combat-sounds/` }));
 const textureCapabilities = {
   configureTextureLoader(loader) {
     if (!characterRenderer) throw new Error("Character renderer is not ready");
@@ -506,6 +512,44 @@ function App() {
   useLayoutEffect(() => {
     applyDocumentPresentation(document.documentElement, presentationEffects);
   }, [presentationEffects]);
+  // Combat sound from the same cues (#67, 67c). It never blocks the game: until the sound
+  // bundle loads, and when Web Audio is missing or blocked, the game is simply silent.
+  const playerIdRef = useRef(playerId);
+  useLayoutEffect(() => {
+    playerIdRef.current = playerId;
+  }, [playerId]);
+  const soundRef = useRef(null);
+  const [soundAvailable, setSoundAvailable] = useState(true);
+  useEffect(() => {
+    let disposed = false;
+    let attached = null;
+    let frame = 0;
+    pageSound().then((audio) => {
+      if (disposed) return;
+      soundRef.current = audio;
+      audio.applySettings(presentationRef.current.audio);
+      setSoundAvailable(audio.state() !== "unavailable");
+      attached = attachCueAudio({
+        cues: presentationCues,
+        audio,
+        getPlayerId: () => playerIdRef.current,
+      });
+      const step = () => {
+        attached.frame(followCamera.pose());
+        frame = requestAnimationFrame(step);
+      };
+      frame = requestAnimationFrame(step);
+    });
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(frame);
+      attached?.dispose();
+      soundRef.current = null;
+    };
+  }, [presentationCues]);
+  useEffect(() => {
+    soundRef.current?.applySettings(presentation.audio);
+  }, [presentation.audio]);
   const [mouseAim, setMouseAim] = useState(() => loadMouseAim());
   const [setupUrl, setSetupUrl] = useState(() =>
     readStoredValue(SETUP_URL_KEY, "http://127.0.0.1:8787"),
@@ -1038,6 +1082,8 @@ function App() {
     updatePresentation({ ...presentation, graphics: { ...graphics, ...patch } });
   const updateAccessibility = (patch) =>
     updatePresentation({ ...presentation, accessibility: { ...accessibility, ...patch } });
+  const updateAudio = (patch) =>
+    updatePresentation({ ...presentation, audio: { ...presentation.audio, ...patch } });
 
   const updateSetupUrl = (value) => {
     setSetupUrl(value);
@@ -1785,10 +1831,51 @@ function App() {
                   </div>
                   <p className="settings-note">{t("settings.displayNote")}</p>
                   <div className="settings-actions">
-                    <button type="button" onClick={() => updatePresentation(DEFAULT_PRESENTATION)}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updatePresentation({ ...DEFAULT_PRESENTATION, audio: presentation.audio })
+                      }
+                    >
                       {t("settings.resetDisplay")}
                     </button>
                   </div>
+                </section>
+
+                <section aria-labelledby="sound-heading">
+                  <h2 id="sound-heading">{t("settings.sound")}</h2>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={presentation.audio.muted}
+                      onChange={(event) => updateAudio({ muted: event.target.checked })}
+                    />
+                    {t("settings.mute")}
+                  </label>
+                  {[
+                    ["master", "settings.masterVolume"],
+                    ["effects", "settings.effectsVolume"],
+                    ["ui", "settings.uiVolume"],
+                  ].map(([bus, label]) => (
+                    <div className="settings-field" key={bus}>
+                      <label htmlFor={`volume-${bus}`}>{t(label)}</label>
+                      <input
+                        id={`volume-${bus}`}
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="5"
+                        value={Math.round(presentation.audio[bus] * 100)}
+                        aria-valuetext={formatPercent(presentation.audio[bus])}
+                        onChange={(event) =>
+                          updateAudio({ [bus]: Number(event.target.value) / 100 })
+                        }
+                      />
+                    </div>
+                  ))}
+                  <p className="settings-note">
+                    {t(soundAvailable ? "settings.soundNote" : "settings.soundUnavailable")}
+                  </p>
                 </section>
 
                 <section className="keybindings-section">
