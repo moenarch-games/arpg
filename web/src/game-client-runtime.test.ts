@@ -611,6 +611,27 @@ test("training pause, step and speed are owned by the runtime loop", () => {
   expect(runtime.getState().training).toBeNull();
 });
 
+test("the game menu pauses a local authority but never a hosted world", async () => {
+  const { runtime, games, peers, tick } = harness();
+  runtime.startLocal({ seed: 1 });
+  tick(2);
+  runtime.setMenuPaused(true);
+  expect(runtime.worldPausedByMenu()).toBe(true);
+  tick(5);
+  expect(games[0].tick).toBe(2);
+  runtime.setMenuPaused(false);
+  tick(1);
+  expect(games[0].tick).toBe(3);
+
+  const hosting = runtime.hostPeer("http://setup");
+  peers[0].host.resolve({ displayCode: "ABCD" });
+  await hosting;
+  runtime.setMenuPaused(true);
+  expect(runtime.worldPausedByMenu()).toBe(false);
+  tick(2);
+  expect(games[1].tick).toBe(2);
+});
+
 test("restoring a save resumes its sequence fence and movement", () => {
   const { runtime, games, timers } = harness();
   runtime.startLocal({ seed: 1 });

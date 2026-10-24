@@ -96,7 +96,7 @@ export function PlayerHud({ store, playerId, status, interactKey = "E", keyLabel
         {keyOf(keyLabels, "game.primaryAttack")} primary / hold to draw bow ·{" "}
         {keyOf(keyLabels, "game.secondaryAttack")} heavy · {keyOf(keyLabels, "game.guard")} hold
         shield · {keyOf(keyLabels, "game.switchWeapon")} switch bow ·{" "}
-        {keyOf(keyLabels, "game.interact")} interact · {keyOf(keyLabels, "game.settings")} settings
+        {keyOf(keyLabels, "game.interact")} interact · {keyOf(keyLabels, "game.menu")} menu
       </p>
       <p className="mobile-controls-hint">
         {player?.weapon === "bow"

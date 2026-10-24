@@ -913,6 +913,33 @@ select {
 .settings-panel::backdrop {
   background: #000b;
 }
+/* The in-world game menu and leave confirmation: a compact centred layer (#60). */
+.settings-panel.game-menu {
+  inset: 0;
+  margin: auto;
+  width: min(24rem, calc(100vw - 2rem));
+  height: auto;
+  max-height: calc(100dvh - 2rem);
+  border: 1px solid #3e3933;
+  border-radius: 10px;
+  box-shadow: 0 18px 50px #000a;
+}
+.game-menu-notice {
+  margin: 0.4rem 0 0;
+}
+.game-menu-actions {
+  display: grid;
+  gap: 0.6rem;
+  padding: 1.1rem 1.4rem max(1.4rem, env(safe-area-inset-bottom));
+}
+.game-menu-actions button {
+  min-height: 2.75rem;
+}
+.game-menu-actions .danger-button {
+  color: #ffd9d3;
+  background: #5a1f19;
+  border-color: #8d3a30;
+}
 .settings-panel > header {
   position: sticky;
   z-index: 2;

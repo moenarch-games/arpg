@@ -31,6 +31,18 @@ import {
   GameSummary,
 } from "./snapshot-views.jsx";
 import { SettingsDialog } from "./settings-dialog.jsx";
+import {
+  PLAY,
+  closeLayer,
+  escapeFrom,
+  leaveConsequence,
+  leaveNeedsConfirmation,
+  menuPausesWorld,
+  menuWorldNotice,
+  openLeaveConfirmation,
+  openMenu,
+  openSettings,
+} from "./game-menu.js";
 import { PROFILE_KEY, loadInputProfile } from "./input-profile.js";
 import {
   SETUP_URL_KEY,
@@ -102,6 +114,8 @@ import "./styles.css";
 const gameplayContext = { op: "context", id: "gameplay" };
 
 const MOTION_LABELS = { system: "Follow system", reduced: "Reduced", full: "Full" };
+// Marks the history entry pushed on entering the world (#60). It holds no session data.
+const WORLD_HISTORY_KEY = "arpgWorld";
 
 // The live `prefers-reduced-motion` media query; "Follow system" motion tracks its changes.
 let reducedMotionQuery = null;
@@ -152,13 +166,13 @@ const inputRegistry = {
     }))
     .concat([
       {
-        id: "game.settings",
-        title: "Open or close settings",
+        id: "game.menu",
+        title: "Open the game menu or close the innermost menu",
         categoryPath: ["ARPG", "System"],
         repeatPolicy: "never",
         allowedDevices: ["keyboard"],
         defaults: [
-          physical("game.settings.default", "game.settings", "Escape", {
+          physical("game.menu.default", "game.menu", "Escape", {
             op: "always",
           }),
         ],
@@ -419,7 +433,11 @@ function App() {
   const trainingSpeed = client.training?.speed ?? 1;
   const currentPlayer = () =>
     snapshotStore.getSnapshot()?.players.find((player) => player.id === playerId) ?? null;
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // The in-world overlay layer (#60): play, the game menu, settings or the leave confirmation.
+  const [overlay, setOverlay] = useState(PLAY);
+  const settingsOpen = overlay.layer === "settings";
+  const overlayOpen = overlay.layer !== null;
+  const stepOverlay = useCallback((step) => setOverlay((current) => step(current)), []);
   const [inWorld, setInWorld] = useState(false);
   const [savedGameAvailable, setSavedGameAvailable] = useState(() => hasPersistedSaveDocument());
   const [trainingSeedDraft, setTrainingSeedDraft] = useState(String(initialRequest.training.seed));
@@ -582,11 +600,11 @@ function App() {
           ignoreTextEntry: true,
           stopPropagation: true,
         }),
-      // The settings toggle also closes the menu, so it stays live in menu context.
-      alwaysActions: ["game.settings"],
+      // The menu key also steps out of open menus, so it stays live in menu context.
+      alwaysActions: ["game.menu"],
       onDispatch: (dispatch) => {
-        if (dispatch.action === "game.settings") {
-          if (dispatch.phase === "press") setSettingsOpen((open) => !open);
+        if (dispatch.action === "game.menu") {
+          if (dispatch.phase === "press") stepOverlay(escapeFrom);
           return;
         }
         // Always forward a release so a draw held across a weapon switch cannot stick.
@@ -646,10 +664,10 @@ function App() {
       input.detach();
     };
     // Every dependency is stable for the runtime's lifetime, so this runs once per mount.
-  }, [runtime, focusedPlayer, switchWeapon, triggerCombatAction, releaseInput]);
+  }, [runtime, focusedPlayer, switchWeapon, triggerCombatAction, releaseInput, stepOverlay]);
 
   const leaveTrainingUrl = () => {
-    history.replaceState(null, "", withTrainingRequest(location.href, false, 0));
+    history.replaceState(history.state, "", withTrainingRequest(location.href, false, 0));
   };
 
   const startTraining = (seed, fixture = trainingFixture) => {
@@ -658,7 +676,11 @@ function App() {
     initialRunSeedRef.current = null;
     setTrainingSeedDraft(String(seed));
     setTrainingFixture(fixture);
-    history.replaceState(null, "", withTrainingRequest(location.href, true, seed, fixture));
+    history.replaceState(
+      history.state,
+      "",
+      withTrainingRequest(location.href, true, seed, fixture),
+    );
   };
 
   const enterTrainingArena = (candidateSeed = trainingSeedDraft) => {
@@ -705,11 +727,66 @@ function App() {
   const returnToCharacters = () => {
     runtime.stop();
     invalidateTouchGestures();
-    setSettingsOpen(false);
+    setOverlay(PLAY);
     setInWorld(false);
     leaveTrainingUrl();
     setStatus("Select a character");
   };
+
+  // Leave from the menu or browser Back (#60): a run asks first, training leaves at once.
+  const requestLeave = () => {
+    if (leaveNeedsConfirmation({ training: runtime.getState().training !== null })) {
+      setOverlay(openLeaveConfirmation());
+    } else {
+      returnToCharacters();
+    }
+  };
+  const requestLeaveRef = useRef(requestLeave);
+  const inWorldRef = useRef(inWorld);
+  useEffect(() => {
+    requestLeaveRef.current = requestLeave;
+    inWorldRef.current = inWorld;
+  });
+
+  // The menu pauses a local authority while any in-world layer is open; shared worlds run on.
+  useEffect(() => {
+    runtime.setMenuPaused(inWorld && overlayOpen);
+  }, [runtime, inWorld, overlayOpen]);
+
+  // Browser history (#60): entering the world pushes one entry, so Back asks to leave instead
+  // of leaving the page. A reload never resumes a session: it starts on the character screen
+  // and drops the stale world marker. Leaving the world pops the entry it pushed.
+  const historyStartedRef = useRef(false);
+  const expectingPopRef = useRef(false);
+  const confirmingLeave = overlay.layer === "confirmLeave";
+  useEffect(() => {
+    const marked = history.state?.[WORLD_HISTORY_KEY] === true;
+    if (!historyStartedRef.current) {
+      historyStartedRef.current = true;
+      if (marked && !inWorld) {
+        history.replaceState(null, "", location.href);
+        return;
+      }
+    }
+    if (inWorld && !confirmingLeave && !marked) {
+      history.pushState({ [WORLD_HISTORY_KEY]: true }, "", location.href);
+    } else if (!inWorld && marked) {
+      expectingPopRef.current = true;
+      history.back();
+    }
+  }, [inWorld, confirmingLeave]);
+  useEffect(() => {
+    const onPopState = () => {
+      if (expectingPopRef.current) {
+        expectingPopRef.current = false;
+        leaveTrainingUrl();
+        return;
+      }
+      if (inWorldRef.current) requestLeaveRef.current();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   const startLocal = () => {
     invalidateTouchGestures();
@@ -750,7 +827,11 @@ function App() {
       initialRunSeedRef.current = null;
       setTrainingSeedDraft(String(seed));
       setInWorld(true);
-      history.replaceState(null, "", withTrainingRequest(location.href, true, seed, fixture));
+      history.replaceState(
+        history.state,
+        "",
+        withTrainingRequest(location.href, true, seed, fixture),
+      );
       setStatus(
         unknownFixture
           ? `Unknown scenario "${unknownFixture}"; using the generated dungeon`
@@ -803,8 +884,8 @@ function App() {
 
   useEffect(() => {
     // Non-gameplay contexts suppress gameplay bindings and release held input.
-    inputRef.current?.setContext(focusOwner ?? (settingsOpen ? "menu" : "gameplay"));
-  }, [focusOwner, settingsOpen]);
+    inputRef.current?.setContext(focusOwner ?? (overlayOpen ? "menu" : "gameplay"));
+  }, [focusOwner, overlayOpen]);
 
   const updateProfile = (next) => {
     if (!persistStoredValue(PROFILE_KEY, JSON.stringify(next)))
@@ -868,7 +949,7 @@ function App() {
   const aimWithPointer = (event) => {
     if (
       event.pointerType !== "mouse" ||
-      settingsOpen ||
+      overlayOpen ||
       inputRef.current?.getContext() !== "gameplay"
     )
       return;
@@ -888,7 +969,7 @@ function App() {
     if (
       event.pointerType !== "mouse" ||
       event.button !== 2 ||
-      settingsOpen ||
+      overlayOpen ||
       !ready ||
       !inWorld ||
       inputRef.current?.getContext() !== "gameplay"
@@ -971,7 +1052,7 @@ function App() {
       persistSelectedCharacterId(undefined, document.presentation.characterId),
     );
     setInWorld(true);
-    setSettingsOpen(false);
+    setOverlay(PLAY);
     let notice = `${sourceLabel} · tick ${document.coreState.tick} · seed ${document.coreState.runSeed}`;
     if (persistImported) {
       // The imported game is already authoritative; keeping a quick-save copy is optional.
@@ -1239,13 +1320,13 @@ function App() {
                     Retry
                   </button>
                 )}
-                <button type="button" onClick={returnToCharacters}>
-                  Characters
+                <button type="button" aria-haspopup="dialog" onClick={() => setOverlay(openMenu())}>
+                  Menu
                 </button>
                 <button
                   ref={settingsTriggerRef}
                   type="button"
-                  onClick={() => setSettingsOpen(true)}
+                  onClick={() => setOverlay(openSettings("play"))}
                 >
                   Settings
                 </button>
@@ -1357,7 +1438,7 @@ function App() {
               keyLabels={keyLabels}
             />
 
-            {ready && !settingsOpen && (
+            {ready && !overlayOpen && (
               <section className="mobile-controls" aria-label="Touch controls">
                 <div
                   ref={touchStickRef}
@@ -1377,7 +1458,7 @@ function App() {
               </section>
             )}
 
-            {ready && !settingsOpen && (
+            {ready && !overlayOpen && (
               <CombatActions
                 store={snapshotStore}
                 playerId={playerId}
@@ -1392,16 +1473,82 @@ function App() {
               />
             )}
 
+            {overlay.layer === "menu" && (
+              <SettingsDialog
+                key="menu"
+                className="settings-panel game-menu"
+                labelledBy="game-menu-heading"
+                onClose={() => stepOverlay(closeLayer)}
+              >
+                <header>
+                  <div>
+                    <h1 id="game-menu-heading">Menu</h1>
+                    <p className="game-menu-notice" role="status">
+                      {menuWorldNotice(menuPausesWorld(mode))}
+                    </p>
+                  </div>
+                </header>
+                <div className="game-menu-actions">
+                  <button
+                    type="button"
+                    data-autofocus={overlay.focus === "resume" ? "" : undefined}
+                    onClick={() => setOverlay(PLAY)}
+                  >
+                    Resume
+                  </button>
+                  <button
+                    type="button"
+                    data-autofocus={overlay.focus === "settings" ? "" : undefined}
+                    onClick={() => setOverlay(openSettings("menu"))}
+                  >
+                    Settings
+                  </button>
+                  <button
+                    type="button"
+                    data-autofocus={overlay.focus === "leave" ? "" : undefined}
+                    onClick={requestLeave}
+                  >
+                    Leave
+                  </button>
+                </div>
+              </SettingsDialog>
+            )}
+
+            {overlay.layer === "confirmLeave" && (
+              <SettingsDialog
+                key="confirm-leave"
+                className="settings-panel game-menu"
+                labelledBy="leave-heading"
+                onClose={() => stepOverlay(closeLayer)}
+              >
+                <header>
+                  <div>
+                    <h1 id="leave-heading">Leave game?</h1>
+                    <p className="game-menu-notice">{leaveConsequence(mode)}</p>
+                  </div>
+                </header>
+                <div className="game-menu-actions">
+                  <button type="button" data-autofocus="" onClick={() => stepOverlay(closeLayer)}>
+                    Cancel
+                  </button>
+                  <button type="button" className="danger-button" onClick={returnToCharacters}>
+                    Leave game
+                  </button>
+                </div>
+              </SettingsDialog>
+            )}
+
             {settingsOpen && (
               <SettingsDialog
-                onClose={() => setSettingsOpen(false)}
-                returnFocusTo={settingsTriggerRef}
+                key="settings"
+                onClose={() => stepOverlay(closeLayer)}
+                returnFocusTo={overlay.settingsFrom === "menu" ? undefined : settingsTriggerRef}
               >
                 <header>
                   <div>
                     <h1 id="settings-heading">Settings</h1>
                   </div>
-                  <button type="button" autoFocus onClick={() => setSettingsOpen(false)}>
+                  <button type="button" autoFocus onClick={() => stepOverlay(closeLayer)}>
                     Close
                   </button>
                 </header>

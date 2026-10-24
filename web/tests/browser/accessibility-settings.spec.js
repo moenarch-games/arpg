@@ -21,7 +21,7 @@
 //   <html style="font-size: 150%" data-motion="reduced|full" data-flashes="reduced|full">
 // `data-motion` is the resolved value: "system" follows `prefers-reduced-motion` live.
 // Under data-motion="reduced", CSS transitions/hover transforms are disabled.
-import { expect, test } from "./fixtures.js";
+import { expect, leaveWorld, test } from "./fixtures.js";
 
 const KEY = "arpg-presentation";
 const LEGACY_GRAPHICS_KEY = "arpg-graphics-v1";
@@ -258,7 +258,7 @@ test("the system motion preference is followed live unless overridden", async ({
   await ui.close.click();
 
   // Reduced motion removes the UI's motion: the character cards no longer slide.
-  await page.getByRole("button", { name: "Characters", exact: true }).click();
+  await leaveWorld(page);
   const card = page.locator(".character-card").first();
   await expect(card).toBeVisible();
   const motionOf = () =>
@@ -349,7 +349,7 @@ test("enlarged text on a narrow phone keeps every required action visible and op
       return box;
     };
     const required = [
-      page.getByRole("button", { name: "Characters", exact: true }),
+      page.getByRole("button", { name: "Menu", exact: true }),
       page.getByRole("button", { name: "Settings", exact: true }),
       page.getByRole("group", { name: "Movement joystick" }),
       ...(await page.getByRole("region", { name: "Combat actions" }).getByRole("button").all()),
