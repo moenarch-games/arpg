@@ -101,6 +101,7 @@ fn swing_now(facing: [i8; 2]) -> PlayerActionSnapshot {
         kind: ActionKind::PrimaryAttack,
         phase: ActionPhase::Windup,
         ticks_remaining: 1,
+        phase_ticks: 5,
         facing,
         connected: false,
         buffered: None,

@@ -137,6 +137,8 @@ export function decodeSnapshot(encoded) {
           (value) =>
             action(value) &&
             kinds.has(value.kind) &&
+            nonNegative(value.phaseTicks) &&
+            value.ticksRemaining <= value.phaseTicks &&
             vector(value.facing, 2) &&
             typeof value.connected === "boolean" &&
             optional(value.buffered, (input) => comboInputs.has(input)) &&

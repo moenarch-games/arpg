@@ -1,3 +1,4 @@
+import { t } from "./messages.ts";
 import { describe, expect, test } from "bun:test";
 import {
   CHARACTER_PRESETS,
@@ -29,7 +30,8 @@ describe("character selection", () => {
       CHARACTER_PRESETS.length,
     );
     for (const character of CHARACTER_PRESETS) {
-      expect(character.role).toBe("Adventurer");
+      expect(t(character.role)).toBe("Adventurer");
+      expect(t(character.appearance)).not.toBe(character.appearance);
       expect(character.accent).toMatch(/^#[0-9a-f]{6}$/i);
     }
   });

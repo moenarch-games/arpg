@@ -16,6 +16,7 @@
 //       reducedFlashes: boolean,                 // dims bright one-tick combat flashes
 //       textScale: 1 | 1.25 | 1.5,               // root text/UI scale (styles are rem-based)
 //     },
+//     camera: { zoom: number },                  // follow-camera zoom, clamped to 0.6..1.6
 //   })
 //
 // Version 1 is the existing `arpg-graphics-v1` document `{ shadows, pixelRatioLimit }`, read
@@ -67,6 +68,7 @@ import { PROFILE_KEY } from "./input-profile.js";
 const DEFAULTS = {
   graphics: { shadows: true, pixelRatioLimit: 2 },
   accessibility: { motion: "system", reducedFlashes: false, textScale: 1 },
+  camera: { zoom: 1 },
 };
 
 // An in-memory Storage double that records every write and removal.
@@ -120,6 +122,7 @@ test("a valid version 2 document round-trips exactly", () => {
   const preferences = {
     graphics: { shadows: false, pixelRatioLimit: 1.5 },
     accessibility: { motion: "reduced", reducedFlashes: true, textScale: 1.25 },
+    camera: { zoom: 1 },
   };
   const storage = memoryStorage();
   expect(persistPresentation(preferences, storage)).toBe(true);
@@ -138,6 +141,7 @@ test("every documented choice is accepted", () => {
           const preferences = {
             graphics: { shadows: false, pixelRatioLimit },
             accessibility: { motion, reducedFlashes, textScale },
+            camera: { zoom: 1 },
           };
           expect(loadPresentation(memoryStorage(stored({ version: 2, ...preferences })))).toEqual(
             preferences,
@@ -153,6 +157,7 @@ test("the legacy graphics document migrates to version 2 and keeps its values", 
   expect(migrated).toEqual({
     graphics: { shadows: false, pixelRatioLimit: 1 },
     accessibility: DEFAULTS.accessibility,
+    camera: { zoom: 1 },
   });
   // Loading is read-only: replaying the migration is idempotent and the legacy value stays
   // available for rollback to an older build.
@@ -173,6 +178,7 @@ test("the legacy graphics document migrates to version 2 and keeps its values", 
     version: 2,
     graphics: { shadows: false, pixelRatioLimit: 1 },
     accessibility: { motion: "system", reducedFlashes: false, textScale: 1.5 },
+    camera: { zoom: 1 },
   });
   expect(JSON.parse(storage.getItem(GRAPHICS_KEY))).toEqual({ shadows: false, pixelRatioLimit: 1 });
 });
@@ -198,6 +204,7 @@ test("a version 2 document wins over the legacy graphics document", () => {
       version: 2,
       graphics: { shadows: true, pixelRatioLimit: 1.5 },
       accessibility: { motion: "full", reducedFlashes: false, textScale: 1 },
+      camera: { zoom: 1 },
     }),
   });
   expect(loadPresentation(storage).graphics).toEqual({ shadows: true, pixelRatioLimit: 1.5 });
@@ -208,6 +215,7 @@ test("an uninterpretable version 2 document counts as absent and falls back to l
   const expected = {
     graphics: { shadows: false, pixelRatioLimit: 1.5 },
     accessibility: DEFAULTS.accessibility,
+    camera: { zoom: 1 },
   };
   for (const text of [
     "{not json",
@@ -233,12 +241,14 @@ test("invalid fields fall back one by one and unknown fields are dropped", () =>
       version: 2,
       graphics: { shadows: false, pixelRatioLimit: 3, extra: true },
       accessibility: { motion: "slow", reducedFlashes: true, textScale: 1.25, contrast: "high" },
+      camera: { zoom: 1 },
       untrusted: { gameplay: "godMode" },
     }),
   );
   expect(loadPresentation(storage)).toEqual({
     graphics: { shadows: false, pixelRatioLimit: 2 },
     accessibility: { motion: "system", reducedFlashes: true, textScale: 1.25 },
+    camera: { zoom: 1 },
   });
 
   for (const accessibility of [
@@ -265,6 +275,28 @@ test("invalid fields fall back one by one and unknown fields are dropped", () =>
   ).toEqual(DEFAULTS);
 });
 
+test("the follow camera zoom persists in the document and clamps to its bounds", () => {
+  const storage = memoryStorage();
+  expect(persistPresentation({ ...DEFAULTS, camera: { zoom: 1.25 } }, storage)).toBe(true);
+  expect(loadPresentation(storage).camera).toEqual({ zoom: 1.25 });
+  for (const [zoom, expected] of [
+    [99, 1.6],
+    [0.1, 0.6],
+    ["1.2", 1],
+    [Number.NaN, 1],
+    [null, 1],
+  ])
+    expect(
+      loadPresentation(memoryStorage(stored({ version: 2, ...DEFAULTS, camera: { zoom } }))).camera,
+    ).toEqual({ zoom: expected });
+  // A version 2 document from before the zoom was part of it keeps its other choices.
+  const { camera, ...withoutCamera } = DEFAULTS;
+  expect(loadPresentation(memoryStorage(stored({ version: 2, ...withoutCamera })))).toEqual({
+    ...withoutCamera,
+    camera,
+  });
+});
+
 test("normalization returns fresh objects and never exposes the frozen defaults", () => {
   const first = normalizePresentation(undefined);
   expect(first).toEqual(DEFAULTS);
@@ -279,10 +311,12 @@ test("normalization returns fresh objects and never exposes the frozen defaults"
     normalizePresentation({
       graphics: { shadows: false },
       accessibility: { reducedFlashes: true },
+      camera: { zoom: 1 },
     }),
   ).toEqual({
     graphics: { shadows: false, pixelRatioLimit: 2 },
     accessibility: { motion: "system", reducedFlashes: true, textScale: 1 },
+    camera: { zoom: 1 },
   });
 });
 
@@ -298,6 +332,7 @@ test("persisting normalizes, so invalid in-memory values never reach storage", (
     version: 2,
     graphics: { shadows: true, pixelRatioLimit: 2 },
     accessibility: { motion: "reduced", reducedFlashes: false, textScale: 1 },
+    camera: { zoom: 1 },
   });
 });
 
@@ -306,6 +341,7 @@ test("storage denial and quota errors never throw and keep the previous value", 
     version: 2,
     graphics: { shadows: false, pixelRatioLimit: 1 },
     accessibility: { motion: "full", reducedFlashes: false, textScale: 1 },
+    camera: { zoom: 1 },
   };
   const quota = {
     ...memoryStorage(stored(previous)),
@@ -316,11 +352,13 @@ test("storage denial and quota errors never throw and keep the previous value", 
   const next = {
     graphics: DEFAULTS.graphics,
     accessibility: { motion: "reduced", reducedFlashes: true, textScale: 1.5 },
+    camera: { zoom: 1 },
   };
   expect(persistPresentation(next, quota)).toBe(false);
   expect(loadPresentation(quota)).toEqual({
     graphics: previous.graphics,
     accessibility: previous.accessibility,
+    camera: { zoom: 1 },
   });
 
   const blocked = {
@@ -352,6 +390,7 @@ test("the default storage is localStorage", () => {
   const preferences = {
     graphics: DEFAULTS.graphics,
     accessibility: { motion: "full", reducedFlashes: true, textScale: 1.25 },
+    camera: { zoom: 1 },
   };
   expect(persistPresentation(preferences)).toBe(true);
   expect(loadPresentation()).toEqual(preferences);

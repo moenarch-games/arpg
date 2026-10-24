@@ -1,11 +1,21 @@
 import { useEffect, useRef } from "react";
 
-export function SettingsDialog({ children, onClose, returnFocusTo }) {
+// A modal layer of the in-world shell (settings, game menu, leave confirmation). It owns
+// focus while open and returns it to `returnFocusTo` when it closes.
+export function SettingsDialog({
+  children,
+  onClose,
+  returnFocusTo,
+  labelledBy = "settings-heading",
+  className = "settings-panel",
+}) {
   const dialogRef = useRef(null);
   useEffect(() => {
     const dialog = dialogRef.current;
-    const focusTarget = returnFocusTo?.current;
+    // Without an explicit opener, focus returns to whatever held it when the layer opened.
+    const focusTarget = returnFocusTo?.current ?? document.activeElement;
     dialog.showModal();
+    dialog.querySelector("[data-autofocus]")?.focus();
     return () => {
       dialog.close();
       focusTarget?.focus();
@@ -15,8 +25,8 @@ export function SettingsDialog({ children, onClose, returnFocusTo }) {
   return (
     <dialog
       ref={dialogRef}
-      className="settings-panel"
-      aria-labelledby="settings-heading"
+      className={className}
+      aria-labelledby={labelledBy}
       onCancel={(event) => {
         event.preventDefault();
         onClose();

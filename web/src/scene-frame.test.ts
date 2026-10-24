@@ -14,6 +14,7 @@
 // exist) depends on `effects`, and the authoritative snapshot is never modified.
 import { expect, test } from "bun:test";
 import { buildFrame } from "./scene-frame.ts";
+import { incomingThreat, incomingThreatText } from "./snapshot-views.jsx";
 import { FULL_EFFECTS, resolvePresentationEffects } from "./presentation-effects.js";
 
 const reduced = resolvePresentationEffects(
@@ -183,4 +184,39 @@ test("the ground ring stays on the ground under an airborne player (#59)", () =>
   for (const id of ["player-1", "player-2"]) {
     expect(node(frame, id).transform.translation[1]).toBeCloseTo(0.015, 6);
   }
+});
+
+// #61 (61a): a telegraph's phase reads without colour. The wind-up is a dotted ring of 12
+// beads, the active strike a closed band of 24 tangent segments, under either palette; the
+// HUD also names the phase threatening the focused player.
+test("telegraph phases differ by shape as well as colour, under either palette", () => {
+  const ring = (effects, id) =>
+    buildFrame(snapshot(), 1, 800, 600, "#d6b45f", effects).nodes.filter((candidate) =>
+      candidate.id.startsWith(`monster-${id}-telegraph-`),
+    );
+  for (const effects of [FULL_EFFECTS, reduced]) {
+    const windup = ring(effects, 3);
+    const active = ring(effects, 2);
+    expect(windup).toHaveLength(12);
+    expect(windup.every((bead) => bead.geometry.kind === "sphere")).toBe(true);
+    expect(active).toHaveLength(24);
+    expect(active.every((segment) => segment.geometry.kind === "box")).toBe(true);
+    // Each segment overlaps its neighbour, so the active band reads as one closed ring.
+    const radius = 150 / 100;
+    expect(active[0].geometry.size[0]).toBeGreaterThan((2 * Math.PI * radius) / 24);
+  }
+});
+
+test("the HUD names the most urgent telegraph aimed at the focused player", () => {
+  const frame = snapshot();
+  expect(incomingThreat(frame, 1)).toEqual({
+    delivery: "strike",
+    phase: "active",
+  });
+  expect(incomingThreatText(incomingThreat(frame, 1))).toBe("Incoming strike · now");
+  expect(incomingThreat(frame, 2)).toBeNull();
+  frame.monsters = frame.monsters.filter((candidate) => candidate.id !== 2);
+  expect(incomingThreatText(incomingThreat(frame, 1))).toBe("Incoming strike · wind-up");
+  frame.monsters[1].action.delivery = "projectile";
+  expect(incomingThreatText(incomingThreat(frame, 1))).toBe("Incoming shot · wind-up");
 });
