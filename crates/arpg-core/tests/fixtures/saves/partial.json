@@ -128,4 +128,5 @@
     {
       "action": null,
       "engagement": {
-        "mo
+        "mode": "idle"
+  

@@ -1,6 +1,6 @@
-// Browser projection of the arpg-protocol v22 envelope. This adapter validates
+// Browser projection of the arpg-protocol v23 envelope. This adapter validates
 // only data consumed by presentation; gameplay rules remain in arpg-core.
-export const PROTOCOL_VERSION = 22;
+export const PROTOCOL_VERSION = 23;
 const MAX_SNAPSHOT_CHARACTERS = 65_535;
 const integer = (value) => Number.isSafeInteger(value);
 const nonNegative = (value) => integer(value) && value >= 0;
@@ -36,8 +36,14 @@ const strikeResults = new Set(["hit", "blocked", "guardBroken", "obstructed"]);
 // Content definition ids (`monster.brute`, `sword.lightSwing`): 1..=64 characters.
 const definitionId = (value) => typeof value === "string" && value.length > 0 && value.length <= 64;
 const party = (value) => parties.has(value?.kind) && nonNegative(value.id);
-const interactionTargets = new Set(["loot", "chest"]);
-const interactionRefusals = new Set(["nothingInRange", "chestLocked", "obstructed", "busy"]);
+const interactionTargets = new Set(["loot", "chest", "exit"]);
+const interactionRefusals = new Set([
+  "nothingInRange",
+  "chestLocked",
+  "exitLocked",
+  "obstructed",
+  "busy",
+]);
 const interactionTarget = (value) => interactionTargets.has(value?.kind) && nonNegative(value.id);
 const interactionPrompt = (value) =>
   (value?.kind === "available" && interactionTarget(value.target)) ||
@@ -46,7 +52,16 @@ const interactionResult = (value) =>
   ((value?.kind === "pickedUp" || value?.kind === "opened") &&
     interactionTarget(value.target) &&
     nonNegative(value.gold)) ||
+  // Taking the exit completes the run (#66).
+  (value?.kind === "exited" && interactionTarget(value.target)) ||
   (value?.kind === "refused" && interactionRefusals.has(value.reason));
+// A run is played until a player takes the start room's exit (#66).
+export const RUN_STATES = new Set(["inProgress", "completed"]);
+const exitPoint = (value) =>
+  nonNegative(value?.id) &&
+  nonNegative(value.roomId) &&
+  vector(value.position, 3) &&
+  typeof value.available === "boolean";
 const comboInputs = new Set(["light", "heavy"]);
 // Authoritative per-tick monster behaviour; presentation animates it, never derives it.
 export const MONSTER_BEHAVIORS = new Set([
@@ -210,6 +225,8 @@ export function decodeSnapshot(encoded) {
         typeof chest.opened === "boolean" &&
         typeof chest.available === "boolean",
     ) &&
+    optional(snapshot.exit, exitPoint) &&
+    optional(snapshot.runState, (value) => RUN_STATES.has(value)) &&
     list(
       "interactionEvents",
       (event) =>

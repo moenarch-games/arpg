@@ -32,7 +32,12 @@ fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/saves")
 }
 
+/// Reads a fixture; under `UPDATE_SAVE_FIXTURES` every test waits for one regeneration.
 fn read(name: &str) -> String {
+    static REGENERATED: std::sync::Once = std::sync::Once::new();
+    if std::env::var_os("UPDATE_SAVE_FIXTURES").is_some() {
+        REGENERATED.call_once(regenerate);
+    }
     fs::read_to_string(fixtures().join(name)).unwrap_or_else(|error| panic!("{name}: {error}"))
 }
 
@@ -99,9 +104,6 @@ fn load(text: &str) -> Result<ArpgGame, String> {
 
 #[test]
 fn the_current_schema_fixture_loads_and_saves_back_unchanged() {
-    if std::env::var_os("UPDATE_SAVE_FIXTURES").is_some() {
-        regenerate();
-    }
     let text = read("current.json");
     let game = load(&text).unwrap_or_else(|error| {
         panic!(

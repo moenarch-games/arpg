@@ -159,6 +159,7 @@
     {
       "action": null,
       "aim": null,
+      "checkpointRoom": 1,
       "counter": null,
       "coyoteTicksRemaining": 0,
       "drawTicks": null,
@@ -196,7 +197,7 @@
       "poison": null,
       "position": [
         -1810.0,
-        122.22221374511719,
+        122.2222137451172,
         -1107.0
       ],
       "region": {
@@ -240,6 +241,6 @@
   "rulesVersion": 13,
   "runSeed": 42,
   "scenario": "dungeon",
-  "schemaVersion": 23,
+  "schemaVersion": 24,
   "tick": 50
 }

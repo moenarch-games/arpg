@@ -114,7 +114,8 @@ pub const AIM_COMPONENT_LIMIT: i16 = 1_000;
 /// 22: slow (#64): a monster's slow; schema 21 saves are refused.
 /// 23: a player action's phase length (#56); schema 22 saves are refused.
 /// 24: a player's checkpoint room (#66); schema 23 saves are refused.
-pub const SAVE_STATE_SCHEMA_VERSION: u16 = 24;
+/// 25: the run's state, completed through the exit (#66); schema 24 saves are refused.
+pub const SAVE_STATE_SCHEMA_VERSION: u16 = 25;
 // 2: directional multi-target strike volumes and obstruction by fixed geometry.
 // 3: directional shield guard, block and guard break.
 // 4: post-block counterattack opportunity.
@@ -127,7 +128,8 @@ pub const SAVE_STATE_SCHEMA_VERSION: u16 = 24;
 // 11: shield monsters guard on the shared guard path (#92).
 // 12: jumping, gravity and grounded-only guard and counter (#59).
 // 13: checkpoints, return after defeat, party-wipe encounter reset and Leave (#66).
-pub const SAVE_STATE_RULES_VERSION: u16 = 13;
+// 14: the start room's exit completes the run once every encounter is cleared (#66).
+pub const SAVE_STATE_RULES_VERSION: u16 = 14;
 // Velocities are world units per simulation tick. At 60 Hz and 100 world units per
 // meter, 7 units/tick is 4.2 m/s.
 const PLAYER_SPEED: i32 = 7;
@@ -193,6 +195,8 @@ const INTERACT_RANGE: i64 = 160;
 const GROUND_LOOT_GOLD_AMOUNT: u32 = 10;
 /// One reward chest per combat room, opened once after the room's encounter is cleared.
 const CHEST_ID_BASE: u64 = 50_000;
+/// The run's one exit, in the start room (#66).
+const EXIT_ID: u64 = 60_000;
 #[cfg(test)]
 const CHEST_GOLD_AMOUNT: u32 = 25;
 #[cfg(test)]
@@ -1265,6 +1269,10 @@ pub struct ArpgSnapshot {
     /// publishes none until its next tick.
     pub strike_events: Vec<StrikeEventSnapshot>,
     pub chests: Vec<ChestSnapshot>,
+    /// The run's exit in the start room (#66).
+    pub exit: ExitSnapshot,
+    /// Whether the run is still being played or was completed through the exit (#66).
+    pub run_state: RunState,
     /// Crates still standing (#90).
     pub crates: Vec<CrateSnapshot>,
     /// Poison pools (#64).
@@ -1482,12 +1490,34 @@ pub struct ChestSnapshot {
     pub available: bool,
 }
 
+/// The run's exit (#66): in the start room, usable once every encounter is cleared, and
+/// completing the run exactly once.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExitSnapshot {
+    pub id: u64,
+    pub room_id: RoomId,
+    pub position: [i32; 3],
+    /// Whether Interact on it would complete the run now.
+    pub available: bool,
+}
+
+/// A run's lifecycle (#66): played until a player takes the exit, then completed for good.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RunState {
+    #[default]
+    InProgress,
+    Completed,
+}
+
 /// What an interaction would or did act on.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "camelCase")]
 pub enum InteractionTarget {
     Loot(GroundLootId),
     Chest(u64),
+    Exit(u64),
 }
 
 /// Why an interaction did nothing. Ordinary gameplay refusals, not transport errors.
@@ -1498,6 +1528,8 @@ pub enum InteractionRefusal {
     NothingInRange,
     /// The nearest interactable is a chest whose room is not cleared yet.
     ChestLocked,
+    /// The nearest interactable is the exit, and an encounter is not cleared yet (#66).
+    ExitLocked,
     /// Everything within reach is behind fixed geometry.
     Obstructed,
     /// The player is mid-action (or defeated) and cannot start an interaction now.
@@ -1518,6 +1550,10 @@ pub enum InteractionResult {
     Opened {
         target: InteractionTarget,
         gold: u32,
+    },
+    /// The player took the exit and completed the run (#66).
+    Exited {
+        target: InteractionTarget,
     },
     Refused {
         reason: InteractionRefusal,
@@ -1599,6 +1635,8 @@ pub struct ArpgSaveState {
     pub scenario: ScenarioId,
     /// Ids of chests already opened.
     pub opened_chests: Vec<u64>,
+    /// Whether the run was completed through the exit (#66).
+    pub run_state: RunState,
     /// Every generated crate's health, in generation order (#90).
     pub crates: Vec<CrateSaveState>,
     /// Revision of the content bundle the authority ran; a different bundle is rejected.
@@ -2365,6 +2403,9 @@ pub struct ArpgGame {
     next_arrow_id: u64,
     scenario: ScenarioId,
     chests: Vec<ChestSnapshot>,
+    /// The start room's exit (#66); `available` is derived when published.
+    exit: ExitSnapshot,
+    run_state: RunState,
     /// Generated crates, broken ones with no health (#90).
     crates: Vec<CrateState>,
     /// Generated poison pools (#64).
@@ -2435,6 +2476,22 @@ impl ArpgGame {
             player_spawns,
             monsters,
         } = generate_dungeon(&content, run_seed);
+        // Where a combat room keeps its chest, the start room keeps the exit: clear of the
+        // spawn points around its centre.
+        let exit = rooms
+            .iter()
+            .find(|room| room.kind == RoomKind::Start)
+            .map(|room| ExitSnapshot {
+                id: EXIT_ID,
+                room_id: room.id,
+                position: [
+                    (room.min_x + room.max_x) / 2,
+                    PLAYER_Y,
+                    room.max_z - ROOM_SPAWN_MARGIN,
+                ],
+                available: false,
+            })
+            .ok_or_else(|| GameError::new("generated dungeon has no start room"))?;
         let chests = rooms
             .iter()
             .filter(|room| room.kind == RoomKind::Combat)
@@ -2500,6 +2557,8 @@ impl ArpgGame {
             next_arrow_id: ARROW_ID_BASE,
             scenario: ScenarioId::Dungeon,
             chests,
+            exit,
+            run_state: RunState::InProgress,
             crates,
             pools,
             interaction_events: Vec::new(),
@@ -2848,6 +2907,7 @@ impl ArpgGame {
                 .filter(|chest| chest.opened)
                 .map(|chest| chest.id)
                 .collect(),
+            run_state: self.run_state,
             crates: self
                 .crates
                 .iter()
@@ -3356,6 +3416,13 @@ impl ArpgGame {
                 .ok_or_else(|| GameError::new("save contains an invalid opened chest"))?;
             chest.opened = true;
         }
+        // Only the exit completes a run, and it opens once every encounter is cleared.
+        if save.run_state == RunState::Completed && !game.all_encounters_cleared() {
+            return Err(GameError::new(
+                "save completes a run with an encounter not cleared",
+            ));
+        }
+        game.run_state = save.run_state;
 
         for player in save.players {
             // A checkpoint is a cleared room, and a cleared room never runs again.
@@ -4132,6 +4199,17 @@ impl ArpgGame {
             .any(|room| room.id == room_id && room.encounter_state == RoomEncounterState::Cleared)
     }
 
+    fn all_encounters_cleared(&self) -> bool {
+        self.rooms
+            .iter()
+            .all(|room| room.encounter_state == RoomEncounterState::Cleared)
+    }
+
+    /// Whether the exit would complete the run now (#66).
+    fn exit_available(&self) -> bool {
+        self.run_state == RunState::InProgress && self.all_encounters_cleared()
+    }
+
     /// Every interactable within reach of `position`, nearest first. Equal distances prefer
     /// loot over chests and then the lower id. `usable` is false for a locked chest.
     fn interaction_candidates(
@@ -4165,8 +4243,19 @@ impl ArpgGame {
                     self.room_cleared(chest.room_id),
                 )
             });
+        // The exit stays until the run is completed through it (#66).
+        let exit = (self.run_state == RunState::InProgress).then(|| {
+            let at = vector(array_to_vec(self.exit.position));
+            (
+                distance_sq(at),
+                InteractionTarget::Exit(self.exit.id),
+                at,
+                self.all_encounters_cleared(),
+            )
+        });
         let mut candidates = loot
             .chain(chests)
+            .chain(exit)
             .filter(|(distance, ..)| within_range(*distance, INTERACT_RANGE))
             .collect::<Vec<_>>();
         candidates.sort_unstable_by(|(left, left_target, ..), (right, right_target, ..)| {
@@ -4191,7 +4280,10 @@ impl ArpgGame {
                 continue;
             }
             if !usable {
-                refusal = InteractionRefusal::ChestLocked;
+                refusal = match target {
+                    InteractionTarget::Exit(_) => InteractionRefusal::ExitLocked,
+                    _ => InteractionRefusal::ChestLocked,
+                };
                 continue;
             }
             return Ok(Ok(target));
@@ -4230,6 +4322,11 @@ impl ArpgGame {
                     target,
                     gold: self.room_reward_gold(room_id),
                 }
+            }
+            Ok(target @ InteractionTarget::Exit(_)) => {
+                // Completing removes the exit from the candidates: it never completes twice.
+                self.run_state = RunState::Completed;
+                InteractionResult::Exited { target }
             }
         };
         let mut result = result;
@@ -6888,6 +6985,11 @@ impl AuthoritativeGame for ArpgGame {
                     ..*chest
                 })
                 .collect(),
+            exit: ExitSnapshot {
+                available: self.exit_available(),
+                ..self.exit
+            },
+            run_state: self.run_state,
             crates: self
                 .crates
                 .iter()
@@ -11386,7 +11488,8 @@ mod tests {
         let order = (0..3)
             .map(|_| match interact(&mut game, 1)[0].result {
                 InteractionResult::PickedUp { target, .. }
-                | InteractionResult::Opened { target, .. } => target,
+                | InteractionResult::Opened { target, .. }
+                | InteractionResult::Exited { target } => target,
                 InteractionResult::Refused { reason } => panic!("refused: {reason:?}"),
             })
             .collect::<Vec<_>>();
@@ -12648,7 +12751,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 12; expected 24"
+            "unsupported ARPG save schema version 12; expected 25"
         );
     }
 
@@ -12663,7 +12766,7 @@ mod tests {
         let save: ArpgSaveState = serde_json::from_value(json).unwrap();
         assert_eq!(
             ArpgGame::from_save_state(save).unwrap_err().message(),
-            "unsupported ARPG save schema version 13; expected 24"
+            "unsupported ARPG save schema version 13; expected 25"
         );
     }
 
@@ -16040,5 +16143,88 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// Every encounter of the dungeon won, its monsters defeated.
+    fn clear_every_encounter(game: &mut ArpgGame) {
+        for monster in &mut game.monsters {
+            monster.health = 0;
+        }
+        for room in &mut game.rooms {
+            room.encounter_state = RoomEncounterState::Cleared;
+        }
+        game.sync_door_locks().unwrap();
+    }
+
+    #[test]
+    fn the_exit_refuses_until_every_encounter_is_cleared_then_completes_the_run_once() {
+        let mut game = ArpgGame::new_with_seed(42).unwrap();
+        game.add_player(1).unwrap();
+        let exit = game.snapshot().unwrap().exit;
+        assert_eq!(exit.room_id, game.start_room_id());
+        let [x, _, z] = exit.position;
+        move_player(&mut game, 1, x, z - 100);
+        assert_eq!(
+            prompt(&game),
+            InteractionPrompt::Unavailable {
+                reason: InteractionRefusal::ExitLocked
+            }
+        );
+        assert_eq!(
+            interact(&mut game, 1)[0].result,
+            InteractionResult::Refused {
+                reason: InteractionRefusal::ExitLocked
+            }
+        );
+        assert_eq!(game.run_state, RunState::InProgress);
+
+        // A save mid-run continues the run.
+        let mid_run = game.save_state().unwrap();
+        assert_eq!(mid_run.run_state, RunState::InProgress);
+        assert_eq!(
+            ArpgGame::from_save_state(mid_run.clone())
+                .unwrap()
+                .run_state,
+            RunState::InProgress
+        );
+
+        clear_every_encounter(&mut game);
+        let target = InteractionTarget::Exit(exit.id);
+        assert!(game.snapshot().unwrap().exit.available);
+        assert_eq!(prompt(&game), InteractionPrompt::Available { target });
+        let gold = game.players[&1].gold;
+        assert_eq!(
+            interact(&mut game, 1)[0].result,
+            InteractionResult::Exited { target }
+        );
+        let snapshot = game.snapshot().unwrap();
+        assert_eq!(snapshot.run_state, RunState::Completed);
+        assert!(!snapshot.exit.available);
+        assert_eq!(game.players[&1].gold, gold, "the exit pays nothing");
+
+        // Taken once: Interact again finds nothing, and a reload keeps the run completed.
+        assert_eq!(
+            interact(&mut game, 1)[0].result,
+            InteractionResult::Refused {
+                reason: InteractionRefusal::NothingInRange
+            }
+        );
+        let completed = game.save_state().unwrap();
+        let mut restored = ArpgGame::from_save_state(completed).unwrap();
+        assert_eq!(restored.run_state, RunState::Completed);
+        assert_eq!(
+            interact(&mut restored, 1)[0].result,
+            InteractionResult::Refused {
+                reason: InteractionRefusal::NothingInRange
+            }
+        );
+
+        // A save cannot claim a completed run with an encounter still to win.
+        let mut invalid = mid_run;
+        invalid.run_state = RunState::Completed;
+        assert_eq!(
+            ArpgGame::from_save_state(invalid).unwrap_err().message(),
+            "save completes a run with an encounter not cleared"
+        );
     }
 }

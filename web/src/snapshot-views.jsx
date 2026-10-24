@@ -97,6 +97,7 @@ export function PlayerHud({
   interactKey = "E",
   keyLabels,
   onReturnToCheckpoint,
+  onReturnToEntrance,
 }) {
   const snapshot = useSnapshot(store);
   const player = focusedPlayer(snapshot, playerId);
@@ -189,7 +190,20 @@ export function PlayerHud({
         </ul>
       )}
       <p>{status}</p>
-      {player && !player.alive && (
+      {snapshot?.runState === "completed" && (
+        <div className="defeat-panel" role="group" aria-label={t("hud.runComplete")}>
+          <p className="run-complete-status" role="status">
+            {t("hud.runComplete")}
+          </p>
+          <p>{t("hud.runComplete.detail")}</p>
+          {onReturnToEntrance && (
+            <button type="button" onClick={onReturnToEntrance}>
+              {t("hud.returnToEntrance")}
+            </button>
+          )}
+        </div>
+      )}
+      {player && !player.alive && snapshot?.runState !== "completed" && (
         <div className="defeat-panel" role="group" aria-label={t("hud.defeated")}>
           <p className="defeated-status">{t("hud.defeated")}</p>
           <p>{checkpointText(snapshot, player.checkpointRoom)}</p>
@@ -406,14 +420,19 @@ export function TrainingTick({ store }) {
 const TIMELINE_LIMIT = 8;
 
 // Prompts come from the authority's own interaction choice, never a browser radius.
+const INTERACTION_VERBS = {
+  loot: "interaction.pickUpGold",
+  chest: "interaction.openChest",
+  exit: "interaction.takeExit",
+};
+
 function interactionPromptText(interaction, key) {
   if (interaction?.kind === "available") {
-    const what = t(
-      interaction.target.kind === "chest" ? "interaction.openChest" : "interaction.pickUpGold",
-    );
+    const what = t(INTERACTION_VERBS[interaction.target.kind] ?? "interaction.pickUpGold");
     return key ? t("interaction.prompt", { key, what }) : t("interaction.unbound", { what });
   }
   if (interaction?.reason === "chestLocked") return t("interaction.chestLocked");
+  if (interaction?.reason === "exitLocked") return t("interaction.exitLocked");
   if (interaction?.reason === "obstructed") return t("interaction.obstructed");
   return null;
 }
@@ -422,6 +441,7 @@ function describeInteraction(event) {
   const { result } = event;
   if (result.kind === "refused")
     return `player ${event.playerId} · interact refused · ${result.reason}`;
+  if (result.kind === "exited") return `player ${event.playerId} · took the exit · run complete`;
   const verb = result.kind === "opened" ? "opened" : "picked up";
   return `player ${event.playerId} · ${verb} ${result.target.kind} ${result.target.id} · +${result.gold} gold`;
 }
