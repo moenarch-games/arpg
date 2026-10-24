@@ -68,8 +68,22 @@ jobs:
       - name: Install browser test runtime
         working-directory: web
         run: bunx playwright install --with-deps chromium
+      # The combat-effects release (asset-tooling#362) is verified by the pack-asset-bundle
+      # script of the asset-tooling commit it was published from.
+      - name: Check out the pinned combat-effects producer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: moritzbrantner/asset-tooling
+          ref: bde21cfa02b44187b347762266be728922e8a650
+          path: .asset-tooling
+          persist-credentials: false
+      - name: Install the combat-effects producer
+        working-directory: .asset-tooling
+        run: bun install --frozen-lockfile
       - name: Build browser MVP
         working-directory: web
+        env:
+          ASSET_TOOLING_ROOT: ${{ github.workspace }}/.asset-tooling
         run: bun run setup
       - name: Bundle browser MVP
         working-directory: web
