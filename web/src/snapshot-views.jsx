@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useGestureButton, useHeldButton, usePressButton } from "./touch-buttons.js";
+import { t } from "./messages.ts";
 
 export function useSnapshot(store) {
   return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
@@ -10,8 +11,7 @@ function focusedPlayer(snapshot, playerId) {
 }
 
 // The label of the key an action is bound to, or a marker for an unbound action.
-const UNBOUND = "unbound";
-const keyOf = (keyLabels, action) => keyLabels?.[action] ?? UNBOUND;
+const keyOf = (keyLabels, action) => keyLabels?.[action] ?? t("hud.unbound");
 
 // The movement keys as one hint: `WASD` for single keys, joined otherwise.
 function movementKeys(keyLabels) {
@@ -23,7 +23,11 @@ function movementKeys(keyLabels) {
 
 // The most urgent monster attack telegraphed at `playerId` (an active one before a
 // wind-up), so the HUD names the phase in text as well as the ring's colour and shape (#61).
-const THREAT_LABELS = { strike: "strike", burst: "burst", projectile: "shot" };
+const THREAT_LABELS = {
+  strike: { windup: "threat.strike.windup", active: "threat.strike.active" },
+  burst: { windup: "threat.burst.windup", active: "threat.burst.active" },
+  projectile: { windup: "threat.shot.windup", active: "threat.shot.active" },
+};
 export function incomingThreat(snapshot, playerId) {
   let threat = null;
   for (const monster of snapshot?.monsters ?? []) {
@@ -37,7 +41,7 @@ export function incomingThreat(snapshot, playerId) {
 }
 
 export function incomingThreatText(threat) {
-  return `Incoming ${THREAT_LABELS[threat.delivery]} · ${threat.phase === "active" ? "now" : "wind-up"}`;
+  return t(THREAT_LABELS[threat.delivery][threat.phase === "active" ? "active" : "windup"]);
 }
 
 export function PlayerHud({ store, playerId, status, interactKey = "E", keyLabels }) {
@@ -48,28 +52,29 @@ export function PlayerHud({ store, playerId, status, interactKey = "E", keyLabel
     ? Math.max(0, Math.min(100, (player.health / player.maxHealth) * 100))
     : 0;
   return (
-    <section className="hud" aria-label="Player status">
+    <section className="hud" aria-label={t("hud.region")}>
       <div className="health">
         <span style={{ width: `${healthPercent}%` }} />
       </div>
       {player && (
-        <div className="progression" aria-label="Character progression">
-          <strong>Level {player.level}</strong>
+        <div className="progression" aria-label={t("hud.progression")}>
+          <strong>{t("hud.level", { level: player.level })}</strong>
           <span>
-            XP {player.experienceIntoLevel}/{player.experienceForNextLevel}
+            {t("hud.xp", {
+              current: player.experienceIntoLevel,
+              next: player.experienceForNextLevel,
+            })}
           </span>
-          <span>Damage {player.attackDamage}</span>
-          <span>Gold {player.gold}</span>
-          <span>
-            Guard {player.guardPoints}/{player.maxGuardPoints}
-          </span>
-          <span>{player.weapon === "bow" ? "Bow (unlimited arrows)" : "Sword & shield"}</span>
-          {player.drawTicks != null && <span>Draw {player.drawTicks}t</span>}
-          {player.lockedMonsterId != null && <span>Target locked</span>}
+          <span>{t("hud.damage", { damage: player.attackDamage })}</span>
+          <span>{t("hud.gold", { gold: player.gold })}</span>
+          <span>{t("hud.guard", { current: player.guardPoints, max: player.maxGuardPoints })}</span>
+          <span>{t(player.weapon === "bow" ? "hud.weapon.bow" : "hud.weapon.sword")}</span>
+          {player.drawTicks != null && <span>{t("hud.draw", { ticks: player.drawTicks })}</span>}
+          {player.lockedMonsterId != null && <span>{t("hud.targetLocked")}</span>}
         </div>
       )}
       <p>{status}</p>
-      {player && !player.alive && <p className="defeated-status">Defeated</p>}
+      {player && !player.alive && <p className="defeated-status">{t("hud.defeated")}</p>}
       {player?.alive && interactionPromptText(player.interaction, interactKey) && (
         <p className="interaction-prompt">
           {interactionPromptText(player.interaction, interactKey)}
@@ -77,20 +82,24 @@ export function PlayerHud({ store, playerId, status, interactKey = "E", keyLabel
       )}
       {player?.alive && (player.guard || player.reaction?.kind === "guardBroken") && (
         <p className="guard-status" aria-live="polite">
-          {player.reaction?.kind === "guardBroken"
-            ? "Guard broken"
-            : player.reaction?.kind === "blocked"
-              ? "Blocked"
-              : player.guard.phase === "raised"
-                ? "Shield raised"
-                : "Raising shield"}
+          {t(
+            player.reaction?.kind === "guardBroken"
+              ? "hud.guardBroken"
+              : player.reaction?.kind === "blocked"
+                ? "hud.blocked"
+                : player.guard.phase === "raised"
+                  ? "hud.shieldRaised"
+                  : "hud.raisingShield",
+          )}
         </p>
       )}
       {player?.alive && player.counter && snapshot.tick < player.counter.expiresAtTick && (
         <p className="counter-prompt">
           {/* Announced once when the opportunity opens; the per-tick countdown is visual only. */}
-          <span role="alert">Counter!</span>{" "}
-          <span aria-hidden="true">· {player.counter.expiresAtTick - snapshot.tick}t</span>
+          <span role="alert">{t("hud.counter")}</span>{" "}
+          <span aria-hidden="true">
+            · {t("hud.ticks", { ticks: player.counter.expiresAtTick - snapshot.tick })}
+          </span>
         </p>
       )}
       {threat && (
@@ -100,37 +109,38 @@ export function PlayerHud({ store, playerId, status, interactKey = "E", keyLabel
       )}
       {player?.action && (
         <p className="action-status">
-          {player.action.kind === "secondaryAttack"
-            ? "Heavy"
-            : player.action.kind === "interact"
-              ? "Interact"
-              : player.action.kind === "counter"
-                ? "Counter"
-                : player.action.kind === "lightFollowUp"
-                  ? "Light 2"
-                  : player.action.kind === "lightFinisher"
-                    ? "Light finisher"
-                    : player.action.kind === "heavyFinisher"
-                      ? "Heavy finisher"
-                      : "Primary"}{" "}
-          · {player.action.phase} · {player.action.ticksRemaining}t
+          {t(ACTION_KEYS[player.action.kind] ?? "hud.action.primaryAttack")} · {player.action.phase}{" "}
+          · {t("hud.ticks", { ticks: player.action.ticksRemaining })}
         </p>
       )}
       <p className="desktop-controls-hint">
-        {movementKeys(keyLabels)} move · {keyOf(keyLabels, "game.jump")} jump ·{" "}
-        {keyOf(keyLabels, "game.primaryAttack")} primary / hold to draw bow ·{" "}
-        {keyOf(keyLabels, "game.secondaryAttack")} heavy · {keyOf(keyLabels, "game.guard")} hold
-        shield · {keyOf(keyLabels, "game.switchWeapon")} switch bow ·{" "}
-        {keyOf(keyLabels, "game.interact")} interact · {keyOf(keyLabels, "game.menu")} menu
+        {t("hud.desktopHint", {
+          move: movementKeys(keyLabels),
+          jump: keyOf(keyLabels, "game.jump"),
+          primary: keyOf(keyLabels, "game.primaryAttack"),
+          heavy: keyOf(keyLabels, "game.secondaryAttack"),
+          guard: keyOf(keyLabels, "game.guard"),
+          swap: keyOf(keyLabels, "game.switchWeapon"),
+          interact: keyOf(keyLabels, "game.interact"),
+          menu: keyOf(keyLabels, "game.menu"),
+        })}
       </p>
       <p className="mobile-controls-hint">
-        {player?.weapon === "bow"
-          ? "Left stick · Tap Jump · Hold Draw, release to shoot · Guard and Heavy unavailable with bow"
-          : "Left stick · Tap Jump · Tap Attack for light, swipe ↑ Heavy, → target, ← unlock · Hold Guard · Tap Interact"}
+        {t(player?.weapon === "bow" ? "hud.mobileHint.bow" : "hud.mobileHint.sword")}
       </p>
     </section>
   );
 }
+
+// The HUD label of each authoritative action kind; any other kind reads as the primary.
+const ACTION_KEYS = {
+  secondaryAttack: "hud.action.secondaryAttack",
+  interact: "hud.action.interact",
+  counter: "hud.action.counter",
+  lightFollowUp: "hud.action.lightFollowUp",
+  lightFinisher: "hud.action.lightFinisher",
+  heavyFinisher: "hud.action.heavyFinisher",
+};
 
 const LIGHT_KINDS = new Set(["primaryAttack", "counter", "lightFollowUp", "lightFinisher"]);
 const HEAVY_KINDS = new Set(["secondaryAttack", "heavyFinisher"]);
@@ -183,7 +193,7 @@ export function CombatActions({
   // With the bow, Attack is a held draw: press draws, release shoots.
   const drawHandlers = bow ? bowHandlers : primaryHandlers;
   return (
-    <section className="combat-actions" aria-label="Combat actions">
+    <section className="combat-actions" aria-label={t("combat.region")}>
       <button
         type="button"
         className={`combat-action combat-action-primary ${light ? "is-committed" : ""} ${
@@ -191,44 +201,46 @@ export function CombatActions({
         }`}
         data-phase={light ? player.action.phase : undefined}
         data-counter={player?.counter ? "ready" : undefined}
-        aria-label={bow ? "Draw bow" : "Primary attack"}
+        aria-label={t(bow ? "combat.drawLabel" : "combat.primaryLabel")}
         data-draw={player?.drawTicks != null ? "drawing" : undefined}
         disabled={!canAttack}
         {...drawHandlers}
       >
-        <strong>{bow ? "Draw" : player?.counter ? "Counter" : "Attack"}</strong>
+        <strong>
+          {t(bow ? "combat.draw" : player?.counter ? "combat.counter" : "combat.attack")}
+        </strong>
         <span>{keyOf(keyLabels, "game.primaryAttack")}</span>
       </button>
       <button
         type="button"
         className={`combat-action combat-action-secondary ${heavy ? "is-committed" : ""}`}
         data-phase={heavy ? player.action.phase : undefined}
-        aria-label="Heavy attack"
+        aria-label={t("combat.heavyLabel")}
         disabled={!canAttack || bow}
         {...heavyHandlers}
       >
-        <strong>Heavy</strong>
+        <strong>{t("combat.heavy")}</strong>
         <span>{keyOf(keyLabels, "game.secondaryAttack")}</span>
       </button>
       <button
         type="button"
         className={`combat-action combat-action-guard ${player?.guard ? "is-committed" : ""}`}
         data-guard={player?.guard?.phase}
-        aria-label="Hold shield"
+        aria-label={t("combat.guardLabel")}
         disabled={!playerId || !player?.alive || bow}
         {...guardHandlers}
       >
-        <strong>Guard</strong>
+        <strong>{t("combat.guard")}</strong>
         <span>{keyOf(keyLabels, "game.guard")}</span>
       </button>
       <button
         type="button"
         className="combat-action combat-action-swap"
-        aria-label={bow ? "Switch to sword and shield" : "Switch to bow"}
+        aria-label={t(bow ? "combat.toSwordLabel" : "combat.toBowLabel")}
         disabled={!canAttack || Boolean(player?.action)}
         {...swapHandlers}
       >
-        <strong>{bow ? "Sword" : "Bow"}</strong>
+        <strong>{t(bow ? "combat.sword" : "combat.bow")}</strong>
         <span>{keyOf(keyLabels, "game.switchWeapon")}</span>
       </button>
       <button
@@ -237,11 +249,11 @@ export function CombatActions({
           player?.action?.kind === "interact" ? "is-committed" : ""
         }`}
         data-phase={player?.action?.kind === "interact" ? player.action.phase : undefined}
-        aria-label="Interact or pick up"
+        aria-label={t("combat.interactLabel")}
         disabled={!playerId || !player?.alive || Boolean(player?.action)}
         {...interactHandlers}
       >
-        <strong>Interact</strong>
+        <strong>{t("combat.interact")}</strong>
         <span>{keyOf(keyLabels, "game.interact")}</span>
       </button>
       <button
@@ -250,11 +262,11 @@ export function CombatActions({
           player && !player.motion?.grounded ? "is-airborne" : ""
         }`}
         data-motion={player ? (player.motion?.grounded ? "grounded" : "airborne") : undefined}
-        aria-label="Jump"
+        aria-label={t("combat.jumpLabel")}
         disabled={!canAttack}
         {...jumpHandlers}
       >
-        <strong>Jump</strong>
+        <strong>{t("combat.jump")}</strong>
         <span>{keyOf(keyLabels, "game.jump")}</span>
       </button>
     </section>
@@ -271,11 +283,13 @@ const TIMELINE_LIMIT = 8;
 // Prompts come from the authority's own interaction choice, never a browser radius.
 function interactionPromptText(interaction, key) {
   if (interaction?.kind === "available") {
-    const what = interaction.target.kind === "chest" ? "Open chest" : "Pick up gold";
-    return key ? `${key} · ${what}` : `${what} (Interact is unbound)`;
+    const what = t(
+      interaction.target.kind === "chest" ? "interaction.openChest" : "interaction.pickUpGold",
+    );
+    return key ? t("interaction.prompt", { key, what }) : t("interaction.unbound", { what });
   }
-  if (interaction?.reason === "chestLocked") return "Chest locked until the room is cleared";
-  if (interaction?.reason === "obstructed") return "Out of reach behind a wall";
+  if (interaction?.reason === "chestLocked") return t("interaction.chestLocked");
+  if (interaction?.reason === "obstructed") return t("interaction.obstructed");
   return null;
 }
 
@@ -442,9 +456,9 @@ export function GameSummary({ store, mode, playerId }) {
   const snapshot = useSnapshot(store);
   return (
     <p>
-      Current mode: <strong>{mode}</strong>
-      {playerId ? ` · player ${playerId}` : ""}
-      {snapshot ? ` · run seed ${snapshot.runSeed}` : ""}
+      {t("settings.currentMode")} <strong>{mode}</strong>
+      {playerId ? t("settings.player", { id: String(playerId) }) : ""}
+      {snapshot ? t("settings.runSeed", { seed: String(snapshot.runSeed) }) : ""}
     </p>
   );
 }
