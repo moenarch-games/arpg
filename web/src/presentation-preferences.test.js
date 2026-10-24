@@ -67,7 +67,7 @@ import { PROFILE_KEY } from "./input-profile.js";
 
 const DEFAULTS = {
   graphics: { shadows: true, pixelRatioLimit: 2 },
-  accessibility: { motion: "system", reducedFlashes: false, textScale: 1 },
+  accessibility: { motion: "system", reducedFlashes: false, combatEffects: true, textScale: 1 },
   camera: { zoom: 1 },
 };
 
@@ -121,7 +121,12 @@ test("no stored document yields defaults without writing anything", () => {
 test("a valid version 2 document round-trips exactly", () => {
   const preferences = {
     graphics: { shadows: false, pixelRatioLimit: 1.5 },
-    accessibility: { motion: "reduced", reducedFlashes: true, textScale: 1.25 },
+    accessibility: {
+      motion: "reduced",
+      reducedFlashes: true,
+      combatEffects: true,
+      textScale: 1.25,
+    },
     camera: { zoom: 1 },
   };
   const storage = memoryStorage();
@@ -137,16 +142,17 @@ test("every documented choice is accepted", () => {
   for (const motion of ["system", "reduced", "full"])
     for (const textScale of [1, 1.25, 1.5])
       for (const reducedFlashes of [false, true])
-        for (const pixelRatioLimit of [1, 1.5, 2]) {
-          const preferences = {
-            graphics: { shadows: false, pixelRatioLimit },
-            accessibility: { motion, reducedFlashes, textScale },
-            camera: { zoom: 1 },
-          };
-          expect(loadPresentation(memoryStorage(stored({ version: 2, ...preferences })))).toEqual(
-            preferences,
-          );
-        }
+        for (const combatEffects of [false, true])
+          for (const pixelRatioLimit of [1, 1.5, 2]) {
+            const preferences = {
+              graphics: { shadows: false, pixelRatioLimit },
+              accessibility: { motion, reducedFlashes, combatEffects, textScale },
+              camera: { zoom: 1 },
+            };
+            expect(loadPresentation(memoryStorage(stored({ version: 2, ...preferences })))).toEqual(
+              preferences,
+            );
+          }
 });
 
 test("the legacy graphics document migrates to version 2 and keeps its values", () => {
@@ -177,7 +183,7 @@ test("the legacy graphics document migrates to version 2 and keeps its values", 
   expect(JSON.parse(storage.getItem(PRESENTATION_KEY))).toEqual({
     version: 2,
     graphics: { shadows: false, pixelRatioLimit: 1 },
-    accessibility: { motion: "system", reducedFlashes: false, textScale: 1.5 },
+    accessibility: { motion: "system", reducedFlashes: false, combatEffects: true, textScale: 1.5 },
     camera: { zoom: 1 },
   });
   expect(JSON.parse(storage.getItem(GRAPHICS_KEY))).toEqual({ shadows: false, pixelRatioLimit: 1 });
@@ -203,7 +209,7 @@ test("a version 2 document wins over the legacy graphics document", () => {
     ...stored({
       version: 2,
       graphics: { shadows: true, pixelRatioLimit: 1.5 },
-      accessibility: { motion: "full", reducedFlashes: false, textScale: 1 },
+      accessibility: { motion: "full", reducedFlashes: false, combatEffects: true, textScale: 1 },
       camera: { zoom: 1 },
     }),
   });
@@ -240,14 +246,20 @@ test("invalid fields fall back one by one and unknown fields are dropped", () =>
     stored({
       version: 2,
       graphics: { shadows: false, pixelRatioLimit: 3, extra: true },
-      accessibility: { motion: "slow", reducedFlashes: true, textScale: 1.25, contrast: "high" },
+      accessibility: {
+        motion: "slow",
+        reducedFlashes: true,
+        combatEffects: true,
+        textScale: 1.25,
+        contrast: "high",
+      },
       camera: { zoom: 1 },
       untrusted: { gameplay: "godMode" },
     }),
   );
   expect(loadPresentation(storage)).toEqual({
     graphics: { shadows: false, pixelRatioLimit: 2 },
-    accessibility: { motion: "system", reducedFlashes: true, textScale: 1.25 },
+    accessibility: { motion: "system", reducedFlashes: true, combatEffects: true, textScale: 1.25 },
     camera: { zoom: 1 },
   });
 
@@ -315,7 +327,7 @@ test("normalization returns fresh objects and never exposes the frozen defaults"
     }),
   ).toEqual({
     graphics: { shadows: false, pixelRatioLimit: 2 },
-    accessibility: { motion: "system", reducedFlashes: true, textScale: 1 },
+    accessibility: { motion: "system", reducedFlashes: true, combatEffects: true, textScale: 1 },
     camera: { zoom: 1 },
   });
 });
@@ -331,7 +343,7 @@ test("persisting normalizes, so invalid in-memory values never reach storage", (
   expect(JSON.parse(storage.getItem(PRESENTATION_KEY))).toEqual({
     version: 2,
     graphics: { shadows: true, pixelRatioLimit: 2 },
-    accessibility: { motion: "reduced", reducedFlashes: false, textScale: 1 },
+    accessibility: { motion: "reduced", reducedFlashes: false, combatEffects: true, textScale: 1 },
     camera: { zoom: 1 },
   });
 });
@@ -340,7 +352,7 @@ test("storage denial and quota errors never throw and keep the previous value", 
   const previous = {
     version: 2,
     graphics: { shadows: false, pixelRatioLimit: 1 },
-    accessibility: { motion: "full", reducedFlashes: false, textScale: 1 },
+    accessibility: { motion: "full", reducedFlashes: false, combatEffects: true, textScale: 1 },
     camera: { zoom: 1 },
   };
   const quota = {
@@ -351,7 +363,7 @@ test("storage denial and quota errors never throw and keep the previous value", 
   };
   const next = {
     graphics: DEFAULTS.graphics,
-    accessibility: { motion: "reduced", reducedFlashes: true, textScale: 1.5 },
+    accessibility: { motion: "reduced", reducedFlashes: true, combatEffects: true, textScale: 1.5 },
     camera: { zoom: 1 },
   };
   expect(persistPresentation(next, quota)).toBe(false);
@@ -389,7 +401,7 @@ test("the default storage is localStorage", () => {
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
   const preferences = {
     graphics: DEFAULTS.graphics,
-    accessibility: { motion: "full", reducedFlashes: true, textScale: 1.25 },
+    accessibility: { motion: "full", reducedFlashes: true, combatEffects: true, textScale: 1.25 },
     camera: { zoom: 1 },
   };
   expect(persistPresentation(preferences)).toBe(true);

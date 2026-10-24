@@ -109,7 +109,8 @@ describe("presentation cues", () => {
         strikeEvents: [strike({ kind: "blocked", guardDamage: 10 })],
       }),
     );
-    expect(kinds(block)).toEqual(["blocked"]);
+    // The swing opening its active window is its own cue (weapon trails, 67b).
+    expect(kinds(block)).toEqual(["blocked", "swing"]);
     expect(blocked.observe(frame(6, { players: [player({ action: swing("recovery") })] }))).toEqual(
       [],
     );
