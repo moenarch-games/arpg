@@ -17,6 +17,7 @@
 //       textScale: 1 | 1.25 | 1.5,               // root text/UI scale (styles are rem-based)
 //     },
 //     camera: { zoom: number },                  // follow-camera zoom, clamped to 0.6..1.6
+//     audio: { master, effects, ui: number, muted: boolean },  // volumes clamped to 0..1 (#67)
 //   })
 //
 // Version 1 is the existing `arpg-graphics-v1` document `{ shadows, pixelRatioLimit }`, read
@@ -65,10 +66,12 @@ import {
 } from "./preferences.js";
 import { PROFILE_KEY } from "./input-profile.js";
 
+const AUDIO = { master: 1, effects: 1, ui: 1, muted: false };
 const DEFAULTS = {
   graphics: { shadows: true, pixelRatioLimit: 2 },
   accessibility: { motion: "system", reducedFlashes: false, combatEffects: true, textScale: 1 },
   camera: { zoom: 1 },
+  audio: AUDIO,
 };
 
 // An in-memory Storage double that records every write and removal.
@@ -128,6 +131,7 @@ test("a valid version 2 document round-trips exactly", () => {
       textScale: 1.25,
     },
     camera: { zoom: 1 },
+    audio: AUDIO,
   };
   const storage = memoryStorage();
   expect(persistPresentation(preferences, storage)).toBe(true);
@@ -148,6 +152,7 @@ test("every documented choice is accepted", () => {
               graphics: { shadows: false, pixelRatioLimit },
               accessibility: { motion, reducedFlashes, combatEffects, textScale },
               camera: { zoom: 1 },
+              audio: AUDIO,
             };
             expect(loadPresentation(memoryStorage(stored({ version: 2, ...preferences })))).toEqual(
               preferences,
@@ -164,6 +169,7 @@ test("the legacy graphics document migrates to version 2 and keeps its values", 
     graphics: { shadows: false, pixelRatioLimit: 1 },
     accessibility: DEFAULTS.accessibility,
     camera: { zoom: 1 },
+    audio: AUDIO,
   });
   // Loading is read-only: replaying the migration is idempotent and the legacy value stays
   // available for rollback to an older build.
@@ -185,6 +191,7 @@ test("the legacy graphics document migrates to version 2 and keeps its values", 
     graphics: { shadows: false, pixelRatioLimit: 1 },
     accessibility: { motion: "system", reducedFlashes: false, combatEffects: true, textScale: 1.5 },
     camera: { zoom: 1 },
+    audio: AUDIO,
   });
   expect(JSON.parse(storage.getItem(GRAPHICS_KEY))).toEqual({ shadows: false, pixelRatioLimit: 1 });
 });
@@ -211,6 +218,7 @@ test("a version 2 document wins over the legacy graphics document", () => {
       graphics: { shadows: true, pixelRatioLimit: 1.5 },
       accessibility: { motion: "full", reducedFlashes: false, combatEffects: true, textScale: 1 },
       camera: { zoom: 1 },
+      audio: AUDIO,
     }),
   });
   expect(loadPresentation(storage).graphics).toEqual({ shadows: true, pixelRatioLimit: 1.5 });
@@ -222,6 +230,7 @@ test("an uninterpretable version 2 document counts as absent and falls back to l
     graphics: { shadows: false, pixelRatioLimit: 1.5 },
     accessibility: DEFAULTS.accessibility,
     camera: { zoom: 1 },
+    audio: AUDIO,
   };
   for (const text of [
     "{not json",
@@ -254,6 +263,7 @@ test("invalid fields fall back one by one and unknown fields are dropped", () =>
         contrast: "high",
       },
       camera: { zoom: 1 },
+      audio: AUDIO,
       untrusted: { gameplay: "godMode" },
     }),
   );
@@ -261,6 +271,7 @@ test("invalid fields fall back one by one and unknown fields are dropped", () =>
     graphics: { shadows: false, pixelRatioLimit: 2 },
     accessibility: { motion: "system", reducedFlashes: true, combatEffects: true, textScale: 1.25 },
     camera: { zoom: 1 },
+    audio: AUDIO,
   });
 
   for (const accessibility of [
@@ -324,11 +335,13 @@ test("normalization returns fresh objects and never exposes the frozen defaults"
       graphics: { shadows: false },
       accessibility: { reducedFlashes: true },
       camera: { zoom: 1 },
+      audio: AUDIO,
     }),
   ).toEqual({
     graphics: { shadows: false, pixelRatioLimit: 2 },
     accessibility: { motion: "system", reducedFlashes: true, combatEffects: true, textScale: 1 },
     camera: { zoom: 1 },
+    audio: AUDIO,
   });
 });
 
@@ -345,6 +358,7 @@ test("persisting normalizes, so invalid in-memory values never reach storage", (
     graphics: { shadows: true, pixelRatioLimit: 2 },
     accessibility: { motion: "reduced", reducedFlashes: false, combatEffects: true, textScale: 1 },
     camera: { zoom: 1 },
+    audio: AUDIO,
   });
 });
 
@@ -354,6 +368,7 @@ test("storage denial and quota errors never throw and keep the previous value", 
     graphics: { shadows: false, pixelRatioLimit: 1 },
     accessibility: { motion: "full", reducedFlashes: false, combatEffects: true, textScale: 1 },
     camera: { zoom: 1 },
+    audio: AUDIO,
   };
   const quota = {
     ...memoryStorage(stored(previous)),
@@ -365,12 +380,14 @@ test("storage denial and quota errors never throw and keep the previous value", 
     graphics: DEFAULTS.graphics,
     accessibility: { motion: "reduced", reducedFlashes: true, combatEffects: true, textScale: 1.5 },
     camera: { zoom: 1 },
+    audio: AUDIO,
   };
   expect(persistPresentation(next, quota)).toBe(false);
   expect(loadPresentation(quota)).toEqual({
     graphics: previous.graphics,
     accessibility: previous.accessibility,
     camera: { zoom: 1 },
+    audio: AUDIO,
   });
 
   const blocked = {
@@ -403,8 +420,32 @@ test("the default storage is localStorage", () => {
     graphics: DEFAULTS.graphics,
     accessibility: { motion: "full", reducedFlashes: true, combatEffects: true, textScale: 1.25 },
     camera: { zoom: 1 },
+    audio: AUDIO,
   };
   expect(persistPresentation(preferences)).toBe(true);
   expect(loadPresentation()).toEqual(preferences);
   expect(storage.writes.map(([key]) => key)).toEqual([PRESENTATION_KEY]);
+});
+
+test("audio volumes and mute persist, clamp to 0..1 and fall back one by one", () => {
+  const storage = memoryStorage();
+  const audio = { master: 0.5, effects: 0.25, ui: 0, muted: true };
+  expect(persistPresentation({ ...DEFAULTS, audio }, storage)).toBe(true);
+  expect(loadPresentation(storage).audio).toEqual(audio);
+  expect(
+    loadPresentation(
+      memoryStorage(
+        stored({
+          version: 2,
+          ...DEFAULTS,
+          audio: { master: 3, effects: -1, ui: "0.5", muted: "yes" },
+        }),
+      ),
+    ).audio,
+  ).toEqual({ master: 1, effects: 0, ui: 1, muted: false });
+  // A version 2 document from before audio was part of it keeps its other choices.
+  const { audio: _audio, ...withoutAudio } = DEFAULTS;
+  expect(loadPresentation(memoryStorage(stored({ version: 2, ...withoutAudio })))).toEqual(
+    DEFAULTS,
+  );
 });

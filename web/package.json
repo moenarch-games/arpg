@@ -11,13 +11,15 @@
     "wasm": "wasm-pack build ../crates/arpg-web-wasm --target web --out-dir ../../web/src/wasm --out-name arpg_web_wasm -- --locked",
     "test": "bun test src scripts",
     "test:browser": "playwright test",
-    "setup": "bun run vendor && bun run characters && bun run effects && bun run wasm",
+    "setup": "bun run vendor && bun run characters && bun run effects && bun run sounds && bun run wasm",
     "characters": "bun scripts/fetch-character-assets.ts",
     "effects": "bun scripts/fetch-combat-effects.ts",
     "build": "vite build",
-    "dev": "vite"
+    "dev": "vite",
+    "sounds": "bun scripts/fetch-sound-assets.ts"
   },
   "dependencies": {
+    "@moritzbrantner/game-audio": "github:moritzbrantner/game-audio#396afc6b92aed549e2dd0841ec9d499d29de133d",
     "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#231a70c9e8a4cc6575117d734507eaf81371f423",
     "react": "19.3.1",
     "react-dom": "19.3.1",
