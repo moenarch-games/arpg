@@ -882,6 +882,16 @@ export function createGameClientRuntime(options: GameClientRuntimeOptions) {
       dispatch({ type: "clearTarget" });
     },
 
+    // A defeated player's return to its checkpoint (#66); the authority ignores it while alive.
+    returnToCheckpoint() {
+      dispatch({ type: "returnToCheckpoint" });
+    },
+
+    // Gives up the running encounter as an ordinary defeat (#66); refused outside one.
+    leaveEncounter() {
+      dispatch({ type: "leaveEncounter" });
+    },
+
     // Drops every held bow draw without shooting (weapon switches, menus).
     cancelBowDraw() {
       if (drawSources.size === 0) return;
