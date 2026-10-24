@@ -1,0 +1,131 @@
+{
+  "arrows": [],
+  "contentRevision": "4d30f882ca678a85",
+  "crates": [
+    {
+      "health": 30,
+      "id": 40000
+    },
+    {
+      "health": 30,
+      "id": 40001
+    },
+    {
+      "health": 30,
+      "id": 40002
+    },
+    {
+      "health": 30,
+      "id": 40003
+    },
+    {
+      "health": 30,
+      "id": 40004
+    },
+    {
+      "health": 30,
+      "id": 40005
+    },
+    {
+      "health": 30,
+      "id": 40006
+    },
+    {
+      "health": 30,
+      "id": 40007
+    },
+    {
+      "health": 30,
+      "id": 40008
+    },
+    {
+      "health": 30,
+      "id": 40009
+    }
+  ],
+  "groundLoot": [],
+  "monsters": [
+    {
+      "action": null,
+      "engagement": {
+        "mode": "idle"
+      },
+      "guard": null,
+      "health": 100,
+      "id": 1,
+      "position": [
+        -703.0,
+        50.0,
+        -667.0
+      ],
+      "post": null,
+      "retreating": false,
+      "roomId": 2,
+      "slow": null,
+      "staggerTicksRemaining": 0,
+      "steered": false
+    },
+    {
+      "action": null,
+      "engagement": {
+        "mode": "idle"
+      },
+      "guard": null,
+      "health": 50,
+      "id": 2,
+      "position": [
+        1882.0,
+        50.0,
+        -1287.0
+      ],
+      "post": null,
+      "retreating": false,
+      "roomId": 3,
+      "slow": null,
+      "staggerTicksRemaining": 0,
+      "steered": false
+    },
+    {
+      "action": null,
+      "engagement": {
+        "mode": "idle"
+      },
+      "guard": null,
+      "health": 60,
+      "id": 3,
+      "position": [
+        -2140.0,
+        50.0,
+        334.0
+      ],
+      "post": null,
+      "retreating": false,
+      "roomId": 4,
+      "slow": null,
+      "staggerTicksRemaining": 0,
+      "steered": false
+    },
+    {
+      "action": null,
+      "engagement": {
+        "mode": "idle"
+      },
+      "guard": null,
+      "health": 160,
+      "id": 4,
+      "position": [
+        -439.0,
+        50.0,
+        361.0
+      ],
+      "post": null,
+      "retreating": false,
+      "roomId": 5,
+      "slow": null,
+      "staggerTicksRemaining": 0,
+      "steered": false
+    },
+    {
+      "action": null,
+      "engagement": {
+        "mo

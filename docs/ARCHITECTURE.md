@@ -292,6 +292,60 @@ Likewise, animation timing must not silently become gameplay authority. Gameplay
 
 The first acceptance environment for this foundation is a deterministic combat training arena with reproducible movement, attack, impact, interruption, targeting, projectile, knockback, death, and pickup scenarios. See [ROADMAP.md](ROADMAP.md).
 
+## Saves
+
+`ArpgSaveState` (`arpg-core`) is the gameplay part of a save, and the only part a load
+trusts. `ArpgGame::from_save_state` validates the whole save before it builds a new game.
+A refused save never touches the game already running, and callers swap authorities only
+after a load succeeds.
+
+**Version policy (before 1.0).** A save loads only under the exact
+`SAVE_STATE_SCHEMA_VERSION`, `SAVE_STATE_RULES_VERSION` and content revision that wrote it.
+Nothing is migrated, and any other version is refused with a reason. A change to the saved
+format or to the rules it continues under bumps the version once, with no shim. The
+checked-in fixtures in `crates/arpg-core/tests/fixtures/saves` cover this: one current-schema
+save that must load and save back unchanged, plus the previous schema, a corrupt save and a
+truncated save, all of which must be refused (`tests/save_fixtures.rs`). After a bump,
+regenerate them with `UPDATE_SAVE_FIXTURES=1 cargo test -p arpg-core --test save_fixtures`,
+which keeps the outdated save as `previous-schema.json`. The browser workflow test imports
+the same files, plus an oversized one, through the Wasm load.
+
+**Canonical: saved, and restored exactly.**
+
+- Run identity: run seed, scenario, content revision, tick.
+- Players: `f32` position and velocity, support (grounded, ground contact, coyote and
+  jump-buffer ticks, last supported position, region membership or transit), movement and
+  facing intent, action and its phase progress, hurt ticks, guard, counter opportunity,
+  weapon, bow draw, aim and lock, poison, health, experience, gold, checkpoint room, and
+  both command-lane watermarks (`lastSequence`, `lastReliableSequence`). The watermarks are
+  the command fences, so a stale command stays stale after a load.
+- Monsters: position, health, action (phase, ticks, target, lunge), stagger, post,
+  engagement, steering flags, guard, slow.
+- World: each room's encounter state, opened chests, crate health, ground loot, arrows in
+  flight, and the next ground-loot and arrow ids (ID allocation).
+
+**Derived: rebuilt on load from the seed, scenario and content.** Room and door layout
+(door locks follow encounter state), static colliders, hazards, chest placement (chest
+availability follows room state and opened chests), crate placement, monster definitions
+and ids, level and maximum health (from experience), the Rapier world (Atlas 2.3.2), and
+the navigation cache, which is dropped and recomputed with the same result.
+
+**Transient: reset on load.** The strike and interaction events of the last tick (a
+restored game publishes none until its next tick) and in-tick scratch state such as a
+monster's `cornered` and `swept_from`.
+
+**Outside the core save.** The browser save document (`web/src/save-state.js`, file
+version 1) wraps the core state with presentation (`characterId`) and client
+(`controlledPlayerId`) fields. Those fields never affect gameplay. The shell restores its
+held inputs from the saved player. Display preferences such as camera zoom live in their
+own storage and are never part of a save.
+
+`saves_at_each_mechanic_continue_the_uninterrupted_fight_exactly` (`arpg-core`, run on
+both physics backends) checks exact continuation. It saves one scripted fight at mid-jump,
+during a wind-up, during pursuit, with an arrow in flight while a slow runs, and with a
+partly cleared encounter. Each save goes through the JSON load and receives the same
+remaining commands. On every later tick the restored game's save state, its snapshot with
+events, and the snapshot's encoded bytes must equal those of the uninterrupted game.
 
 ## Execution modes
 

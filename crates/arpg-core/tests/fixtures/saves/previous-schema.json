@@ -1,0 +1,245 @@
+{
+  "arrows": [],
+  "contentRevision": "4d30f882ca678a85",
+  "crates": [
+    {
+      "health": 30,
+      "id": 40000
+    },
+    {
+      "health": 30,
+      "id": 40001
+    },
+    {
+      "health": 30,
+      "id": 40002
+    },
+    {
+      "health": 30,
+      "id": 40003
+    },
+    {
+      "health": 30,
+      "id": 40004
+    },
+    {
+      "health": 30,
+      "id": 40005
+    },
+    {
+      "health": 30,
+      "id": 40006
+    },
+    {
+      "health": 30,
+      "id": 40007
+    },
+    {
+      "health": 30,
+      "id": 40008
+    },
+    {
+      "health": 30,
+      "id": 40009
+    }
+  ],
+  "groundLoot": [],
+  "monsters": [
+    {
+      "action": null,
+      "engagement": {
+        "mode": "idle"
+      },
+      "guard": null,
+      "health": 100,
+      "id": 1,
+      "position": [
+        -703.0,
+        50.0,
+        -667.0
+      ],
+      "post": null,
+      "retreating": false,
+      "roomId": 2,
+      "slow": null,
+      "staggerTicksRemaining": 0,
+      "steered": false
+    },
+    {
+      "action": null,
+      "engagement": {
+        "mode": "idle"
+      },
+      "guard": null,
+      "health": 50,
+      "id": 2,
+      "position": [
+        1882.0,
+        50.0,
+        -1287.0
+      ],
+      "post": null,
+      "retreating": false,
+      "roomId": 3,
+      "slow": null,
+      "staggerTicksRemaining": 0,
+      "steered": false
+    },
+    {
+      "action": null,
+      "engagement": {
+        "mode": "idle"
+      },
+      "guard": null,
+      "health": 60,
+      "id": 3,
+      "position": [
+        -2140.0,
+        50.0,
+        334.0
+      ],
+      "post": null,
+      "retreating": false,
+      "roomId": 4,
+      "slow": null,
+      "staggerTicksRemaining": 0,
+      "steered": false
+    },
+    {
+      "action": null,
+      "engagement": {
+        "mode": "idle"
+      },
+      "guard": null,
+      "health": 160,
+      "id": 4,
+      "position": [
+        -439.0,
+        50.0,
+        361.0
+      ],
+      "post": null,
+      "retreating": false,
+      "roomId": 5,
+      "slow": null,
+      "staggerTicksRemaining": 0,
+      "steered": false
+    },
+    {
+      "action": null,
+      "engagement": {
+        "mode": "idle"
+      },
+      "guard": {
+        "blockReactionTicksRemaining": 0,
+        "brokenTicksRemaining": 0,
+        "held": false,
+        "points": 100,
+        "stance": null
+      },
+      "health": 140,
+      "id": 5,
+      "position": [
+        1765.0,
+        50.0,
+        1265.0
+      ],
+      "post": null,
+      "retreating": false,
+      "roomId": 6,
+      "slow": null,
+      "staggerTicksRemaining": 0,
+      "steered": false
+    }
+  ],
+  "nextArrowId": 1,
+  "nextGroundLootId": 30000,
+  "openedChests": [],
+  "players": [
+    {
+      "action": null,
+      "aim": null,
+      "counter": null,
+      "coyoteTicksRemaining": 0,
+      "drawTicks": null,
+      "experience": 0,
+      "facing": [
+        1,
+        0
+      ],
+      "gold": 0,
+      "groundContact": false,
+      "grounded": false,
+      "guard": {
+        "blockReactionTicksRemaining": 0,
+        "brokenTicksRemaining": 0,
+        "held": false,
+        "points": 100,
+        "stance": null
+      },
+      "health": 100,
+      "hurtTicksRemaining": 0,
+      "id": 1,
+      "jumpBufferTicksRemaining": 0,
+      "lastReliableSequence": 0,
+      "lastSequence": 2,
+      "lastSupported": [
+        -1880.0,
+        50.0,
+        -1107.0
+      ],
+      "lockedMonsterId": null,
+      "movement": [
+        1,
+        0
+      ],
+      "poison": null,
+      "position": [
+        -1810.0,
+        122.22221374511719,
+        -1107.0
+      ],
+      "region": {
+        "id": 1,
+        "kind": "region"
+      },
+      "velocity": [
+        7.0,
+        4.722220420837402,
+        0.0
+      ],
+      "weapon": "swordAndShield"
+    }
+  ],
+  "rooms": [
+    {
+      "encounterState": "cleared",
+      "id": 1
+    },
+    {
+      "encounterState": "dormant",
+      "id": 2
+    },
+    {
+      "encounterState": "dormant",
+      "id": 3
+    },
+    {
+      "encounterState": "dormant",
+      "id": 4
+    },
+    {
+      "encounterState": "dormant",
+      "id": 5
+    },
+    {
+      "encounterState": "dormant",
+      "id": 6
+    }
+  ],
+  "rulesVersion": 13,
+  "runSeed": 42,
+  "scenario": "dungeon",
+  "schemaVersion": 23,
+  "tick": 50
+}
