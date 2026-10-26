@@ -16,7 +16,8 @@
 //!   queries skip them. Monsters move planar (`CharacterSettings::plane`), players in 3D with
 //!   snapping to the ground within [`SUPPORT_REACH`]. The engine's grounded test counts only
 //!   walkable static support, so a body on another character is not supported, as in the
-//!   Rapier backend. Characters keep the same 0.25 unit contact offset.
+//!   Rapier backend. The A/B adapter also checks the nearest static face, matching Rapier's
+//!   first-hit support test at steep stair edges (#399). Characters keep the same contact offset.
 //! - Each game move is its own single-element `move_characters` batch, in the game's order
 //!   (players by id, then monsters): the engine orders a batch by body key instead.
 //! - The game's position after a move is mirrored into the body, as the Rapier backend does,
@@ -426,6 +427,7 @@ impl Physics {
         let (moved, supported) = self.step(key, Kind::Vertical, from, desired)?;
         let to = from + moved;
         self.moved_to(key, to)?;
+        let supported = supported && self.ground_below(key)?;
         Ok(Motion {
             to,
             moved,
@@ -433,6 +435,33 @@ impl Physics {
             // The engine gates its autostep on geometry at the move's start (#222).
             ground_contact: supported,
         })
+    }
+
+    /// Match Rapier's support decision: only the nearest upward static face within
+    /// the support reach can ground the player. Physics Engine can look past a steep
+    /// edge for walkable ground (#395); Rapier's ARPG cast stops at that edge (#399).
+    fn ground_below(&self, key: BodyKey) -> Result<bool, GameError> {
+        let body = self.characters.get(&key).ok_or_else(|| missing(key))?.body;
+        let body = self.world.body(body).ok_or_else(|| missing(key))?;
+        let mut pose = QueryPose::new(body.shape, body.position);
+        if let Shape::Capsule { radius, .. } = &mut pose.shape {
+            *radius += CONTACT_OFFSET;
+        }
+        let mut hits = self.hits.borrow_mut();
+        self.world
+            .cast_shape(
+                ShapeCast::new(pose, EngineVector(0.0, -SUPPORT_REACH, 0.0)),
+                self.statics(),
+                &mut hits,
+            )
+            .expect("physics-engine support cast");
+        let min_up = std::f32::consts::FRAC_PI_4.cos();
+        // Rapier ignores initial overlaps with walls for this cast; only a
+        // hit with an upward normal can be the first ground candidate.
+        Ok(hits
+            .iter()
+            .find(|hit| hit.normal.1 > 0.0)
+            .is_some_and(|hit| hit.normal.1 >= min_up))
     }
 
     /// Static ground: the boxes and the floor.
