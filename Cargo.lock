@@ -147,7 +147,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "bvh-kernels"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/rust-kernels?rev=0408461ba65108142de50db7d7b5c428de6b7331#0408461ba65108142de50db7d7b5c428de6b7331"
+source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=1e2889c7df82a575c2151052a0e0546c74ff62bd#1e2889c7df82a575c2151052a0e0546c74ff62bd"
 dependencies = [
  "spatial-kernels",
 ]
@@ -206,7 +206,7 @@ dependencies = [
 [[package]]
 name = "collection-kernels"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=42d69e0d20ed558c76e0ca2548075db7aebb3494#42d69e0d20ed558c76e0ca2548075db7aebb3494"
+source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=1e2889c7df82a575c2151052a0e0546c74ff62bd#1e2889c7df82a575c2151052a0e0546c74ff62bd"
 
 [[package]]
 name = "const-oid"
@@ -381,7 +381,7 @@ dependencies = [
 [[package]]
 name = "game-server"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/game-server.git?rev=532b503904b36970761c36f78c43283930a679a9#532b503904b36970761c36f78c43283930a679a9"
+source = "git+https://github.com/moritzbrantner/game-server.git?rev=043867333bbfd880d4ef3484d57fd7199d3b6f2b#043867333bbfd880d4ef3484d57fd7199d3b6f2b"
 dependencies = [
  "ring",
  "tokio",
@@ -392,7 +392,7 @@ dependencies = [
 [[package]]
 name = "geometry-kernels"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/rust-kernels?rev=0408461ba65108142de50db7d7b5c428de6b7331#0408461ba65108142de50db7d7b5c428de6b7331"
+source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=1e2889c7df82a575c2151052a0e0546c74ff62bd#1e2889c7df82a575c2151052a0e0546c74ff62bd"
 dependencies = [
  "spatial-kernels",
 ]
@@ -468,7 +468,7 @@ dependencies = [
 [[package]]
 name = "graph-kernels"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=42d69e0d20ed558c76e0ca2548075db7aebb3494#42d69e0d20ed558c76e0ca2548075db7aebb3494"
+source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=1e2889c7df82a575c2151052a0e0546c74ff62bd#1e2889c7df82a575c2151052a0e0546c74ff62bd"
 dependencies = [
  "collection-kernels",
 ]
@@ -907,7 +907,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "physics-engine"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/physics-engine?rev=cda9d1df803eee28fca39088b0fa23753fab7233#cda9d1df803eee28fca39088b0fa23753fab7233"
+source = "git+https://github.com/moritzbrantner/physics-engine?rev=521f2245d52de3bae567ce5aaa26fe2a71fd296d#521f2245d52de3bae567ce5aaa26fe2a71fd296d"
 dependencies = [
  "bvh-kernels",
  "geometry-kernels",
@@ -1360,7 +1360,7 @@ dependencies = [
 [[package]]
 name = "spatial-kernels"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/rust-kernels?rev=0408461ba65108142de50db7d7b5c428de6b7331#0408461ba65108142de50db7d7b5c428de6b7331"
+source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=1e2889c7df82a575c2151052a0e0546c74ff62bd#1e2889c7df82a575c2151052a0e0546c74ff62bd"
 
 [[package]]
 name = "stable_deref_trait"
