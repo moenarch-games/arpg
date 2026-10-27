@@ -206,7 +206,7 @@ dependencies = [
 [[package]]
 name = "collection-kernels"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=1e2889c7df82a575c2151052a0e0546c74ff62bd#1e2889c7df82a575c2151052a0e0546c74ff62bd"
+source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=f0c248dadd8c558a24d439eec1b7b4ffd354ef82#f0c248dadd8c558a24d439eec1b7b4ffd354ef82"
 
 [[package]]
 name = "const-oid"
@@ -468,7 +468,7 @@ dependencies = [
 [[package]]
 name = "graph-kernels"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=1e2889c7df82a575c2151052a0e0546c74ff62bd#1e2889c7df82a575c2151052a0e0546c74ff62bd"
+source = "git+https://github.com/moritzbrantner/rust-kernels.git?rev=f0c248dadd8c558a24d439eec1b7b4ffd354ef82#f0c248dadd8c558a24d439eec1b7b4ffd354ef82"
 dependencies = [
  "collection-kernels",
 ]
