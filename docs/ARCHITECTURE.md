@@ -182,12 +182,17 @@ the ground straight below. The `traversal` scenario's two 20-unit steps climb to
 platform's north face (a declared walk connection). The physics-engine A/B adapter enables
 `CharacterMove::autostep` only when the game's walking decision is true, with Rapier's step
 height and free depth. It uses the engine's independent `ground_contact` result for the next
-move's walking decision, so jumps and falls do not step. The seeded A/B `stairs` workload
-compares both controllers. Their rounded-edge contacts can cause one backend to step a riser
-earlier, after which positions drift even though both still climb correctly. The stairs
-acceptance therefore requires both to reach the platform, at most 7 support/region-only
-differences, identical other outcomes and physical invariants, rather than a position bound
-after the climb begins. Other workloads retain their stricter position comparisons.
+move's walking decision, so jumps and falls do not step. A/B acceptance now distinguishes
+two kinds of stairs approach (#276). Three clear-phase lanes use the real game and require
+the usual per-tick position bounds (0.5 units, or 2 on a rounded edge), identical ground
+contact, region membership and other outcomes; at most one support-only tick may differ
+at an observed rounded edge while both sides still agree that the player touches ground.
+Both backends must reach the platform. The two original seeded lanes are explicitly marked
+as Rapier's numerically unstable 45-degree step-threshold cases (physics-engine#406): after
+the climb begins, their positions are reported rather than bounded, and at most 7 transient
+support/region-only ticks may differ. The threshold exception cannot apply to new lanes or
+other workloads. Rapier remains the production physics authority until the full parity
+requirements are satisfied.
 
 Ramps (#59): a ramp is a static wedge inside its box (`StaticColliderKind::Ramp`), rising from
 the box's bottom at its +Z end to its top at its -Z end: a convex hull on Rapier, a
