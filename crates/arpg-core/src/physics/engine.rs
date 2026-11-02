@@ -151,13 +151,6 @@ fn settings(kind: Kind, height: f32) -> CharacterSettings {
             // Settles a body grounded within the support reach, as the Rapier backend does.
             snap_to_ground: Some(SUPPORT_REACH),
             plane: None,
-            // Walking players climb stairs (Atlas 5.1.5, #222), with the Rapier backend's
-            // step height and free depth. The engine steps only on walking moves: ones that
-            // start on the ground and do not rise.
-            autostep: Some(Autostep {
-                max_height: STEP_HEIGHT_UNITS * super::METRES_PER_UNIT,
-                min_width: 0.1,
-            }),
             ..base
         },
     }
@@ -354,7 +347,8 @@ impl Physics {
         kind: Kind,
         from: Vector,
         desired: Vector,
-    ) -> Result<(Vector, bool), GameError> {
+        autostep: Option<Autostep>,
+    ) -> Result<(Vector, bool, bool), GameError> {
         self.set_position(key, from)?;
         let character = self.characters.get_mut(&key).ok_or_else(|| missing(key))?;
         if character.kind != kind {
@@ -369,6 +363,8 @@ impl Physics {
                 &[CharacterMove {
                     body,
                     desired: engine(desired),
+                    exclude: None,
+                    autostep,
                 }],
                 &mut self.results,
             )
@@ -377,6 +373,7 @@ impl Physics {
         Ok((
             game(result.translation + result.depenetration),
             result.grounded,
+            result.ground_contact,
         ))
     }
 
@@ -403,11 +400,12 @@ impl Physics {
         from: Vector,
         desired: Vector,
     ) -> Result<(Vector, Vector), GameError> {
-        let (moved, _) = self.step(
+        let (moved, _, _) = self.step(
             key,
             Kind::Planar,
             from,
             Vector::new(desired.x, 0.0, desired.z),
+            None,
         )?;
         let translation = Vector::new(moved.x, 0.0, moved.z);
         let to = from + translation;
@@ -415,16 +413,21 @@ impl Physics {
         Ok((to, translation))
     }
 
-    /// The engine decides walking itself (on the ground at the move's start, not rising),
-    /// the game's own rule, so `walking` adds nothing here (#222).
+    /// Match Rapier's walking controller: only ground-contact moves that do not take off
+    /// climb stairs (Atlas 5.1.5, #222). Jumps and falls never autostep.
     pub(crate) fn move_player(
         &mut self,
         key: BodyKey,
         from: Vector,
         desired: Vector,
-        _walking: bool,
+        walking: bool,
     ) -> Result<Motion, GameError> {
-        let (moved, supported) = self.step(key, Kind::Vertical, from, desired)?;
+        let autostep = walking.then_some(Autostep {
+            max_height: STEP_HEIGHT_UNITS * super::METRES_PER_UNIT,
+            min_width: 0.1,
+        });
+        let (moved, supported, ground_contact) =
+            self.step(key, Kind::Vertical, from, desired, autostep)?;
         let to = from + moved;
         self.moved_to(key, to)?;
         let supported = supported && self.ground_below(key)?;
@@ -432,8 +435,8 @@ impl Physics {
             to,
             moved,
             supported,
-            // The engine gates its autostep on geometry at the move's start (#222).
-            ground_contact: supported,
+            // Unlike full support, a rounded stair edge can count as ground contact.
+            ground_contact,
         })
     }
 

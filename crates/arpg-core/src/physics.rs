@@ -802,6 +802,11 @@ mod tests {
                 low.x > 100.0 && (low.y - (Y + 20) as f32).abs() < 1.0,
                 "{low:?}"
             );
+            let not_walking = climb(20, false);
+            assert!(
+                not_walking.x < 75.0 && (not_walking.y - Y as f32).abs() < 1.0,
+                "{not_walking:?}"
+            );
             // The capsule's rounded base also rides an edge as a slope (Rapier's 45 degree
             // rule), about 9 units above the 25-unit autostep: 35 is too high.
             let high = climb(35, true);
