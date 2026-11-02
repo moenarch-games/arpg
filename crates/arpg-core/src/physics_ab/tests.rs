@@ -9,7 +9,7 @@ use rapier3d::math::Vector;
 use super::*;
 use crate::physics::BodyKey;
 use crate::physics::vector;
-use crate::seeded_workloads::frame;
+use crate::seeded_workloads::{fixture_with_stair_offset, frame};
 use crate::{FLOOR_FOOT_Y, MONSTER_BODY_HALF_EXTENTS, PLAYER_HALF_EXTENTS, PLAYER_Y, Vec3i};
 
 const SEEDS: [u32; 2] = [42, 0xDEAD_BEEF];
@@ -215,12 +215,17 @@ fn invariants(
     violations
 }
 
-/// Game-visible outcomes that do not depend on exact positions: doors, encounters, health,
-/// progression, support, region membership, standing crates and every strike and
-/// interaction decision.
-/// With `mask_climb`, support and region membership are left out: the stairs' climb, where
-/// either backend may step a tick earlier ([`STAIRS_SUPPORT_TICKS`]).
-fn outcomes(game: &ArpgGame, mask_climb: bool) -> String {
+/// Game-visible outcomes independent of exact positions. A separately classified rounded-edge
+/// support tick may hide only `grounded`; the known threshold climb may hide its transient
+/// region membership too. Every other outcome remains compared on each tick.
+#[derive(Clone, Copy)]
+enum OutcomeMask {
+    None,
+    RoundedEdgeSupport,
+    ThresholdClimb,
+}
+
+fn outcomes(game: &ArpgGame, mask: OutcomeMask) -> String {
     let snapshot = game.snapshot().unwrap();
     let mut out = String::new();
     for door in &snapshot.doors {
@@ -232,18 +237,20 @@ fn outcomes(game: &ArpgGame, mask_climb: bool) -> String {
     for player in &snapshot.players {
         write!(
             out,
-            "player {} {} {} {} {} {} {:?};",
+            "player {} {} {} {} {} {:?} {:?};",
             player.id,
             player.health,
             player.experience,
             player.gold,
             player.alive,
-            player.motion.grounded && !mask_climb,
-            if mask_climb {
-                None
-            } else {
-                Some(player.region)
-            }
+            match mask {
+                OutcomeMask::None => Some(player.motion.grounded),
+                _ => None,
+            },
+            match mask {
+                OutcomeMask::ThresholdClimb => None,
+                _ => Some(player.region),
+            },
         )
         .unwrap();
     }
@@ -305,13 +312,17 @@ struct Comparison {
     /// The same at ticks on which either body rounds a platform edge, where Rapier's
     /// normal nudge can skip a snap (bounded by [`EDGE_POSITION`]).
     max_position_on_edge: f32,
-    /// The first tick a player of either game climbs the stairs; from then on positions are
-    /// reported, not compared ([`STAIRS_SUPPORT_TICKS`]).
-    climb_start: Option<u32>,
-    /// Largest position difference of any body from the climb's start on.
-    max_position_after_climb: f32,
-    /// Ticks on the stairs whose outcomes differ only in support or region membership.
-    stairs_support_ticks: u32,
+    /// The start of the original seeded stair path's known ~45-degree threshold interval.
+    /// Only this explicitly classified path reports positions without bounding them afterward.
+    threshold_start: Option<u32>,
+    /// Largest position difference after the known threshold interval starts.
+    max_position_after_threshold: f32,
+    /// Support/region-only differences of the known threshold path.
+    threshold_support_ticks: u32,
+    /// Support-only differences on rounded edges of a nonthreshold stair path.
+    edge_support_ticks: u32,
+    /// First tick the game's per-move walking input disagrees between backends.
+    first_ground_contact_difference: Option<(u32, u32, bool, bool)>,
     /// Whether a player of the Rapier game, and of the engine game, stood on the platform.
     reached_platform: [bool; 2],
     /// Ticks on which a player of either game belongs to a region above the floor.
@@ -536,11 +547,52 @@ fn doors_block(game: &ArpgGame, tick: u32, comparison: &mut Comparison) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StairPolicy {
+    /// The original seeded path passes through Rapier's numerically unstable 45-degree edge.
+    KnownThreshold,
+    /// No position exception: a clear-phase path must agree on every tick.
+    Strict,
+}
+
 /// Runs one workload on both backends in lockstep: the same fixture, commands and ticks.
 fn compare(case: Case, seed: u32) -> Comparison {
+    compare_with_stair_offset(
+        case,
+        seed,
+        0,
+        0,
+        if case == Case::Stairs {
+            StairPolicy::KnownThreshold
+        } else {
+            StairPolicy::Strict
+        },
+    )
+}
+
+fn compare_with_stair_offset(
+    case: Case,
+    seed: u32,
+    stair_lateral: i32,
+    stair_approach: i32,
+    policy: StairPolicy,
+) -> Comparison {
+    assert!(case == Case::Stairs || policy == StairPolicy::Strict);
+    assert!(
+        policy != StairPolicy::KnownThreshold
+            || (case == Case::Stairs
+                && stair_lateral == 0
+                && stair_approach == 0
+                && [42, 0xDEAD_BEEF].contains(&seed)),
+        "the threshold exception is only for the two original seeded paths"
+    );
     let mut comparison = Comparison::default();
-    let mut rapier = with_backend(Backend::Rapier, || fixture(case, seed));
-    let mut engine = with_backend(Backend::Engine, || fixture(case, seed));
+    let mut rapier = with_backend(Backend::Rapier, || {
+        fixture_with_stair_offset(case, seed, stair_lateral, stair_approach)
+    });
+    let mut engine = with_backend(Backend::Engine, || {
+        fixture_with_stair_offset(case, seed, stair_lateral, stair_approach)
+    });
     let (mut rapier_before, mut engine_before) = (bodies(&rapier), bodies(&engine));
     for tick in 0..TICKS {
         let (rapier_commands, _) = commands(&mut rapier, case, tick);
@@ -554,6 +606,17 @@ fn compare(case: Case, seed: u32) -> Comparison {
         rapier.advance_tick().unwrap();
         engine.advance_tick().unwrap();
         let (rapier_now, engine_now) = (bodies(&rapier), bodies(&engine));
+        if case == Case::Stairs && comparison.first_ground_contact_difference.is_none() {
+            for (&id, state) in &rapier.players {
+                if let Some(other) = engine.players.get(&id)
+                    && state.ground_contact != other.ground_contact
+                {
+                    comparison.first_ground_contact_difference =
+                        Some((tick, id, state.ground_contact, other.ground_contact));
+                    break;
+                }
+            }
+        }
         for (backend, game, before, now) in [
             ("rapier", &rapier, &rapier_before, &rapier_now),
             ("engine", &engine, &engine_before, &engine_now),
@@ -571,7 +634,8 @@ fn compare(case: Case, seed: u32) -> Comparison {
         {
             comparison.first_contact = Some(tick);
         }
-        // Climbing the stairs: between the floor and the platform's top in either game.
+        // Only the original seeded approach is a labelled threshold path. The clear-phase
+        // samples never disable position comparison, including after reaching the platform.
         let on_stairs = case == Case::Stairs
             && [&rapier, &engine].iter().any(|game| {
                 game.players.values().any(|state| {
@@ -579,15 +643,18 @@ fn compare(case: Case, seed: u32) -> Comparison {
                     feet > 1.0 && feet < 59.9
                 })
             });
-        if on_stairs && comparison.climb_start.is_none() {
-            comparison.climb_start = Some(tick);
+        if policy == StairPolicy::KnownThreshold
+            && on_stairs
+            && comparison.threshold_start.is_none()
+        {
+            comparison.threshold_start = Some(tick);
         }
         for (key, body) in &rapier_now {
             if let Some(other) = engine_now.get(key) {
                 let difference = (body.position - other.position).length();
-                if comparison.climb_start.is_some() {
-                    comparison.max_position_after_climb =
-                        comparison.max_position_after_climb.max(difference);
+                if comparison.threshold_start.is_some() {
+                    comparison.max_position_after_threshold =
+                        comparison.max_position_after_threshold.max(difference);
                 } else if on_an_edge(&rapier, body) || on_an_edge(&engine, other) {
                     comparison.max_position_on_edge =
                         comparison.max_position_on_edge.max(difference);
@@ -675,10 +742,43 @@ fn compare(case: Case, seed: u32) -> Comparison {
             }
         }
         if comparison.first_outcome_difference.is_none() {
-            let (a, b) = (outcomes(&rapier, false), outcomes(&engine, false));
+            let (a, b) = (
+                outcomes(&rapier, OutcomeMask::None),
+                outcomes(&engine, OutcomeMask::None),
+            );
             if a != b {
-                if on_stairs && outcomes(&rapier, true) == outcomes(&engine, true) {
-                    comparison.stairs_support_ticks += 1;
+                // At a clear-phase stair edge the support normal can cross 45 degrees on
+                // only one backend, without changing the per-move ground contact or region.
+                // This is the sole nonthreshold exception; positions remain bounded.
+                let same_except_support = outcomes(&rapier, OutcomeMask::RoundedEdgeSupport)
+                    == outcomes(&engine, OutcomeMask::RoundedEdgeSupport);
+                let rounded_edge = rapier_now.iter().any(|(key, body)| {
+                    engine_now.get(key).is_some_and(|other| {
+                        on_an_edge(&rapier, body) || on_an_edge(&engine, other)
+                    })
+                });
+                let both_in_ground_contact = rapier.players.iter().all(|(id, state)| {
+                    state.ground_contact
+                        && engine
+                            .players
+                            .get(id)
+                            .is_some_and(|other| other.ground_contact)
+                });
+                if policy == StairPolicy::Strict
+                    && case == Case::Stairs
+                    && on_stairs
+                    && rounded_edge
+                    && both_in_ground_contact
+                    && same_except_support
+                    && comparison.first_ground_contact_difference.is_none()
+                {
+                    comparison.edge_support_ticks += 1;
+                } else if policy == StairPolicy::KnownThreshold
+                    && on_stairs
+                    && outcomes(&rapier, OutcomeMask::ThresholdClimb)
+                        == outcomes(&engine, OutcomeMask::ThresholdClimb)
+                {
+                    comparison.threshold_support_ticks += 1;
                 } else {
                     comparison.first_outcome_difference = Some((tick, a, b));
                 }
@@ -704,25 +804,96 @@ fn compare(case: Case, seed: u32) -> Comparison {
 /// rounded edge's drop (about a unit) higher for a tick; the engine follows the edge.
 const EDGE_POSITION: f32 = 2.0;
 
-/// Most stairs ticks whose outcomes may differ only in support or region membership.
-///
-/// The stairs climb sits on Rapier's autostep threshold: a pose a few hundredths of a unit
-/// higher steps up a riser instead of sliding up its rounded edge (physics-engine#385). A step
-/// keeps the full walking speed, a slide loses about half of it, and the game's velocity
-/// carries that loss on, so whichever backend steps a tick earlier pulls ahead and positions
-/// diverge chaotically (by 20 units and more), although the engine matches Rapier's single
-/// moves to about 1e-4 units. Rapier itself steps on one seed and not on the other from the
-/// same climb. So from the climb's start on, the stairs case compares outcomes, not
-/// positions: both games reach the platform, support and the region differ on at most this
-/// many ticks (physics-engine `d7aad42` measures 5 and 6), every other outcome (monsters
-/// included) agrees every tick, and the invariants hold. The position difference is reported.
-const STAIRS_SUPPORT_TICKS: u32 = 7;
+/// Rapier's 45-degree normal has a numerically unstable step decision on the two original
+/// seeded stair paths. This legacy exception is confined to those paths, never to clear lanes.
+/// See physics-engine#406 and arpg#276; positions after the first riser are still reported.
+const THRESHOLD_SUPPORT_TICKS: u32 = 7;
+
+/// At most one rounded-edge tick may differ in walkable support on a clear-phase path. The
+/// engine and Rapier must still agree on ground contact (the next move's walking decision),
+/// region membership, positions and every other outcome on every tick.
+const CLEAR_EDGE_SUPPORT_TICKS: u32 = 1;
+
+/// A 10-unit phase shift avoids the stair-step 45-degree threshold; neighbouring lateral
+/// lanes vary where the capsule meets the same two risers and platform.
+const CLEAR_STAIR_APPROACH: i32 = -10;
+const CLEAR_STAIR_LATERAL: [i32; 3] = [-10, 0, 5];
 
 /// Bodies agree to this (world units) until two characters first touch: Rapier's controller
 /// adds a 0.01 unit normal nudge per contact (a body pressed into a corner drifts up to that
 /// 0.25 unit offset away) and pushes a body placed into a wall out to touching, where the
 /// engine leaves the 0.25 unit offset; `f32` rounding is far smaller.
 const POSITION: f32 = 0.5;
+
+/// Nonthreshold real-game walking paths keep the normal per-tick position and gameplay checks.
+/// Unlike the labelled threshold seed, they never disable comparison after the first riser.
+#[test]
+fn clear_stair_paths_agree_every_tick_except_rounding_support() {
+    for seed in SEEDS {
+        for lateral in CLEAR_STAIR_LATERAL {
+            let context = format!("clear stairs seed {seed}, lateral {lateral}");
+            let run = compare_with_stair_offset(
+                Case::Stairs,
+                seed,
+                lateral,
+                CLEAR_STAIR_APPROACH,
+                StairPolicy::Strict,
+            );
+            assert!(
+                run.threshold_start.is_none(),
+                "{context}: threshold exemption used"
+            );
+            assert!(
+                run.first_contact.is_none(),
+                "{context}: character contact would disable position comparisons"
+            );
+            assert!(
+                run.max_position <= POSITION,
+                "{context}: non-edge positions differ by {}",
+                run.max_position
+            );
+            assert!(
+                run.max_position_on_edge <= EDGE_POSITION,
+                "{context}: edge positions differ by {}",
+                run.max_position_on_edge
+            );
+            assert!(
+                run.edge_support_ticks <= CLEAR_EDGE_SUPPORT_TICKS,
+                "{context}: {} rounded-edge support-only ticks",
+                run.edge_support_ticks
+            );
+            assert!(
+                run.first_ground_contact_difference.is_none(),
+                "{context}: walking contact differs at {:?}",
+                run.first_ground_contact_difference
+            );
+            assert!(
+                run.first_outcome_difference.is_none(),
+                "{context}: outcomes differ at {:?}",
+                run.first_outcome_difference
+            );
+            assert_eq!(
+                run.reached_platform,
+                [true, true],
+                "{context}: a backend did not reach the platform"
+            );
+            assert_eq!(
+                run.geometry_differs, 0,
+                "{context}: static geometry differs"
+            );
+            assert!(
+                run.query_differences.is_empty(),
+                "{context}: queries differ: {:?}",
+                run.query_differences
+            );
+            assert!(
+                run.violations.values().all(Vec::is_empty),
+                "{context}: invariant violations: {:?}",
+                run.violations
+            );
+        }
+    }
+}
 
 /// The merge-blocking A/B acceptance (physics-engine#330): every seeded workload through the
 /// real game on Rapier and on physics-engine, with the same fixture, commands and ticks.
@@ -732,9 +903,11 @@ const POSITION: f32 = 0.5;
 /// blocking, and bit-identical same-backend replay. Across them: identical game-visible
 /// outcomes every tick (doors, encounters, health, progression, support, strikes,
 /// interactions), identical sight, strike, ray, ground and placement decisions from the same
-/// inputs, and positions within [`POSITION`] until two characters first touch. After that,
-/// sliding around and sidestepping other characters intentionally differ; the difference is
-/// reported, not bounded.
+/// inputs, and positions within [`POSITION`] until two characters first touch. The original
+/// seeded stairs are the explicitly labelled threshold exception below, while the additional
+/// clear-phase stairs test exercises strict per-tick positions and contact (with one bounded
+/// edge-support classification). After character contact, sliding and sidestepping intentionally
+/// differ; their position difference is reported, not bounded.
 #[test]
 fn seeded_workloads_agree_on_rapier_and_physics_engine() {
     let mut report = String::new();
@@ -746,17 +919,17 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
             writeln!(
                 report,
                 "{context}: first character contact {:?}; highest feet {:.1}; max position difference \
-                 {:.3} before it (at {:?}), {:.3} after, {:.3} on edges, {:.3} after the climb \
-                 started at {:?} ({} support-only ticks); {} queries compared",
+                 {:.3} before it (at {:?}), {:.3} after, {:.3} on edges, {:.3} after known \
+                 threshold at {:?} ({} support-only ticks); {} queries compared",
                 comparison.first_contact,
                 comparison.max_height,
                 comparison.max_position,
                 comparison.max_position_at,
                 comparison.max_position_after_contact,
                 comparison.max_position_on_edge,
-                comparison.max_position_after_climb,
-                comparison.climb_start,
-                comparison.stairs_support_ticks,
+                comparison.max_position_after_threshold,
+                comparison.threshold_start,
+                comparison.threshold_support_ticks,
                 comparison.queries,
             )
             .unwrap();
@@ -766,10 +939,15 @@ fn seeded_workloads_agree_on_rapier_and_physics_engine() {
                     comparison.max_position, comparison.max_position_at
                 ));
             }
-            if comparison.stairs_support_ticks > STAIRS_SUPPORT_TICKS {
+            if comparison.threshold_support_ticks > THRESHOLD_SUPPORT_TICKS {
                 failures.push(format!(
-                    "{context}: support differs on {} stairs ticks",
-                    comparison.stairs_support_ticks
+                    "{context}: known-threshold support differs on {} stairs ticks",
+                    comparison.threshold_support_ticks
+                ));
+            }
+            if let Some(difference) = comparison.first_ground_contact_difference {
+                failures.push(format!(
+                    "{context}: per-move ground contact differs at {difference:?}"
                 ));
             }
             if comparison.max_position_on_edge > EDGE_POSITION {
