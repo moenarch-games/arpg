@@ -179,15 +179,15 @@ falls never step, so a jump keeps landing on a ledge only from above. Stairs bel
 region they lead into: standing on a step keeps the membership, and a saved grounded body is
 checked by a downward capsule cast (`supported_within`, edges and steps included) rather than
 the ground straight below. The `traversal` scenario's two 20-unit steps climb to the
-platform's north face (a declared walk connection). physics-engine (`baa9244`) climbs them
-with its own autostep (`CharacterSettings::autostep`, the same height and free depth), which
-it applies only to moves that start on the ground and do not rise; the seeded A/B `stairs`
-workload compares them. Known divergence, reported to the engine owner: the engine's walking
-check counts support at the move's start, which a body half up a step's rounded edge lacks,
-where Rapier counts the edge contact as grounded and keeps stepping, so the engine climbs that
-edge a tick behind. While a player is on the stairs, positions are bounded at 7.5 units (7.06
-measured with `baa9244`) and support and region changes may differ on at most 7 ticks; every other tick and
-workload keeps the strict comparison.
+platform's north face (a declared walk connection). The physics-engine A/B adapter enables
+`CharacterMove::autostep` only when the game's walking decision is true, with Rapier's step
+height and free depth. It uses the engine's independent `ground_contact` result for the next
+move's walking decision, so jumps and falls do not step. The seeded A/B `stairs` workload
+compares both controllers. Their rounded-edge contacts can cause one backend to step a riser
+earlier, after which positions drift even though both still climb correctly. The stairs
+acceptance therefore requires both to reach the platform, at most 7 support/region-only
+differences, identical other outcomes and physical invariants, rather than a position bound
+after the climb begins. Other workloads retain their stricter position comparisons.
 
 Ramps (#59): a ramp is a static wedge inside its box (`StaticColliderKind::Ramp`), rising from
 the box's bottom at its +Z end to its top at its -Z end: a convex hull on Rapier, a
