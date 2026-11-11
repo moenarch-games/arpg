@@ -1,6 +1,6 @@
 {
   "arrows": [],
-  "contentRevision": "4d30f882ca678a85",
+  "contentRevision": "41ab919796c1d46c",
   "crates": [
     {
       "health": 30,
@@ -215,33 +215,39 @@
   "rooms": [
     {
       "encounterState": "cleared",
-      "id": 1
+      "id": 1,
+      "phase": 0
     },
     {
       "encounterState": "dormant",
-      "id": 2
+      "id": 2,
+      "phase": 0
     },
     {
       "encounterState": "dormant",
-      "id": 3
+      "id": 3,
+      "phase": 0
     },
     {
       "encounterState": "dormant",
-      "id": 4
+      "id": 4,
+      "phase": 0
     },
     {
       "encounterState": "dormant",
-      "id": 5
+      "id": 5,
+      "phase": 0
     },
     {
       "encounterState": "dormant",
-      "id": 6
+      "id": 6,
+      "phase": 0
     }
   ],
-  "rulesVersion": 14,
+  "rulesVersion": 15,
   "runSeed": 42,
   "runState": "inProgress",
   "scenario": "dungeon",
-  "schemaVersion": 25,
+  "schemaVersion": 26,
   "tick": 50
 }

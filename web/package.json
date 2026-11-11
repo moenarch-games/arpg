@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@moritzbrantner/game-audio": "github:moritzbrantner/game-audio#396afc6b92aed549e2dd0841ec9d499d29de133d",
-    "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#231a70c9e8a4cc6575117d734507eaf81371f423",
+    "@moritzbrantner/three-d-renderer": "github:moritzbrantner/3d-lab#8fa2b4f3057d3479ee8166f34d83705e283012cd",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "three": "0.186.1"
@@ -29,7 +29,7 @@
     "@playwright/test": "1.64.1",
     "oxfmt": "0.74.0",
     "oxlint": "1.89.0",
-    "vite": "8.3.4"
+    "vite": "8.3.5"
   },
-  "packageManager": "bun@1.4.3"
+  "packageManager": "bun@1.4.4"
 }

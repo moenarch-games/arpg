@@ -110,6 +110,18 @@ impl Case {
     }
 }
 pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
+    fixture_with_stair_offset(case, seed, 0, 0)
+}
+
+/// Varies the stairs' approach phase without changing the course or walking speed. The normal
+/// seeded fixture keeps its original spawn; physics A/B uses a known nonthreshold phase too.
+pub(super) fn fixture_with_stair_offset(
+    case: Case,
+    seed: u32,
+    stair_lateral: i32,
+    stair_approach: i32,
+) -> ArpgGame {
+    assert!(case == Case::Stairs || (stair_lateral == 0 && stair_approach == 0));
     let mut game = if matches!(
         case,
         Case::Ledge | Case::Ceiling | Case::Traversal | Case::Stairs
@@ -121,6 +133,10 @@ pub(super) fn fixture(case: Case, seed: u32) -> ArpgGame {
         ArpgGame::new_with_seed(seed).unwrap()
     };
     match case {
+        Case::Stairs => {
+            game.player_spawns[0].x += stair_lateral;
+            game.player_spawns[0].z += stair_approach;
+        }
         // Jumping into the outer wall the corner case presses into: airborne sliding, landing.
         Case::Slow => {
             // Room 2's generated monster 600 east of the player, who has a bow.

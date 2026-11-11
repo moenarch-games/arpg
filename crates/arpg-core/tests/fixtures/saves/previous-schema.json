@@ -238,9 +238,10 @@
       "id": 6
     }
   ],
-  "rulesVersion": 13,
+  "rulesVersion": 14,
   "runSeed": 42,
+  "runState": "inProgress",
   "scenario": "dungeon",
-  "schemaVersion": 24,
+  "schemaVersion": 25,
   "tick": 50
 }

@@ -179,15 +179,20 @@ falls never step, so a jump keeps landing on a ledge only from above. Stairs bel
 region they lead into: standing on a step keeps the membership, and a saved grounded body is
 checked by a downward capsule cast (`supported_within`, edges and steps included) rather than
 the ground straight below. The `traversal` scenario's two 20-unit steps climb to the
-platform's north face (a declared walk connection). physics-engine (`baa9244`) climbs them
-with its own autostep (`CharacterSettings::autostep`, the same height and free depth), which
-it applies only to moves that start on the ground and do not rise; the seeded A/B `stairs`
-workload compares them. Known divergence, reported to the engine owner: the engine's walking
-check counts support at the move's start, which a body half up a step's rounded edge lacks,
-where Rapier counts the edge contact as grounded and keeps stepping, so the engine climbs that
-edge a tick behind. While a player is on the stairs, positions are bounded at 7.5 units (7.06
-measured with `baa9244`) and support and region changes may differ on at most 7 ticks; every other tick and
-workload keeps the strict comparison.
+platform's north face (a declared walk connection). The physics-engine A/B adapter enables
+`CharacterMove::autostep` only when the game's walking decision is true, with Rapier's step
+height and free depth. It uses the engine's independent `ground_contact` result for the next
+move's walking decision, so jumps and falls do not step. A/B acceptance now distinguishes
+two kinds of stairs approach (#276). Three clear-phase lanes use the real game and require
+the usual per-tick position bounds (0.5 units, or 2 on a rounded edge), identical ground
+contact, region membership and other outcomes; at most one support-only tick may differ
+at an observed rounded edge while both sides still agree that the player touches ground.
+Both backends must reach the platform. The two original seeded lanes are explicitly marked
+as Rapier's numerically unstable 45-degree step-threshold cases (physics-engine#406): after
+the climb begins, their positions are reported rather than bounded, and at most 7 transient
+support/region-only ticks may differ. The threshold exception cannot apply to new lanes or
+other workloads. Rapier remains the production physics authority until the full parity
+requirements are satisfied.
 
 Ramps (#59): a ramp is a static wedge inside its box (`StaticColliderKind::Ramp`), rising from
 the box's bottom at its +Z end to its top at its -Z end: a convex hull on Rapier, a
