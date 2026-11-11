@@ -102,6 +102,9 @@ test("accessibility, combat effects and quality preferences do not change the au
   browser,
   appUrl,
 }) => {
+  // Two full 60-tick sessions run back to back; on a busy CI runner they no longer fit the
+  // default 60 s now that each page also loads and runs the sound bundle (#67 67c).
+  test.setTimeout(120_000);
   const baseline = await run(browser, appUrl);
   const adjusted = await run(browser, appUrl, {
     stored: {
