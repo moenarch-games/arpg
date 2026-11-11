@@ -82,3 +82,7 @@ server reads its process environment and does not load that file automatically.
 Work from an explicit baseline on an `agent/<short-topic>` branch. Use the
 shared Git convention for pull requests and integration after repository checks
 pass. Keep behavior changes separate from formatting or structural cleanup.
+
+## Pull-request integration
+
+Follow the current shared `coding-agent-conventions` rule `GIT-006` for approved PR integration, including explicit merge-queue submission when ready. Preserve this repository's review, validation, dependency, and owner-approval requirements.
