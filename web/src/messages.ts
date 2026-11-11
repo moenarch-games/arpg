@@ -103,6 +103,14 @@ export const en = {
   "settings.displayNote":
     "Display settings stay in this browser. They never change saves or game rules.",
   "settings.resetDisplay": "Reset display settings",
+  "settings.sound": "Sound",
+  "settings.mute": "Mute all sound",
+  "settings.masterVolume": "Master volume",
+  "settings.effectsVolume": "Effects volume",
+  "settings.uiVolume": "Interface volume",
+  "settings.soundNote":
+    "Sound starts after your first click or key press. Motion and flash settings never mute it.",
+  "settings.soundUnavailable": "Sound is unavailable in this browser.",
   "settings.controls": "Controls",
   "settings.mouseAim": "Aim melee and bow with the mouse",
 
