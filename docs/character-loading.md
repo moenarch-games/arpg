@@ -3,6 +3,9 @@
 Setup acquires the rolling `humanoid-ranger-male` producer index, the default Ranger,
 its shared clips, sword, shield, referenced textures and JSON attachments. It serves
 these selected per-entry files locally; the browser never downloads a release tar.
+The sword and shield come from the rolling `humanoid-equipment` release (asset-tooling
+#517), which `equipment.index` and `equipment.ref` name: they download beside the
+character, and a newer upload of either release refreshes the local copy.
 The outfit, socket configuration and animation choices in `character-bundles.js`
 remain the game’s authority for presentation.
 
