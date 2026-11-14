@@ -104,3 +104,51 @@ test("a failed replacement preserves the previous complete release and retry rec
     await f.close();
   }
 });
+test("items named by their own release download from it beside the character", async () => {
+  const f = await fixture();
+  const equipmentIndex = {
+    schema: "asset-downloads-v1",
+    entries: [
+      { key: "sword", variant: "default", files: ["sword.gltf", "sword.bin"], textures: [] },
+    ],
+  };
+  const requests: string[] = [];
+  let equipmentRevision = "e1";
+  const fetchImpl = (async (url: string) => {
+    const { host, pathname } = new URL(url);
+    if (host === "equipment.test") {
+      requests.push(`equipment:${pathname.slice(1)}`);
+      if (pathname === "/equipment.index.json") return Response.json(equipmentIndex);
+      if (pathname === "/export.ref.json") return Response.json({ sha256: equipmentRevision });
+      return new Response(`equipment ${pathname}`);
+    }
+    return f.fetchImpl(url);
+  }) as typeof fetch;
+  const split = {
+    ...bundle,
+    equipment: {
+      ...bundle.equipment,
+      index: "https://equipment.test/equipment.index.json",
+      ref: "https://equipment.test/export.ref.json",
+    },
+  };
+  try {
+    const args = { web: f.web, bundles: [split], fetchImpl };
+    await prepareCharacterAssets(args);
+    const target = resolve(f.web, "public/characters/ranger");
+    expect(await readFile(resolve(target, "sword.bin"), "utf8")).toBe("equipment /sword.bin");
+    expect(f.requests).not.toContain("sword.bin");
+    const manifest = JSON.parse(await readFile(resolve(target, "manifest.json"), "utf8"));
+    expect(manifest.entries.map((entry: { key: string }) => entry.key)).toEqual([
+      "ranger",
+      "sword",
+    ]);
+    // A newer equipment upload refreshes the copy; an unchanged one writes nothing.
+    expect(await prepareCharacterAssets(args)).toEqual([]);
+    equipmentRevision = "e2";
+    expect(await prepareCharacterAssets(args)).toEqual(["ranger"]);
+    expect(requests).toContain("equipment:sword.gltf");
+  } finally {
+    await f.close();
+  }
+});

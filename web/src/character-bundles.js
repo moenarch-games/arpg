@@ -80,6 +80,10 @@ export const RANGER_BUNDLE = Object.freeze({
   }),
   // Equipment presentation data (#183, Atlas 3.2.3); see `character-equipment.ts`.
   equipment: Object.freeze({
+    // The items come from the rolling humanoid-equipment release (asset-tooling #517), with the same keys.
+    index:
+      "https://github.com/moritzbrantner/asset-tooling/releases/download/humanoid-equipment/humanoid-equipment.index.json",
+    ref: "https://github.com/moritzbrantner/asset-tooling/releases/download/humanoid-equipment/export.ref.json",
     items: Object.freeze({
       sword: Object.freeze({ key: "equipment.sword.arming", frame: "grip" }),
       shield: Object.freeze({ key: "equipment.shield.heater", frame: "grip" }),
