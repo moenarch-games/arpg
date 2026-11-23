@@ -42,7 +42,7 @@ adding competing implementations here.
 
 ## Setup and validation
 
-Use the toolchain in `rust-toolchain.toml` and Bun version in `web/package.json`.
+Use the toolchain in `rust-toolchain.toml` and the latest stable Bun.
 Install browser dependencies with `bun install --frozen-lockfile` in `web`.
 Install `wasm-pack` with `cargo install wasm-pack --locked --version 0.13.1`.
 
